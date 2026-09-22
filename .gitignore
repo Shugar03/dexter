@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+.DS_Store
+
+# runtime artifacts
+*.trace/
+events.jsonl
+out/
+workers/laya/.venv/
+__pycache__/
