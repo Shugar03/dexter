@@ -446,3 +446,68 @@ async fn task_rejects_oversized_goal() {
     assert!(e.to_string().contains("4KB"), "{e}");
     client.cancel().await.ok();
 }
+
+#[tokio::test]
+async fn second_concurrent_task_is_rejected() {
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::with_decider(
+        Policy::from_toml("").unwrap(),
+        Box::new(SimDriver::new(vec![])),
+        Some(Box::new(WaitForever)),
+        dexter_mcp::ServerConfig::default(),
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    let task_args = || {
+        json!({
+            "goal": "never done",
+            "done": {"type":"element_exists","target":{"name":"Nope"}},
+            "max_secs": 600,
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    };
+    // Run both concurrently — the second waits 100ms so the first
+    // claims the slot, then must be rejected. Afterwards cancel the
+    // first so the server drains.
+    let first = client.call_tool(CallToolRequestParam {
+        name: "dexter_task".into(),
+        arguments: Some(task_args()),
+    });
+    let second = async {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        client
+            .call_tool(CallToolRequestParam {
+                name: "dexter_task".into(),
+                arguments: Some(task_args()),
+            })
+            .await
+    };
+    let cleanup = async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        client
+            .call_tool(CallToolRequestParam {
+                name: "dexter_cancel".into(),
+                arguments: None,
+            })
+            .await
+            .expect("cancel");
+    };
+    let (r1, r2, _) = tokio::join!(first, second, cleanup);
+    let e = r2.expect_err("concurrent task must be rejected");
+    assert!(e.to_string().contains("already running"), "{e}");
+    let text = r1.expect("first task").content[0]
+        .raw
+        .as_text()
+        .unwrap()
+        .text
+        .clone();
+    assert!(text.contains("cancelled"), "first task cancelled: {text}");
+    client.cancel().await.ok();
+}

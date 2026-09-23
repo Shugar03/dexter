@@ -429,9 +429,17 @@ impl DexterMcp {
         let runtime = self.runtime.clone();
         let goal = params.goal.clone();
         // Fresh cooperative-cancel token for this task — dexter_cancel
-        // flips it; cleared when the task returns.
+        // flips it; cleared when the task returns. One world = one task:
+        // a second concurrent task would overwrite the slot and orphan
+        // the running task's token — reject it honestly instead.
         let token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        *runtime.task_cancel.lock().map_err(err)? = Some(token.clone());
+        {
+            let mut slot = runtime.task_cancel.lock().map_err(err)?;
+            if slot.is_some() {
+                return Err(err("a dexter_task is already running — cancel it or wait"));
+            }
+            *slot = Some(token.clone());
+        }
         let outcome = tokio::task::spawn_blocking(move || {
             let mut engine = runtime.engine.lock().map_err(err)?;
             let outcome = engine.run_task(
