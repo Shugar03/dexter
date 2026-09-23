@@ -41,6 +41,22 @@ fn pid_for_bundle(bundle: &str) -> Result<i32, DriverError> {
     }
 }
 
+/// Pid of the frontmost application, if the workspace reports one.
+pub fn frontmost_pid() -> Option<i32> {
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let app: id = msg_send![workspace, frontmostApplication];
+        let pid = if app == nil {
+            None
+        } else {
+            Some(msg_send![app, processIdentifier])
+        };
+        pool.drain();
+        pid
+    }
+}
+
 fn pid_for_name(name: &str) -> Result<i32, DriverError> {
     unsafe {
         let pool = NSAutoreleasePool::new(nil);

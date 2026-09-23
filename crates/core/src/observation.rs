@@ -108,6 +108,13 @@ pub struct Observation {
     /// is explicit, never silently dropped.
     #[serde(default)]
     pub collection_errors: u32,
+    /// The platform reports windows for this app (CGWindowList) but the
+    /// accessibility tree shows none — the signature of a degraded AX
+    /// grant (e.g. a re-signed binary the permission no longer applies to)
+    /// or an app that simply doesn't expose its content. `not found`
+    /// results against such a tree are not definitive.
+    #[serde(default)]
+    pub ax_limited: bool,
     /// Path of the captured screenshot, if requested.
     pub screenshot: Option<String>,
     /// Compact text rendering of this observation — this is what decision
@@ -128,6 +135,7 @@ impl Default for Observation {
             elements: Vec::new(),
             elements_truncated: false,
             collection_errors: 0,
+            ax_limited: false,
             screenshot: None,
             digest: String::new(),
         }

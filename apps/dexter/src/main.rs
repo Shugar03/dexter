@@ -3,8 +3,11 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use dexter_core::{AppSelector, ObservationScope};
-use dexter_driver::ComputerDriver;
+use dexter_core::{
+    Action, AppSelector, ElementId, MouseButton, ObservationScope, ScrollDelta, SemanticTarget,
+    Target,
+};
+use dexter_driver::{ActContext, ComputerDriver};
 use dexter_macos::{permissions, MacOsDriver};
 use std::process::ExitCode;
 
@@ -53,6 +56,74 @@ enum Command {
         #[arg(long)]
         screenshot: Option<String>,
     },
+    /// Click an element: semantic target (AXPress), element id from a fresh
+    /// observation, `focused`, or `point:x,y` (requires --coords).
+    Click {
+        #[arg(long)]
+        app: Option<String>,
+        /// Target: `{"role":"button","name":"Save"}` | `element:N` |
+        /// `focused` | `point:x,y`.
+        #[arg(long)]
+        target: String,
+        /// Mouse button: left (default), right, middle.
+        #[arg(long, default_value = "left")]
+        button: String,
+        /// Permit coordinate-level input (moves the real cursor).
+        #[arg(long)]
+        coords: bool,
+    },
+    /// Type text into an element (AXValue first; keyboard fallback needs
+    /// --coords and the app being frontmost).
+    Type {
+        #[arg(long)]
+        app: Option<String>,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        coords: bool,
+    },
+    /// Post a key chord like "cmd+s" (requires --coords; goes to the
+    /// frontmost app).
+    Key {
+        #[arg(long)]
+        app: Option<String>,
+        #[arg(long)]
+        chord: String,
+        #[arg(long)]
+        coords: bool,
+    },
+    /// Scroll: a target scrolls it into view via AX; without a target it
+    /// scrolls at the pointer (requires --coords).
+    Scroll {
+        #[arg(long)]
+        app: Option<String>,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "0")]
+        dx: f64,
+        #[arg(long, default_value = "0")]
+        dy: f64,
+        #[arg(long)]
+        coords: bool,
+    },
+    /// Focus an element (AXFocused).
+    Focus {
+        #[arg(long)]
+        app: Option<String>,
+        #[arg(long)]
+        target: String,
+    },
+    /// Set an element's value directly (AXValue).
+    SetValue {
+        #[arg(long)]
+        app: Option<String>,
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        value: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -79,6 +150,120 @@ fn run() -> Result<()> {
             digest,
             screenshot,
         } => observe(&driver, app, max_depth, max_elements, digest, screenshot),
+        Command::Click {
+            app,
+            target,
+            button,
+            coords,
+        } => {
+            let button = match button.as_str() {
+                "left" => MouseButton::Left,
+                "right" => MouseButton::Right,
+                "middle" => MouseButton::Middle,
+                other => anyhow::bail!("unknown button '{other}' (left|right|middle)"),
+            };
+            let target = resolve_target(&driver, &target, &app)?;
+            act(&driver, &Action::Click { target, button }, &app, coords)
+        }
+        Command::Type {
+            app,
+            text,
+            target,
+            coords,
+        } => {
+            let target = target
+                .map(|t| resolve_target(&driver, &t, &app))
+                .transpose()?;
+            act(&driver, &Action::TypeText { text, target }, &app, coords)
+        }
+        Command::Key { app, chord, coords } => {
+            let chord = dexter_core::KeyChord::parse(&chord)?;
+            act(&driver, &Action::Key { chord }, &app, coords)
+        }
+        Command::Scroll {
+            app,
+            target,
+            dx,
+            dy,
+            coords,
+        } => {
+            let target = target
+                .map(|t| resolve_target(&driver, &t, &app))
+                .transpose()?;
+            act(
+                &driver,
+                &Action::Scroll {
+                    delta: ScrollDelta { dx, dy },
+                    target,
+                },
+                &app,
+                coords,
+            )
+        }
+        Command::Focus { app, target } => {
+            let target = resolve_target(&driver, &target, &app)?;
+            act(&driver, &Action::Focus { target }, &app, false)
+        }
+        Command::SetValue { app, target, value } => {
+            let target = resolve_target(&driver, &target, &app)?;
+            act(&driver, &Action::SetValue { target, value }, &app, false)
+        }
+    }
+}
+
+/// Parse a `--target` flag into a `Target`. `element:N` takes a fresh
+/// observation first — element ids are only meaningful against the
+/// observation that produced them, and only inside this process.
+fn resolve_target(driver: &MacOsDriver, raw: &str, app: &Option<String>) -> Result<Target> {
+    if let Some(rest) = raw.strip_prefix("element:") {
+        let n: u64 = rest
+            .parse()
+            .with_context(|| format!("invalid element id '{rest}'"))?;
+        let scope = ObservationScope {
+            app: app.as_deref().map(AppSelector::parse),
+            ..Default::default()
+        };
+        let obs = driver
+            .observe(&scope)
+            .context("observe for element target")?;
+        return Ok(Target::Element {
+            observation: obs.id,
+            element: ElementId(n),
+        });
+    }
+    if raw == "focused" {
+        return Ok(Target::Focused);
+    }
+    if let Some(rest) = raw.strip_prefix("point:") {
+        let (x, y) = rest
+            .split_once(',')
+            .with_context(|| format!("invalid point '{rest}' — expected x,y"))?;
+        return Ok(Target::Point {
+            x: x.parse().with_context(|| format!("invalid x '{x}'"))?,
+            y: y.parse().with_context(|| format!("invalid y '{y}'"))?,
+        });
+    }
+    if raw.starts_with('{') {
+        let t: SemanticTarget =
+            serde_json::from_str(raw).with_context(|| format!("invalid target JSON '{raw}'"))?;
+        return Ok(Target::Semantic(t));
+    }
+    anyhow::bail!(
+        "invalid --target '{raw}' — use a semantic JSON object, `element:N`, `focused` or `point:x,y`"
+    )
+}
+
+fn act(driver: &MacOsDriver, action: &Action, app: &Option<String>, coords: bool) -> Result<()> {
+    let ctx = ActContext {
+        app: app.as_deref().map(AppSelector::parse),
+        allow_coordinates: coords,
+    };
+    let result = driver.act(action, &ctx).context("act failed")?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    if result.status.ok() {
+        Ok(())
+    } else {
+        anyhow::bail!("action returned {:?}", result.status)
     }
 }
 

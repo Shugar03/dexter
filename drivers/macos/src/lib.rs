@@ -9,29 +9,33 @@
 //! Honest capability model: the accessibility tree and window enumeration
 //! are read-only; input is added by the action slice. Nothing is simulated.
 
+mod actions;
 mod apps;
 mod ax;
 mod ffi;
+mod keymap;
 mod screenshot;
 mod windows;
 
 pub mod permissions;
 
 use accessibility::AXUIElement;
-use dexter_core::{Observation, ObservationId, ObservationScope, Window};
-use dexter_driver::{ComputerDriver, DriverCapabilities, DriverError};
+use dexter_core::{Action, ActionResult, Observation, ObservationId, ObservationScope, Window};
+use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 #[derive(Default)]
 pub struct MacOsDriver {
     next_observation: AtomicU64,
+    obs_cache: actions::ObsCache,
 }
 
 impl MacOsDriver {
     pub fn new() -> Self {
         Self {
             next_observation: AtomicU64::new(1),
+            obs_cache: actions::ObsCache::new(),
         }
     }
 }
@@ -63,6 +67,7 @@ impl ComputerDriver for MacOsDriver {
             elements: Vec::new(),
             elements_truncated: false,
             collection_errors: 0,
+            ax_limited: false,
             screenshot: None,
             digest: String::new(),
         };
@@ -85,7 +90,23 @@ impl ComputerDriver for MacOsDriver {
             let tree = ax::collect(&app, scope.max_depth, scope.max_elements);
             obs.elements_truncated = tree.truncated;
             obs.collection_errors = tree.errors;
-            obs.elements = tree.elements;
+            obs.elements = tree.elements.clone();
+            self.obs_cache.store(id, Some(pid), tree.elements);
+            // Degraded-grant signature: the window server reports real
+            // app windows but AX shows none — only the application shell
+            // and menu machinery.
+            let cg_has_windows = obs.windows.iter().any(|w| w.layer == 0);
+            let ax_has_window_content = obs.elements.iter().any(|e| {
+                !matches!(
+                    e.role.as_deref(),
+                    Some("application")
+                        | Some("menu_bar")
+                        | Some("menu_bar_item")
+                        | Some("menu")
+                        | Some("menu_item")
+                )
+            });
+            obs.ax_limited = cg_has_windows && !ax_has_window_content;
 
             if scope.screenshot {
                 let path = scope
@@ -102,5 +123,9 @@ impl ComputerDriver for MacOsDriver {
 
         obs.digest = dexter_world_model::digest(&obs, 250);
         Ok(obs)
+    }
+
+    fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
+        actions::act(action, ctx, &self.obs_cache)
     }
 }

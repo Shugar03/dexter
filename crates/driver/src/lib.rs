@@ -3,7 +3,7 @@
 //! A driver never simulates success. If it cannot know an action happened,
 //! it reports that honestly via [`dexter_core::ActionStatus`].
 
-use dexter_core::{Observation, ObservationScope, Window};
+use dexter_core::{Action, ActionResult, AppSelector, Observation, ObservationScope, Window};
 
 /// Errors a driver can surface. Mapped to `ActionStatus` at the action layer.
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +28,9 @@ pub enum DriverError {
 
     #[error("platform error: {0}")]
     Platform(String),
+
+    #[error("stale reference: {0}")]
+    StaleReference(String),
 }
 
 /// What a driver can actually do on this machine. Callers must check
@@ -44,6 +47,17 @@ pub struct DriverCapabilities {
     pub background_input: bool,
 }
 
+/// Context for [`ComputerDriver::act`].
+#[derive(Debug, Clone, Default)]
+pub struct ActContext {
+    /// The application the action is scoped to — required for semantic,
+    /// element and focused targets; coordinate points may omit it.
+    pub app: Option<AppSelector>,
+    /// Permit coordinate-level mechanisms (CGEvent) that move the real
+    /// cursor. Never granted implicitly.
+    pub allow_coordinates: bool,
+}
+
 /// The physical interface to a computer. Synchronous: platform APIs are
 /// blocking; async wrappers belong at the daemon boundary, not here.
 pub trait ComputerDriver: Send + Sync {
@@ -54,4 +68,8 @@ pub trait ComputerDriver: Send + Sync {
 
     /// One normalized snapshot of the world within `scope`.
     fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError>;
+
+    /// Execute one action. The driver reports the mechanism actually used
+    /// and never claims success it can't substantiate.
+    fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError>;
 }

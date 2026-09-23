@@ -16,6 +16,9 @@ use crate::ffi;
 
 pub struct AxTree {
     pub elements: Vec<Element>,
+    /// Live AXUIElement refs parallel to `elements` (same order) — needed
+    /// to act on resolved elements without re-walking.
+    pub nodes: Vec<AXUIElement>,
     pub truncated: bool,
     /// Elements whose attributes could not be fully read.
     pub errors: u32,
@@ -25,18 +28,35 @@ struct Ctx {
     max_depth: u32,
     max_elements: usize,
     elements: Vec<Element>,
+    nodes: Vec<AXUIElement>,
     truncated: bool,
     errors: u32,
     next_id: u64,
 }
 
+/// Roles that can be a real window root — anything else `AXWindows`
+/// returns (e.g. an `AXApplication` proxy under a degraded grant) is not.
+fn is_windowish(role: Option<&str>) -> bool {
+    matches!(
+        role,
+        Some("AXWindow")
+            | Some("AXDrawer")
+            | Some("AXSheet")
+            | Some("AXFloatingWindow")
+            | Some("AXSystemDialog")
+    )
+}
+
 /// Collect the app's element tree: each AX window is a root; if the app
-/// reports no windows, fall back to the app's direct children.
+/// reports no *real* windows (empty list or only non-window proxies, as a
+/// degraded TCC grant produces), fall back to the app's direct children —
+/// that still reaches the menu bar and whatever the app does expose.
 pub fn collect(app: &AXUIElement, max_depth: u32, max_elements: usize) -> AxTree {
     let mut ctx = Ctx {
         max_depth,
         max_elements,
         elements: Vec::new(),
+        nodes: Vec::new(),
         truncated: false,
         errors: 0,
         next_id: 1,
@@ -44,9 +64,16 @@ pub fn collect(app: &AXUIElement, max_depth: u32, max_elements: usize) -> AxTree
 
     let mut walked = false;
     if let Ok(windows) = app.windows() {
-        if !windows.is_empty() {
+        let real: Vec<_> = windows
+            .iter()
+            .filter(|w| {
+                let r = w.role().ok().map(|s| s.to_string());
+                is_windowish(r.as_deref())
+            })
+            .collect();
+        if !real.is_empty() {
             walked = true;
-            for window in windows.iter() {
+            for window in real {
                 walk(&window, None, 0, &mut ctx);
                 if ctx.truncated {
                     break;
@@ -54,8 +81,8 @@ pub fn collect(app: &AXUIElement, max_depth: u32, max_elements: usize) -> AxTree
             }
         }
     }
-    // Menu bar extras and some agents report no AXWindows — fall back to
-    // the app element's direct children.
+    // Menu bar extras, agents and apps under a degraded grant report no
+    // AXWindows — fall back to the app element's direct children.
     if !walked {
         if let Ok(children) = app.children() {
             for child in children.iter() {
@@ -69,6 +96,7 @@ pub fn collect(app: &AXUIElement, max_depth: u32, max_elements: usize) -> AxTree
 
     AxTree {
         elements: ctx.elements,
+        nodes: ctx.nodes,
         truncated: ctx.truncated,
         errors: ctx.errors,
     }
@@ -191,6 +219,9 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx) 
     let id = ElementId(ctx.next_id);
     ctx.next_id += 1;
     let this_id = id;
+    // An AXApplication child is an app boundary — descending into it
+    // re-enters the same window list and cycles until the element cap.
+    let is_app_boundary = raw_role.as_deref() == Some("AXApplication");
 
     // Keep a stable identifier fallback so unnamed controls stay findable.
     let _ = role_description;
@@ -211,8 +242,9 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx) 
         identifier,
         source: ElementSource::Accessibility,
     });
+    ctx.nodes.push(el.clone());
 
-    if depth >= ctx.max_depth {
+    if is_app_boundary || depth >= ctx.max_depth {
         return;
     }
     if let Ok(children) = el.children() {

@@ -53,4 +53,51 @@ extern "C" {
     /// Decode a kCGWindowBounds dictionary into a CGRect.
     pub fn CGRectMakeWithDictionaryRepresentation(dict: CFDictionaryRef, rect: *mut CGRect)
         -> bool;
+
+    // --- Synthetic input (CGEvent). Only used when the caller explicitly
+    // enabled physical input — these can move the real cursor / type into
+    // whatever app is frontmost. ---
+    pub fn CGEventCreateMouseEvent(
+        source: CFTypeRef,
+        mouse_type: u32,
+        position: CGPoint,
+        button: u32,
+    ) -> CFTypeRef;
+    pub fn CGEventCreateKeyboardEvent(
+        source: CFTypeRef,
+        virtual_key: u16,
+        key_down: bool,
+    ) -> CFTypeRef;
+    pub fn CGEventKeyboardSetUnicodeString(event: CFTypeRef, length: usize, chars: *const u16);
+    pub fn CGEventCreateScrollWheelEvent(
+        source: CFTypeRef,
+        units: u32,
+        wheel_count: u32,
+        wheel1: i32,
+        wheel2: i32,
+    ) -> CFTypeRef;
+    pub fn CGEventSetFlags(event: CFTypeRef, flags: u64);
+    pub fn CGEventPost(tap_location: u32, event: CFTypeRef);
+    pub fn CFRelease(cf: CFTypeRef);
 }
+
+/// CGEvent mouse event types.
+pub const K_CG_EVENT_LEFT_DOWN: u32 = 1;
+pub const K_CG_EVENT_LEFT_UP: u32 = 2;
+pub const K_CG_EVENT_RIGHT_DOWN: u32 = 3;
+pub const K_CG_EVENT_RIGHT_UP: u32 = 4;
+pub const K_CG_EVENT_MIDDLE_DOWN: u32 = 10;
+pub const K_CG_EVENT_MIDDLE_UP: u32 = 11;
+/// CGEventTapLocation — post at the HID level (before session routing).
+pub const K_CG_HID_EVENT_TAP: u32 = 0;
+/// Mouse buttons for CGEventCreateMouseEvent.
+pub const K_CG_MOUSE_LEFT: u32 = 0;
+pub const K_CG_MOUSE_RIGHT: u32 = 1;
+pub const K_CG_MOUSE_MIDDLE: u32 = 2;
+/// Scroll event units: lines.
+pub const K_CG_SCROLL_UNIT_LINE: u32 = 1;
+/// CGEventFlags.
+pub const K_CG_FLAG_SHIFT: u64 = 0x0002_0000;
+pub const K_CG_FLAG_CONTROL: u64 = 0x0004_0000;
+pub const K_CG_FLAG_ALT: u64 = 0x0008_0000;
+pub const K_CG_FLAG_CMD: u64 = 0x0010_0000;
