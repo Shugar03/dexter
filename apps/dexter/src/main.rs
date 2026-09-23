@@ -227,6 +227,23 @@ enum EvalCommand {
         #[arg(short, long)]
         out: String,
     },
+    /// Cross-app matrix: replay every dataset against one engine and
+    /// report per-app-group + per-dataset rows — the leave-one-app-out
+    /// companion. Rows are grouped by harvest provenance (meta.app →
+    /// meta.url → observation app).
+    Matrix {
+        /// Dataset JSONL files (one or more).
+        datasets: Vec<String>,
+        /// Decision engine under test: rule-based | laya.
+        #[arg(long, default_value = "rule-based")]
+        engine: String,
+        /// Worker command for --engine laya.
+        #[arg(long)]
+        engine_path: Option<String>,
+        /// Abstain below this calibrated confidence (laya). 0 = never.
+        #[arg(long, default_value = "0")]
+        min_confidence: f32,
+    },
     /// Harvest labeled items: observe each page/app in a TOML manifest,
     /// resolve the declared gold target, emit EvalItem JSONL.
     /// Requires the driver selected by --driver (browser recommended).
@@ -478,6 +495,12 @@ fn run() -> Result<()> {
                 out,
             } => eval_run(&dataset, &eng, engine_path, min_confidence, out),
             EvalCommand::Export { datasets, out } => eval_export(&datasets, &out),
+            EvalCommand::Matrix {
+                datasets,
+                engine,
+                engine_path,
+                min_confidence,
+            } => eval_matrix(&datasets, &engine, engine_path, min_confidence),
             EvalCommand::Harvest { manifest, out } => {
                 eval_harvest(engine.driver(), &manifest, &out)
             }
@@ -1055,6 +1078,9 @@ fn eval_export(datasets: &[String], out: &str) -> Result<()> {
             }
             buf.push_str(&serde_json::to_string(&serde_json::json!({
                 "id": item.id,
+                // Provenance group — leave-one-app-out training filters
+                // rows by this key (same grouping `eval matrix` reports).
+                "app": dexter_eval::app_key(item),
                 "state": state,
                 "options": options,
                 "n_candidates": n_cands,
@@ -1067,6 +1093,56 @@ fn eval_export(datasets: &[String], out: &str) -> Result<()> {
     }
     std::fs::write(out, &buf).with_context(|| format!("writing '{out}'"))?;
     println!("{n_rows} rows exported to {out} ({n_skipped} uncovered/ambiguous golds)");
+    Ok(())
+}
+
+/// One matrix row: label → eval report. Shared formatting with
+/// `eval run`'s summary line.
+fn matrix_row(label: &str, report: &dexter_eval::EvalReport) {
+    let act_items = report.covered.saturating_sub(report.route_items);
+    let act_acc = if act_items > 0 {
+        report.correct as f64 / act_items as f64
+    } else {
+        0.0
+    };
+    println!(
+        "{label:<38} {:>3} items | cov {:>3.0}% | act {}/{} ({:>3.0}%) | routes {}/{} | fa {} | fr {}",
+        report.items,
+        report.coverage() * 100.0,
+        report.correct,
+        act_items,
+        act_acc * 100.0,
+        report.routes_correct,
+        report.route_items,
+        report.false_acts,
+        report.false_routes,
+    );
+}
+
+fn eval_matrix(
+    datasets: &[String],
+    engine_name: &str,
+    engine_path: Option<String>,
+    min_confidence: f32,
+) -> Result<()> {
+    let decider = build_decider(engine_name, &engine_path, min_confidence)?;
+    let generator = dexter_decision::HeuristicGenerator::default();
+
+    for ds in datasets {
+        let text =
+            std::fs::read_to_string(ds).with_context(|| format!("reading dataset '{ds}'"))?;
+        let items = dexter_eval::load_jsonl(&text).with_context(|| format!("parsing '{ds}'"))?;
+        println!("{ds}");
+        let groups = dexter_eval::split_by_app(&items);
+        for (app, group) in &groups {
+            let report = dexter_eval::run_eval(group, &generator, decider.as_ref());
+            matrix_row(&format!("  {app}"), &report);
+        }
+        if groups.len() > 1 {
+            let report = dexter_eval::run_eval(&items, &generator, decider.as_ref());
+            matrix_row("  (all)", &report);
+        }
+    }
     Ok(())
 }
 

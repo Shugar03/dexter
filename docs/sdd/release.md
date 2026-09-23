@@ -11,8 +11,11 @@ Status: implemented (Item 2 of the maturity plan).
   There is no Apple Developer certificate in this project — the binary
   is *signed* (integrity, stable-enough cdhash for TCC prompts) but
   **not notarized**: Gatekeeper will block first launch of quarantined
-  files. The honest mitigations are documented at install time:
-  `brew install --no-quarantine` or `xattr -d com.apple.quarantine`.
+  files — verified live: the cask-installed binary carried
+  `com.apple.quarantine` and hung until cleared. The documented
+  mitigation is `xattr -d com.apple.quarantine` (works; measured).
+  `--no-quarantine` is NOT a valid `brew install` flag on current
+  Homebrew — earlier docs claimed it; corrected.
 - **Shape**: one universal tarball per release —
   `dexter-<ver>-macos-universal.tar.gz` containing `dexter` and
   `dexter-overlay` at the root (what the cask's `binary` stanzas link).
@@ -48,16 +51,25 @@ Done locally before tagging:
 - `ruby -c Casks/dexter.rb` → Syntax OK ✔
 - Release workflow YAML parses ✔
 
-Still open: first real tag (`v0.1.0-rc.1` then `v0.1.0`) to exercise
-the pipeline end-to-end, then fill the cask `sha256` from the
-published asset and, if the tap is reachable, `brew audit` /
-`brew install` smoke test.
+Verified end-to-end on `v0.1.0-rc.1` (run 35875691047):
+
+- Matrix builds + `lipo` + ad-hoc sign + `SHA256SUMS` ✔
+- `gh release create` needed `--repo` (package job has no checkout) —
+  fixed after the first run failed on exactly that ✔
+- Prerelease published with both assets ✔
+- `brew install --cask shugar03/dexter/dexter` installs and links both
+  binaries ✔; `xattr -d` clears quarantine and `dexter doctor` runs ✔
+- `tap` job needs the `TAP_GITHUB_TOKEN` secret — absent, so the cask
+  was updated by hand (version + real sha256 of the RC asset).
+- Cask `depends_on macos:` modernized to `:ventura` (the `">= :"` string
+  form is deprecated — `brew` flagged it on install).
 
 ## Honest caveats (user-facing)
 
-- Ad-hoc signing ≠ notarized. `--no-quarantine` or `xattr -d` is
-  required; this is documented in the cask `caveats`, the tap README
-  and the project README.
+- Ad-hoc signing ≠ notarized. `xattr -d com.apple.quarantine` is
+  required once after install; documented in the cask `caveats` and
+  the project README. (`--no-quarantine` was removed from Homebrew —
+  do not document it as an option.)
 - TCC grants (Accessibility, Screen Recording) attach to the signing
   identity — the release build's ad-hoc signature is stable across
   reinstalls of the same artifact, but a new release is a new

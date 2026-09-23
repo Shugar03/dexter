@@ -117,6 +117,65 @@ fn route_gold_counts_separately() {
 }
 
 #[test]
+fn split_by_app_groups_by_provenance() {
+    let o = obs(vec![el(1, "button", "Save", &["press"])]);
+    let mut a = item(
+        "a1",
+        "g",
+        o.clone(),
+        Gold::Route {
+            route: dexter_decision::Route::Abstain,
+        },
+    );
+    a.meta = serde_json::json!({"app": "com.apple.TextEdit"});
+    let mut b = item(
+        "b1",
+        "g",
+        o.clone(),
+        Gold::Route {
+            route: dexter_decision::Route::Abstain,
+        },
+    );
+    b.meta = serde_json::json!({"app": "com.apple.finder"});
+    // No meta → falls back to the observation's app selector.
+    let mut c = item(
+        "c1",
+        "g",
+        o,
+        Gold::Route {
+            route: dexter_decision::Route::Abstain,
+        },
+    );
+    c.observation.app = Some(dexter_core::AppSelector::BundleId(
+        "com.apple.finder".into(),
+    ));
+    let mut d = item(
+        "d1",
+        "g",
+        c.observation.clone(),
+        Gold::Route {
+            route: dexter_decision::Route::Abstain,
+        },
+    );
+    d.meta = serde_json::json!({"url": "https://fake.test/checkout"});
+
+    let groups = dexter_eval::split_by_app(&[a, b, c, d]);
+    let keys: Vec<&str> = groups.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        keys,
+        vec![
+            "com.apple.TextEdit",
+            "com.apple.finder",
+            "https://fake.test/checkout"
+        ]
+    );
+    // TextEdit 1, finder 2 (meta.app + obs.app fallback merge), url 1.
+    assert_eq!(groups[0].1.len(), 1);
+    assert_eq!(groups[1].1.len(), 2);
+    assert_eq!(groups[2].1.len(), 1);
+}
+
+#[test]
 fn jsonl_roundtrip() {
     let o = obs(vec![el(7, "button", "Save", &["press"])]);
     let it = item(

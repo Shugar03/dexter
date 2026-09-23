@@ -111,6 +111,53 @@ Honest reads:
   range, so `--min-confidence` thresholds should be re-derived per
   checkpoint, not inherited.
 
+## Cross-app generalization (`eval matrix`, `scripts/cross_app_eval.sh`)
+
+Three frozen surfaces, grouped by provenance (`split_by_app`:
+`meta.app → meta.url → observation.app`):
+
+- `datasets/browser/` — 21 items, 16 distinct pages (DOM surface).
+- `datasets/macos/` — 10 items, TextEdit + Finder (AX surface).
+- `datasets/sim/` — 11 synthetic items: installer wizard, media
+  player, file manager (`datasets/sim/gen.py` regenerates).
+- `datasets/vision/` — 5 synthetic items mixing menu-only AX shells
+  with inert `[ocr]` elements (`datasets/vision/gen.py`).
+
+`eval matrix` reports per-app rows per dataset — the row for a held-out
+group IS the transfer measurement; `eval export` stamps the same
+`"app"` key on training rows so `cross_app_eval.sh` can train
+minus-that-group (LODO) and re-measure.
+
+**Environment caveat (measured 2026-09)**: harvesting new macOS items
+needs the responsible process to hold the full AX grant — in a
+background/agent session every stock app returns menu-only trees
+(`ax_limited`) and windows report `on_screen: false` (captures come
+back black). The existing macos items were harvested under a granted
+context; sim/vision datasets are synthetic precisely so the matrix is
+CI-reproducible.
+
+### Measured (laya root, `eval matrix`)
+
+| engine | browser | macos | sim | vision |
+|---|---|---|---|---|
+| rule-based | 18/18 + 3/3r | 8/8 + 2/2r | 8/9 + 1/2r, fr 1 | 1/1 + 1/4r, **fa 1** |
+| laya base | (14/18 + 1/3r) | (5/8 + 0/2r) | 4/9 + 1/2r, fr 5 | 1/1 + 2/4r, **fa 1** |
+| laya ft mixed | — | — | **4/9 + 1/2r, fr 5** | **1/1 + 1/4r, fa 1** |
+
+Honest reads:
+
+- **Cross-domain transfer is nil — confirmed twice more.** ft-mixed
+  (trained on all 31 browser+macos rows) reproduces the base model's
+  numbers on sim and vision *exactly* — same misses, same false_act.
+  The head learns the distribution it saw, not "computer use".
+- **The false_act is shared across engines**: on
+  `ocr-save-evidence-only` both rule-based and laya act on a stray
+  enabled element instead of abstaining — OCR text is evidence, not a
+  handle. This is the single most valuable dataset row: it catches the
+  dangerous direction.
+- LODO rows (per-app holdout checkpoints) — pending: see
+  `scripts/cross_app_eval.sh` output / this doc's next revision.
+
 ## Non-goals
 
 - No end-to-end task success here — that's the sim/scenario layer.

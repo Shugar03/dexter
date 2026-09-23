@@ -63,6 +63,55 @@ pub fn load_jsonl(text: &str) -> Result<Vec<EvalItem>, serde_json::Error> {
         .collect()
 }
 
+/// Provenance key for cross-app evaluation: the app (or page) this item
+/// was harvested from. Preference order: `meta.app` (harvest manifest),
+/// `meta.url` (web page), `observation.app.value` (bundle id/name),
+/// else "unknown". Grouping by this key powers leave-one-app-out
+/// generalization evals — training on every app *but* the holdout.
+pub fn app_key(item: &EvalItem) -> String {
+    item.meta
+        .get("app")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| item.meta.get("url").and_then(|v| v.as_str()))
+        .or_else(|| {
+            item.observation.app.as_ref().map(|a| match a {
+                dexter_core::AppSelector::Name(n) => n.as_str(),
+                dexter_core::AppSelector::BundleId(b) => b.as_str(),
+                dexter_core::AppSelector::Pid(p) => {
+                    // Pid has no stable label — fall through to unknown.
+                    let _ = p;
+                    ""
+                }
+            })
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// Group items by `app_key`, preserving first-seen order — one row of a
+/// cross-app matrix per group.
+pub fn split_by_app(items: &[EvalItem]) -> Vec<(String, Vec<EvalItem>)> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, Vec<EvalItem>> =
+        std::collections::HashMap::new();
+    for item in items {
+        let key = app_key(item);
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(item.clone());
+    }
+    order
+        .into_iter()
+        .map(|k| {
+            let v = groups.remove(&k).unwrap_or_default();
+            (k, v)
+        })
+        .collect()
+}
+
 /// Per-item verdict after replay.
 #[derive(Debug)]
 pub struct ItemVerdict {

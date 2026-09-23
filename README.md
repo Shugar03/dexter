@@ -40,16 +40,13 @@ Browser, Windows and Linux drivers are on the
 ### Homebrew (recommended)
 
 ```sh
-brew install --no-quarantine shugar03/dexter/dexter
+brew install --cask shugar03/dexter/dexter
+xattr -d com.apple.quarantine $(which dexter) $(which dexter-overlay)
 ```
 
-Release binaries are **ad-hoc signed, not notarized** — `--no-quarantine`
-skips Gatekeeper's first-run block. If you downloaded a release tarball
-directly instead, clear the quarantine attribute yourself:
-
-```sh
-xattr -d com.apple.quarantine $(which dexter)
-```
+Release binaries are **ad-hoc signed, not notarized** — Gatekeeper
+quarantines them on first run; the `xattr` line clears that once.
+(The same applies if you downloaded a release tarball directly.)
 
 ### From source
 
