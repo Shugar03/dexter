@@ -1,0 +1,28 @@
+//! Dexter core types.
+//!
+//! The LLM decides *what* to achieve; Dexter decides *how* to interact with
+//! the computer. These types are the lingua franca between drivers, the world
+//! model, the verifier, the policy engine and the decision engines.
+
+mod action;
+mod element;
+mod error;
+mod event;
+mod observation;
+mod result;
+mod target;
+
+pub use action::{Action, KeyChord, MouseButton, ScrollDelta};
+pub use element::{Element, ElementId, ElementSource, Rect};
+pub use error::DexterError;
+pub use event::{Event, EventKind};
+pub use observation::{AppSelector, Observation, ObservationId, ObservationScope, Window};
+pub use result::{ActionResult, ActionStatus, Mechanism, Verification, VerificationStatus};
+pub use target::{ExpectedState, SemanticTarget, Target, ValuePredicate};
+
+/// A point in global screen coordinates (pixels, top-left origin).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}

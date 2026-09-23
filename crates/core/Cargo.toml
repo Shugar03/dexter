@@ -1,0 +1,12 @@
+[package]
+name = "dexter-core"
+description = "Dexter core types: observations, elements, actions, expected states, events"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
