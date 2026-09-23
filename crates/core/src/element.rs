@@ -73,6 +73,28 @@ pub struct Element {
     pub source: ElementSource,
 }
 
+impl Default for Element {
+    /// Placeholder element (id 0, no attributes) — tests fill what matters.
+    fn default() -> Self {
+        Self {
+            id: ElementId(0),
+            parent: None,
+            depth: 0,
+            role: None,
+            raw_role: None,
+            subrole: None,
+            name: None,
+            value: None,
+            bounds: None,
+            enabled: None,
+            focused: false,
+            actions: Vec::new(),
+            identifier: None,
+            source: ElementSource::Accessibility,
+        }
+    }
+}
+
 impl Element {
     /// Display name used by matching and digests.
     pub fn label(&self) -> Option<&str> {

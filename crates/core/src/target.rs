@@ -16,11 +16,17 @@ pub struct SemanticTarget {
     pub value_contains: Option<String>,
     pub identifier: Option<String>,
     pub enabled: Option<bool>,
-    /// Disambiguate when several elements match: 0 = first in tree order.
-    pub index: usize,
+    /// Disambiguate when several elements match. `None` requires exactly one
+    /// match (fail-closed on ambiguity); `Some(n)` explicitly picks the nth
+    /// match in tree order.
+    pub index: Option<usize>,
 }
 
 /// Where an action lands.
+///
+/// Serde `untagged` tries variants in declaration order: the structurally
+/// constrained ones go first, and `Semantic` — whose fields are all
+/// optional — stays last as the catch-all. Reordering breaks parsing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Target {
@@ -30,12 +36,13 @@ pub enum Target {
         observation: ObservationId,
         element: ElementId,
     },
-    /// Resolved semantically at action time.
-    Semantic(SemanticTarget),
     /// Raw screen coordinates — the fallback of last resort.
     Point { x: f64, y: f64 },
     /// A whole window (by CGWindowID).
     Window { window_id: u32 },
+    /// Resolved semantically at action time. Catch-all: must stay after
+    /// every variant with required fields.
+    Semantic(SemanticTarget),
     /// The currently focused element (serializes as `null` under untagged).
     Focused,
 }

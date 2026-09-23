@@ -1,0 +1,11 @@
+[package]
+name = "dexter-driver"
+description = "ComputerDriver interface — the seam between Dexter and the machine"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+dexter-core.workspace = true
+thiserror.workspace = true

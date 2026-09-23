@@ -2,6 +2,10 @@
 resolver = "2"
 members = [
     "crates/core",
+    "crates/driver",
+    "crates/world-model",
+    "drivers/macos",
+    "apps/dexter",
 ]
 
 [workspace.package]
@@ -11,7 +15,25 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 dexter-core = { path = "crates/core" }
+dexter-driver = { path = "crates/driver" }
+dexter-world-model = { path = "crates/world-model" }
+dexter-macos = { path = "drivers/macos" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+
+# macOS FFI
+accessibility = "0.2"
+core-foundation = "0.10"
+core-graphics = "0.25"
+cocoa = "0.26"
+objc = "0.2"
+xcap = "0.9"
+image = "0.25"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

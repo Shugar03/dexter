@@ -45,6 +45,10 @@ pub struct ObservationScope {
     pub max_elements: usize,
     /// Whether to capture a screenshot alongside the structured data.
     pub screenshot: bool,
+    /// Optional output path for the screenshot (driver picks a temp file
+    /// when absent).
+    #[serde(default)]
+    pub screenshot_path: Option<String>,
 }
 
 impl Default for ObservationScope {
@@ -54,6 +58,7 @@ impl Default for ObservationScope {
             max_depth: 40,
             max_elements: 4_000,
             screenshot: false,
+            screenshot_path: None,
         }
     }
 }
@@ -95,11 +100,38 @@ pub struct Observation {
     pub windows: Vec<Window>,
     /// Flattened element list (tree order, `parent` links back).
     pub elements: Vec<Element>,
+    /// True when the element walk hit a depth/count cap — callers must not
+    /// treat "not found" as definitive when this is set.
+    #[serde(default)]
+    pub elements_truncated: bool,
+    /// Elements that failed mid-read (vanishing nodes etc.). Partial data
+    /// is explicit, never silently dropped.
+    #[serde(default)]
+    pub collection_errors: u32,
     /// Path of the captured screenshot, if requested.
     pub screenshot: Option<String>,
     /// Compact text rendering of this observation — this is what decision
     /// engines (e.g. Laya) consume as `state`.
     pub digest: String,
+}
+
+impl Default for Observation {
+    /// Empty observation — used by tests and sim drivers; real drivers
+    /// fill every field explicitly.
+    fn default() -> Self {
+        Self {
+            id: ObservationId(0),
+            timestamp: SystemTime::UNIX_EPOCH,
+            app: None,
+            pid: None,
+            windows: Vec::new(),
+            elements: Vec::new(),
+            elements_truncated: false,
+            collection_errors: 0,
+            screenshot: None,
+            digest: String::new(),
+        }
+    }
 }
 
 impl Observation {

@@ -1,0 +1,80 @@
+//! Resolving an `AppSelector` to a real pid via NSRunningApplication.
+
+use cocoa::base::{id, nil};
+use cocoa::foundation::{NSAutoreleasePool, NSString};
+use dexter_core::AppSelector;
+use dexter_driver::DriverError;
+use objc::{class, msg_send, sel, sel_impl};
+
+pub fn resolve_pid(selector: &AppSelector) -> Result<i32, DriverError> {
+    match selector {
+        AppSelector::Pid(pid) => Ok(*pid),
+        AppSelector::BundleId(bundle) => pid_for_bundle(bundle),
+        AppSelector::Name(name) => pid_for_name(name),
+    }
+}
+
+fn pid_for_bundle(bundle: &str) -> Result<i32, DriverError> {
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let bundle_ns = NSString::alloc(nil).init_str(bundle);
+        let apps: id = msg_send![
+            class!(NSRunningApplication),
+            runningApplicationsWithBundleIdentifier: bundle_ns
+        ];
+        let count: usize = msg_send![apps, count];
+        let pid = if count > 0 {
+            let app: id = msg_send![apps, objectAtIndex: 0usize];
+            let pid: i32 = msg_send![app, processIdentifier];
+            pid
+        } else {
+            -1
+        };
+        pool.drain();
+        if pid > 0 {
+            Ok(pid)
+        } else {
+            Err(DriverError::AppNotFound(format!(
+                "no running application with bundle id '{bundle}'"
+            )))
+        }
+    }
+}
+
+fn pid_for_name(name: &str) -> Result<i32, DriverError> {
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let apps: id = msg_send![workspace, runningApplications];
+        let count: usize = msg_send![apps, count];
+        let mut found: Option<i32> = None;
+        for i in 0..count {
+            let app: id = msg_send![apps, objectAtIndex: i];
+            let localized: id = msg_send![app, localizedName];
+            if localized == nil {
+                continue;
+            }
+            let utf8 = localized.UTF8String();
+            if utf8.is_null() {
+                continue;
+            }
+            let s = std::ffi::CStr::from_ptr(utf8)
+                .to_string_lossy()
+                .into_owned();
+            if s.eq_ignore_ascii_case(name) {
+                let pid: i32 = msg_send![app, processIdentifier];
+                if found.is_some() {
+                    pool.drain();
+                    return Err(DriverError::Ambiguous(format!(
+                        "more than one running application named '{name}' — use --pid or bundle id"
+                    )));
+                }
+                found = Some(pid);
+            }
+        }
+        pool.drain();
+        found.ok_or_else(|| {
+            DriverError::AppNotFound(format!("no running application named '{name}'"))
+        })
+    }
+}

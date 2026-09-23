@@ -1,0 +1,22 @@
+[package]
+name = "dexter-cu"
+description = "dexter CLI — agent computer runtime (doctor, windows, observe, actions, scenarios)"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dexter"
+path = "src/main.rs"
+
+[dependencies]
+dexter-core.workspace = true
+dexter-driver.workspace = true
+dexter-world-model.workspace = true
+dexter-macos.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+tracing.workspace = true

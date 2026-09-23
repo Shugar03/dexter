@@ -1,0 +1,22 @@
+[package]
+name = "dexter-macos"
+description = "macOS ComputerDriver: Accessibility tree, CGWindowList, CGEvent input, screen capture"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+dexter-core.workspace = true
+dexter-driver.workspace = true
+dexter-world-model.workspace = true
+accessibility.workspace = true
+core-foundation.workspace = true
+core-graphics.workspace = true
+cocoa.workspace = true
+objc.workspace = true
+xcap.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
