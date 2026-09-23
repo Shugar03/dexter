@@ -112,13 +112,37 @@ impl Default for RunConfig {
     }
 }
 
+/// The audit journal — bounded and shareable. MCP serves
+/// `dexter_journal` off this handle so audit reads never contend with
+/// the engine lock mid-task.
+#[derive(Debug, Default)]
+pub struct Journal {
+    /// Events in emission order (oldest first).
+    pub events: std::collections::VecDeque<Event>,
+    /// Events dropped once the cap was hit — audits must know.
+    pub dropped: u64,
+}
+
+/// Hard cap on retained events — long sessions stay light.
+const JOURNAL_CAP: usize = 10_000;
+
+impl Journal {
+    fn push(&mut self, ev: Event) {
+        if self.events.len() >= JOURNAL_CAP {
+            self.events.pop_front();
+            self.dropped += 1;
+        }
+        self.events.push_back(ev);
+    }
+}
+
 /// The shared runtime. One driver, one policy, one approval store, one
 /// journal — CLI, MCP and SDKs all go through this.
 pub struct Engine<D: ComputerDriver> {
     driver: D,
     policy: Policy,
     approvals: ApprovalStore,
-    events: Vec<Event>,
+    journal: std::sync::Arc<std::sync::Mutex<Journal>>,
     /// Live append sink — every journaled event is flushed here
     /// immediately so a presence overlay (or any consumer) can tail the
     /// journal while the task is still running.
@@ -131,7 +155,7 @@ impl<D: ComputerDriver> Engine<D> {
             driver,
             policy,
             approvals: ApprovalStore::new(approval_ttl),
-            events: Vec::new(),
+            journal: Default::default(),
             journal_sink: None,
         }
     }
@@ -147,8 +171,22 @@ impl<D: ComputerDriver> Engine<D> {
         &self.driver
     }
 
-    pub fn events(&self) -> &[Event] {
-        &self.events
+    /// Snapshot of the journal (cloned — the live store may keep
+    /// appending from a running task).
+    pub fn events(&self) -> Vec<Event> {
+        self.journal
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Shared handle to the bounded journal — readers (e.g.
+    /// `dexter_journal`) never contend with the engine lock.
+    pub fn journal_handle(&self) -> std::sync::Arc<std::sync::Mutex<Journal>> {
+        self.journal.clone()
     }
 
     /// Pre-grant an approval fingerprint for this session (e.g. a scenario's
@@ -173,7 +211,7 @@ impl<D: ComputerDriver> Engine<D> {
                 let _ = w.flush(); // live consumers read this immediately
             }
         }
-        self.events.push(ev);
+        self.journal.lock().unwrap().push(ev);
     }
 
     /// Run one step: policy gate → bounded act/verify loop.

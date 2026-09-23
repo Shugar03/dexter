@@ -7,6 +7,7 @@ use dexter_core::{
     Action, AppSelector, ElementId, ExpectedState, MouseButton, ObservationScope, ScrollDelta,
     SemanticTarget, Target,
 };
+use dexter_decision::CandidateGenerator;
 use dexter_driver::ComputerDriver;
 use dexter_engine::{Engine, RunConfig, Step, StepStatus};
 use dexter_macos::{permissions, MacOsDriver};
@@ -140,6 +141,14 @@ enum Command {
         /// Abstain below this calibrated confidence (laya). 0 = never.
         #[arg(long, default_value = "0")]
         min_confidence: f32,
+        /// Operator: treat every RequireApproval as granted for the
+        /// whole MCP session (the human approved at launch).
+        #[arg(long)]
+        approve_all: bool,
+        /// Operator: permit physical-tier (coordinate/keyboard) input.
+        /// Off by default — agents cannot enable it per call.
+        #[arg(long)]
+        coords: bool,
     },
     /// Open a URL — browser driver navigates its session; macOS hands it
     /// to LaunchServices. Policy-gated like any mutation.
@@ -192,6 +201,16 @@ enum EvalCommand {
         /// Emit per-item verdicts as JSONL to this path.
         #[arg(long)]
         out: Option<String>,
+    },
+    /// Export frozen items as (state, options, gold) training rows in
+    /// the exact format the laya engine renders at inference — same
+    /// generator, same digest budget, same option list.
+    Export {
+        /// Dataset JSONL files (one or more).
+        datasets: Vec<String>,
+        /// Output JSONL of training rows.
+        #[arg(short, long)]
+        out: String,
     },
     /// Harvest labeled items: observe each page/app in a TOML manifest,
     /// resolve the declared gold target, emit EvalItem JSONL.
@@ -397,6 +416,7 @@ fn run() -> Result<()> {
                 min_confidence,
                 out,
             } => eval_run(&dataset, &eng, engine_path, min_confidence, out),
+            EvalCommand::Export { datasets, out } => eval_export(&datasets, &out),
             EvalCommand::Harvest { manifest, out } => {
                 eval_harvest(engine.driver(), &manifest, &out)
             }
@@ -405,7 +425,18 @@ fn run() -> Result<()> {
             engine: ref eng,
             ref engine_path,
             min_confidence,
-        } => run_mcp(&cli, eng, engine_path.clone(), min_confidence),
+            approve_all,
+            coords,
+        } => run_mcp(
+            &cli,
+            eng,
+            engine_path.clone(),
+            min_confidence,
+            dexter_mcp::ServerConfig {
+                approve_all,
+                allow_coords: coords,
+            },
+        ),
     }
 }
 
@@ -414,6 +445,7 @@ fn run_mcp(
     engine_name: &str,
     engine_path: Option<String>,
     min_confidence: f32,
+    config: dexter_mcp::ServerConfig,
 ) -> Result<()> {
     // MCP owns its own engine (persistent session) — the CLI's engine is
     // dropped. Policy and driver come from the global flags.
@@ -439,7 +471,7 @@ fn run_mcp(
         .enable_all()
         .build()
         .context("tokio runtime")?
-        .block_on(dexter_mcp::serve_stdio(policy, driver, decider))
+        .block_on(dexter_mcp::serve_stdio(policy, driver, decider, config))
 }
 
 /// Parse a `--target` flag into a `Target`. `element:N` takes a fresh
@@ -906,6 +938,72 @@ enum HarvestGold {
     Act { target: SemanticTarget },
     /// The correct move is a route (wait/abstain/escalate/...).
     Route { route: dexter_decision::Route },
+}
+
+/// Export frozen eval items as laya-format training rows:
+/// {id, state, options, n_candidates, gold_index|null, gold_route}.
+/// `gold_index` is the absolute option index (candidates first, then the
+/// fixed route options). `null` = uncovered act-gold — ambiguous label,
+/// training should skip it.
+fn eval_export(datasets: &[String], out: &str) -> Result<()> {
+    let generator = dexter_decision::HeuristicGenerator::default();
+    let mut buf = String::new();
+    let mut n_rows = 0usize;
+    let mut n_skipped = 0usize;
+    for ds in datasets {
+        let text =
+            std::fs::read_to_string(ds).with_context(|| format!("reading dataset '{ds}'"))?;
+        let items = dexter_eval::load_jsonl(&text).with_context(|| format!("parsing '{ds}'"))?;
+        for item in &items {
+            let obs = &item.observation;
+            let candidates =
+                generator.generate(obs, &item.goal, &dexter_decision::GenHistory::default());
+            let ctx = dexter_decision::DecisionContext {
+                goal: item.goal.clone(),
+                state_digest: dexter_world_model::digest_budget(obs, 14_000),
+                candidates,
+                last_error: None,
+                step: 1,
+            };
+            let (state, q) = dexter_laya::build_question(&ctx);
+            let options = match &q {
+                dexter_decision::Question::Choice { options, .. } => options.clone(),
+                _ => unreachable!("build_question always emits Choice"),
+            };
+            let n_cands = ctx.candidates.len();
+            let (gold_index, gold_route) = match &item.gold {
+                dexter_eval::Gold::Route { route } => {
+                    // Same variant-level mapping the scorer uses — gold
+                    // Wait{1000} lands on the wait option.
+                    let variant = dexter_eval::route_variant(route);
+                    let slot = dexter_laya::ROUTE_VARIANT_ORDER
+                        .iter()
+                        .position(|v| *v == variant);
+                    (slot.map(|s| n_cands + s), Some(variant))
+                }
+                _ => (
+                    dexter_eval::gold_candidate_index(&item.gold, &ctx, obs),
+                    None,
+                ),
+            };
+            if gold_index.is_none() {
+                n_skipped += 1;
+            }
+            buf.push_str(&serde_json::to_string(&serde_json::json!({
+                "id": item.id,
+                "state": state,
+                "options": options,
+                "n_candidates": n_cands,
+                "gold_index": gold_index,
+                "gold_route": gold_route,
+            }))?);
+            buf.push('\n');
+            n_rows += 1;
+        }
+    }
+    std::fs::write(out, &buf).with_context(|| format!("writing '{out}'"))?;
+    println!("{n_rows} rows exported to {out} ({n_skipped} uncovered/ambiguous golds)");
+    Ok(())
 }
 
 fn eval_run(

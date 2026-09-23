@@ -59,8 +59,10 @@ Prefer semantic over coordinates — it's non-invasive and more robust:
 {"type":"type_text","target":{"focused":null},"text":"hello"}
 ```
 
-`{"point":{"x":..,"y":..}}` is **physical-tier**: it moves the real
-cursor, is denied by default, and needs `coords=true` explicitly.
+`{"x":..,"y":..}` is **physical-tier**: it moves the real cursor and is
+denied by default. Only the *operator* can allow it — launch the server
+with `dexter mcp --coords`. Agents cannot request it per call; a
+`coords` field in tool arguments is ignored.
 Semantic targets (name/element/focused) never touch the user's mouse.
 
 ## The intrusiveness contract
@@ -70,8 +72,10 @@ Every action reports a tier in the journal:
 - `background` — semantic DOM/AX mutation; the user's cursor and focus
   are untouched. Default path.
 - `visual` — visible but non-capturing (navigate, focus window).
-- `physical` — real pointer/keyboard. Denied by default; `coords=true`
-  opts in per call; an explicit `physical = "deny"` policy always wins.
+- `physical` — real pointer/keyboard. Denied by default; the operator
+  opts in at server start (`--coords`), then the mutating policy still
+  applies (usually `needs_approval` per action). An explicit
+  `physical = "deny"` policy always wins over the flag.
 
 While Dexter works, the `dexter-overlay` process can show the agent's
 presence — a named floating cursor + state tag — without capturing input.

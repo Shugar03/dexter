@@ -81,6 +81,104 @@ async fn act_denied_by_policy_never_touches_driver() {
 }
 
 #[tokio::test]
+async fn agent_cannot_self_approve_or_request_physical() {
+    // Trust is a server-startup decision, not a per-call param: passing
+    // approve/coords in the tool call must have no effect.
+    let client = client_server("").await;
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_act".into(),
+            arguments: Some(
+                json!({
+                    "action": {"type":"click","target":{"name":"Save"},"button":"left"},
+                    "approve": true,
+                    "coords": true,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        })
+        .await
+        .expect("call");
+    let text = res.content[0].raw.as_text().expect("text content");
+    let status: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(
+        status["status"], "needs_approval",
+        "approve:true must not bypass the human grant flow"
+    );
+
+    // Physical input likewise: coords:true must not permit a point
+    // target when the server didn't opt in.
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_act".into(),
+            arguments: Some(
+                json!({
+                    "action": {"type":"click","target":{"x":10.0,"y":10.0},"button":"left"},
+                    "coords": true,
+                    "approve": true,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        })
+        .await
+        .expect("call");
+    let text = res.content[0].raw.as_text().expect("text content");
+    let status: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(
+        status["status"], "denied",
+        "coords:true must not enable physical input: {status}"
+    );
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
+async fn operator_opt_in_allows_coords() {
+    // The operator opted in at server start: physical actions go through
+    // the normal mutation path (needs_approval under embedded policy).
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::with_decider(
+        Policy::from_toml("").unwrap(),
+        Box::new(SimDriver::new(vec![])),
+        None,
+        dexter_mcp::ServerConfig {
+            approve_all: false,
+            allow_coords: true,
+        },
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_act".into(),
+            arguments: Some(
+                json!({
+                    "action": {"type":"click","target":{"x":10.0,"y":10.0},"button":"left"},
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        })
+        .await
+        .expect("call");
+    let text = res.content[0].raw.as_text().expect("text content");
+    let status: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(
+        status["status"], "needs_approval",
+        "operator coords opt-in should reach the normal approval path: {status}"
+    );
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
 async fn act_needs_approval_returns_grantable_fingerprint() {
     // Embedded policy -> mutation requires approval. The fingerprint the
     // agent receives is what a human grants out-of-band.

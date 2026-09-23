@@ -117,11 +117,28 @@ fn intrusiveness_matcher_scopes_a_rule() {
 
 #[test]
 fn permit_physical_fills_absent_but_never_overrides_explicit() {
-    // --coords consent: lifts the implicit deny…
+    // --coords consent: lifts the implicit deny floor…
     let mut p = Policy::embedded();
     p.permit_physical();
+    assert!(
+        matches!(
+            p.evaluate(&coordinate_click(), &ctx(None)),
+            PolicyDecision::RequireApproval { .. }
+        ),
+        "floor passes, then the mutating default still applies"
+    );
+
+    // …and an explicit allow in the file keeps physical outright.
+    let open = Policy::from_toml(
+        r#"
+        [defaults]
+        physical = "allow"
+        mutating = "allow"
+        "#,
+    )
+    .unwrap();
     assert_eq!(
-        p.evaluate(&coordinate_click(), &ctx(None)),
+        open.evaluate(&coordinate_click(), &ctx(None)),
         PolicyDecision::Allow
     );
 

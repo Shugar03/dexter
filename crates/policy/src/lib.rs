@@ -162,24 +162,35 @@ impl Policy {
         }
         // No rule matched. Physical input has its own floor — a batch
         // approval for mutations never silently covers moving the real
-        // cursor.
-        let default = match intrusiveness {
-            Intrusiveness::Physical => self.defaults.physical.unwrap_or(DecisionKind::Deny),
-            _ => self.defaults.mutating,
-        };
-        let reason = match intrusiveness {
-            Intrusiveness::Physical => format!(
+        // cursor. The floor is a gate, not the verdict: once it passes,
+        // the mutating default still applies.
+        if intrusiveness == Intrusiveness::Physical {
+            let floor_reason = format!(
                 "physical input for {} on {} — moving the user's pointer is not allowed by default",
                 kind,
                 describe_ctx(ctx)
-            ),
-            _ => format!(
-                "no policy rule for {} on {} — {}",
-                kind,
-                describe_ctx(ctx),
-                "mutations are not allowed by default"
-            ),
-        };
+            );
+            match self.defaults.physical.unwrap_or(DecisionKind::Deny) {
+                DecisionKind::Deny => {
+                    return PolicyDecision::Deny {
+                        reason: floor_reason,
+                    }
+                }
+                DecisionKind::RequireApproval => {
+                    return PolicyDecision::RequireApproval {
+                        reason: floor_reason,
+                    }
+                }
+                DecisionKind::Allow => {} // floor passed — mutating gate below
+            }
+        }
+        let default = self.defaults.mutating;
+        let reason = format!(
+            "no policy rule for {} on {} — {}",
+            kind,
+            describe_ctx(ctx),
+            "mutations are not allowed by default"
+        );
         match default {
             DecisionKind::Allow => PolicyDecision::Allow,
             DecisionKind::Deny => PolicyDecision::Deny { reason },

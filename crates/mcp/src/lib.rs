@@ -27,14 +27,28 @@ pub struct DexterRuntime {
     /// Decider for `dexter_task` — RuleBased unless the host configured
     /// another engine (e.g. laya) at server start.
     decider: Box<dyn DecisionEngine>,
+    /// Operator-set trust level — applies to every tool call.
+    config: ServerConfig,
+    /// Shared journal — `dexter_journal` reads it without taking the
+    /// engine lock, so audit stays live while a task runs.
+    journal: Arc<Mutex<dexter_engine::Journal>>,
 }
 
 impl DexterRuntime {
-    pub fn new(policy: Policy, driver: Box<dyn ComputerDriver>) -> Self {
+    pub fn new(policy: Policy, driver: Box<dyn ComputerDriver>, config: ServerConfig) -> Self {
+        let mut engine = Engine::new(driver, policy, Duration::from_secs(300));
+        // Operator opted into coordinates: open the physical tier unless
+        // the policy file explicitly denies it.
+        if config.allow_coords {
+            engine.permit_physical();
+        }
+        let journal = engine.journal_handle();
         Self {
-            engine: Mutex::new(Engine::new(driver, policy, Duration::from_secs(300))),
+            engine: Mutex::new(engine),
             generator: HeuristicGenerator::default(),
             decider: Box::new(dexter_decision::RuleBased::default()),
+            config,
+            journal,
         }
     }
 
@@ -45,13 +59,13 @@ impl DexterRuntime {
     }
 }
 
-fn run_cfg(app: Option<String>, coords: bool, approve_all: bool) -> RunConfig {
+fn run_cfg(app: Option<String>, cfg: ServerConfig) -> RunConfig {
     RunConfig {
         app: app.as_deref().map(AppSelector::parse),
         max_attempts: 3,
         verify_delay: Duration::from_millis(250),
-        allow_coordinates: coords,
-        approve_all,
+        allow_coordinates: cfg.allow_coords,
+        approve_all: cfg.approve_all,
         observe_max_elements: 4_000,
     }
 }
@@ -64,6 +78,17 @@ pub struct ObserveParams {
     pub max_elements: Option<usize>,
 }
 
+/// Server-level trust configuration — set by the operator at startup,
+/// never by the agent per call. This is what keeps `needs_approval`
+/// meaningful: the model can't raise its own privileges mid-session.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ServerConfig {
+    /// Treat every RequireApproval as granted up front.
+    pub approve_all: bool,
+    /// Permit physical-tier (coordinate/keyboard) input.
+    pub allow_coords: bool,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ActParams {
     /// The action as core JSON: {"type":"click","target":{...},...}
@@ -73,10 +98,6 @@ pub struct ActParams {
     pub app: Option<String>,
     /// Post-condition ExpectedState JSON.
     pub expect: Option<serde_json::Value>,
-    /// Permit coordinate-level input.
-    pub coords: Option<bool>,
-    /// Approve this exact action (human-approved flag).
-    pub approve: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -113,10 +134,6 @@ pub struct TaskParams {
     pub app: Option<String>,
     /// Max decide/act iterations (default 10).
     pub max_steps: Option<u32>,
-    /// Approve all required actions (the human approved the goal).
-    pub approve_all: Option<bool>,
-    /// Permit coordinate-level input.
-    pub coords: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -134,17 +151,18 @@ fn err(e: impl std::fmt::Display) -> McpError {
 #[tool_router]
 impl DexterMcp {
     pub fn new(policy: Policy, driver: Box<dyn ComputerDriver>) -> Self {
-        Self::with_decider(policy, driver, None)
+        Self::with_decider(policy, driver, None, ServerConfig::default())
     }
 
     /// Same as `new`, plus the decider `dexter_task` should use
-    /// (`None` = rule-based).
+    /// (`None` = rule-based) and the operator trust config.
     pub fn with_decider(
         policy: Policy,
         driver: Box<dyn ComputerDriver>,
         decider: Option<Box<dyn DecisionEngine>>,
+        config: ServerConfig,
     ) -> Self {
-        let mut runtime = DexterRuntime::new(policy, driver);
+        let mut runtime = DexterRuntime::new(policy, driver, config);
         if let Some(d) = decider {
             runtime = runtime.with_decider(d);
         }
@@ -169,8 +187,19 @@ impl DexterMcp {
             max_elements: params.max_elements.unwrap_or(4_000),
             ..Default::default()
         };
-        let engine = self.runtime.engine.lock().map_err(err)?;
-        let obs = engine.driver().observe(&scope).map_err(err)?;
+        let max_out = params.max_elements.unwrap_or(4_000).min(500);
+        let runtime = self.runtime.clone();
+        let obs = tokio::task::spawn_blocking(move || {
+            runtime
+                .engine
+                .lock()
+                .map_err(err)?
+                .driver()
+                .observe(&scope)
+                .map_err(err)
+        })
+        .await
+        .map_err(|e| err(format!("join: {e}")))??;
         // Structured element list alongside the digest — agents target
         // `element` ids programmatically instead of parsing text. Capped
         // to keep the payload sane; the digest always stays complete-ish.
@@ -178,7 +207,7 @@ impl DexterMcp {
             .elements
             .iter()
             .filter(|e| dexter_world_model::digest_worthy(e))
-            .take(params.max_elements.unwrap_or(4_000).min(500))
+            .take(max_out)
             .map(|e| {
                 serde_json::json!({
                     "id": e.id.to_string(),
@@ -219,13 +248,19 @@ impl DexterMcp {
             max_elements: 4_000,
             ..Default::default()
         };
-        let engine = self.runtime.engine.lock().map_err(err)?;
-        let obs = engine.driver().observe(&scope).map_err(err)?;
-        let cands = self.runtime.generator.generate(
-            &obs,
-            &params.goal,
-            &dexter_decision::GenHistory::default(),
-        );
+        let runtime = self.runtime.clone();
+        let goal = params.goal.clone();
+        let (obs, cands) = tokio::task::spawn_blocking(move || {
+            let engine = runtime.engine.lock().map_err(err)?;
+            let obs = engine.driver().observe(&scope).map_err(err)?;
+            let cands =
+                runtime
+                    .generator
+                    .generate(&obs, &goal, &dexter_decision::GenHistory::default());
+            Ok::<_, McpError>((obs, cands))
+        })
+        .await
+        .map_err(|e| err(format!("join: {e}")))??;
         let max = params.max.unwrap_or(20);
         let candidates: Vec<serde_json::Value> = cands
             .iter()
@@ -272,13 +307,13 @@ impl DexterMcp {
             max_attempts: Some(3),
             app: params.app.as_deref().map(AppSelector::parse),
         };
-        let cfg = run_cfg(
-            params.app.clone(),
-            params.coords.unwrap_or(false),
-            params.approve.unwrap_or(false),
-        );
-        let mut engine = self.runtime.engine.lock().map_err(err)?;
-        let status = engine.run_step(&step, &cfg);
+        let cfg = run_cfg(params.app.clone(), self.runtime.config);
+        let runtime = self.runtime.clone();
+        let status = tokio::task::spawn_blocking(move || {
+            Ok::<_, McpError>(runtime.engine.lock().map_err(err)?.run_step(&step, &cfg))
+        })
+        .await
+        .map_err(|e| err(format!("join: {e}")))??;
         status_json(status)
     }
 
@@ -315,9 +350,14 @@ impl DexterMcp {
         };
         let expected: ExpectedState = serde_json::from_value(params.expected)
             .map_err(|e| err(format!("invalid expected JSON: {e}")))?;
-        let engine = self.runtime.engine.lock().map_err(err)?;
-        let obs = engine.driver().observe(&scope).map_err(err)?;
-        let v = dexter_verify::verify(&obs, &expected);
+        let runtime = self.runtime.clone();
+        let v = tokio::task::spawn_blocking(move || {
+            let engine = runtime.engine.lock().map_err(err)?;
+            let obs = engine.driver().observe(&scope).map_err(err)?;
+            Ok::<_, McpError>(dexter_verify::verify(&obs, &expected))
+        })
+        .await
+        .map_err(|e| err(format!("join: {e}")))??;
         Ok(Json(serde_json::json!({
             "status": format!("{:?}", v.status),
             "checks": v.checks,
@@ -334,24 +374,25 @@ impl DexterMcp {
         &self,
         Parameters(params): Parameters<TaskParams>,
     ) -> Result<Json<serde_json::Value>, McpError> {
-        let outcome = {
-            let mut engine = self.runtime.engine.lock().map_err(err)?;
-            engine.run_task(
-                &params.goal,
-                &self.runtime.generator,
-                self.runtime.decider.as_ref(),
+        let done: ExpectedState = serde_json::from_value(params.done.clone())
+            .map_err(|e| err(format!("invalid done JSON: {e}")))?;
+        let runtime = self.runtime.clone();
+        let goal = params.goal.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let mut engine = runtime.engine.lock().map_err(err)?;
+            Ok::<_, McpError>(engine.run_task(
+                &goal,
+                &runtime.generator,
+                runtime.decider.as_ref(),
                 &TaskConfig {
-                    run: run_cfg(
-                        params.app.clone(),
-                        params.coords.unwrap_or(false),
-                        params.approve_all.unwrap_or(false),
-                    ),
+                    run: run_cfg(params.app.clone(), runtime.config),
                     max_steps: params.max_steps.unwrap_or(10),
-                    done_when: serde_json::from_value::<ExpectedState>(params.done.clone())
-                        .map_err(|e| err(format!("invalid done JSON: {e}")))?,
+                    done_when: done,
                 },
-            )
-        };
+            ))
+        })
+        .await
+        .map_err(|e| err(format!("join: {e}")))??;
         let status = match &outcome {
             TaskOutcome::Completed { steps } => {
                 serde_json::json!({"status": "completed", "steps": steps})
@@ -373,15 +414,16 @@ impl DexterMcp {
     }
 
     /// Audit journal for this session — every observation, policy check,
-    /// decision, action and verification.
+    /// decision, action and verification. Readable while a task runs.
     #[tool(
         name = "dexter_journal",
         description = "Session audit journal (JSONL-shaped event list)"
     )]
     async fn dexter_journal(&self) -> Result<Json<serde_json::Value>, McpError> {
-        let engine = self.runtime.engine.lock().map_err(err)?;
+        let journal = self.runtime.journal.lock().map_err(err)?;
         Ok(Json(serde_json::json!({
-            "events": engine.events(),
+            "events": journal.events,
+            "dropped": journal.dropped,
         })))
     }
 }
@@ -442,7 +484,8 @@ impl ServerHandler for DexterMcp {
                  via dexter_grant) -> dexter_verify to check post-state. \
                  dexter_task runs the whole loop itself; dexter_journal is \
                  the audit trail. Prefer semantic/element targets — \
-                 coordinates are physical-tier and need coords=true."
+                 coordinates are physical-tier, denied unless the operator \
+                 launched the server with --coords."
                     .into(),
             ),
         }
@@ -450,14 +493,16 @@ impl ServerHandler for DexterMcp {
 }
 
 /// Serve over stdio until the client disconnects. `decider` overrides
-/// the engine `dexter_task` uses (`None` = rule-based).
+/// the engine `dexter_task` uses (`None` = rule-based); `config` is the
+/// operator trust level for the whole session.
 pub async fn serve_stdio(
     policy: Policy,
     driver: Box<dyn ComputerDriver>,
     decider: Option<Box<dyn DecisionEngine>>,
+    config: ServerConfig,
 ) -> anyhow::Result<()> {
     use rmcp::service::ServiceExt;
-    let server = DexterMcp::with_decider(policy, driver, decider);
+    let server = DexterMcp::with_decider(policy, driver, decider, config);
     let running = server.serve(rmcp::transport::stdio()).await?;
     running.waiting().await?;
     Ok(())

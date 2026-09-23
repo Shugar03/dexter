@@ -321,8 +321,8 @@ fn action_proposed_journals_intrusiveness_and_target_bounds() {
     );
     assert!(matches!(outcome, TaskOutcome::Completed { .. }));
 
-    let proposed = engine
-        .events()
+    let events = engine.events();
+    let proposed = events
         .iter()
         .find(|e| e.kind == EventKind::ActionProposed)
         .expect("ActionProposed");
@@ -352,8 +352,8 @@ fn physical_action_denied_before_touching_driver() {
         StepStatus::Denied { reason } => assert!(reason.contains("physical")),
         other => panic!("expected Denied, got {other:?}"),
     }
-    let checked = engine
-        .events()
+    let events = engine.events();
+    let checked = events
         .iter()
         .find(|e| e.kind == EventKind::PolicyChecked)
         .expect("PolicyChecked");

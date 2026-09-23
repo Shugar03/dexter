@@ -141,7 +141,8 @@ fn gold_satisfied(gold: &Gold, action: &Action, obs: &Observation) -> bool {
 }
 
 /// Route discriminant — compare decisions by route kind, not parameters.
-fn route_variant(r: &Route) -> &'static str {
+/// Public: export tooling maps gold routes onto route-option slots.
+pub fn route_variant(r: &Route) -> &'static str {
     match r {
         Route::Reobserve => "reobserve",
         Route::Wait { .. } => "wait",
@@ -161,6 +162,27 @@ fn gold_covered(gold: &Gold, ctx: &DecisionContext, obs: &Observation) -> bool {
             .any(|c| action_element(&c.action, obs) == Some(*element)),
         Gold::Route { .. } => true, // routes are always "available" to engines
         Gold::AnyOf { options } => options.iter().any(|g| gold_covered(g, ctx, obs)),
+    }
+}
+
+/// Which candidate index the gold resolves to, if it's an act-gold
+/// offered among the candidates. `None` = uncovered (gold isn't in the
+/// menu — the honest label for that row is ambiguous, skip it for
+/// training).
+pub fn gold_candidate_index(
+    gold: &Gold,
+    ctx: &DecisionContext,
+    obs: &Observation,
+) -> Option<usize> {
+    match gold {
+        Gold::Act { element, .. } => ctx
+            .candidates
+            .iter()
+            .position(|c| action_element(&c.action, obs) == Some(*element)),
+        Gold::Route { .. } => None,
+        Gold::AnyOf { options } => options
+            .iter()
+            .find_map(|g| gold_candidate_index(g, ctx, obs)),
     }
 }
 

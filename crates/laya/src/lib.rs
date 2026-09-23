@@ -186,39 +186,63 @@ fn describe_candidate(i: usize, c: &CandidateAction) -> String {
     format!("candidate {i}: {verb} — {}", c.rationale)
 }
 
+/// Build the exact (state, question) pair `decide` sends to the worker.
+/// Public so eval/training export renders the identical distribution the
+/// model sees at inference time.
+pub fn build_question(ctx: &DecisionContext) -> (String, Question) {
+    let mut options: Vec<String> = ctx
+        .candidates
+        .iter()
+        .enumerate()
+        .map(|(i, c)| describe_candidate(i, c))
+        .collect();
+    for (label, _) in &ROUTE_OPTIONS {
+        options.push((*label).to_string());
+    }
+    let state = format!(
+        "[GOAL]\n{}\n\n[WORLD_STATE]\n{}\n\n[LAST_ERROR]\n{}",
+        ctx.goal,
+        ctx.state_digest,
+        ctx.last_error.as_deref().unwrap_or("none"),
+    );
+    let q = Question::Choice {
+        id: "pick".into(),
+        prompt: "You are choosing the next action for a computer-use agent. \
+                 Pick the UI element whose action best advances the goal in [GOAL]. \
+                 If no element fits, pick a route: 'wait' for busy/loading states, \
+                 're-observe' when the view may be stale, 'abstain' when nothing \
+                 applies, or 'escalate' for genuinely hard steps. Priors in the \
+                 option text are heuristic hints, not truth."
+            .into(),
+        options,
+    };
+    (state, q)
+}
+
+/// Route variant names in ROUTE_OPTIONS order — the mapping eval
+/// export uses to turn a gold route into an option index.
+/// Order must match ROUTE_OPTIONS above.
+pub const ROUTE_VARIANT_ORDER: [&str; 4] = ["wait", "reobserve", "abstain", "escalate_llm"];
+
+/// Route options appended after candidates — index of the matching
+/// route option for `route`, or None if it isn't offered.
+pub fn route_option_index(route: Route) -> Option<usize> {
+    ROUTE_OPTIONS.iter().position(|(_, r)| *r == route)
+}
+
+/// Number of route options appended after the candidates.
+pub fn route_option_count() -> usize {
+    ROUTE_OPTIONS.len()
+}
+
 impl DecisionEngine for LayaEngine {
     fn name(&self) -> &str {
         "laya"
     }
 
     fn decide(&self, ctx: &DecisionContext) -> Result<Decision, DecisionError> {
-        let mut options: Vec<String> = ctx
-            .candidates
-            .iter()
-            .enumerate()
-            .map(|(i, c)| describe_candidate(i, c))
-            .collect();
-        for (label, _) in &ROUTE_OPTIONS {
-            options.push((*label).to_string());
-        }
-
-        let state = format!(
-            "[GOAL]\n{}\n\n[WORLD_STATE]\n{}\n\n[LAST_ERROR]\n{}",
-            ctx.goal,
-            ctx.state_digest,
-            ctx.last_error.as_deref().unwrap_or("none"),
-        );
-        let questions = [Question::Choice {
-            id: "pick".into(),
-            prompt: "You are choosing the next action for a computer-use agent. \
-                     Pick the UI element whose action best advances the goal in [GOAL]. \
-                     If no element fits, pick a route: 'wait' for busy/loading states, \
-                     're-observe' when the view may be stale, 'abstain' when nothing \
-                     applies, or 'escalate' for genuinely hard steps. Priors in the \
-                     option text are heuristic hints, not truth."
-                .into(),
-            options,
-        }];
+        let (state, question) = build_question(ctx);
+        let questions = [question];
 
         let resp = self.rpc(&questions, &state)?;
         if let Some(p) = &resp.provider {

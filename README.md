@@ -116,7 +116,8 @@ multi-step flows (see `docs/sdd/browser.md`).
 
 Targets: `{"role":"button","name":"Save"}` semantic JSON (also
 `name_contains`, `identifier`, `index`), `element:N` (from a fresh
-observation), `focused`, or `point:x,y` (requires `--coords`).
+observation), `focused`, or `point:x,y` (physical tier — `--coords`
+plus the normal approval path).
 
 ## Policy
 
@@ -150,8 +151,10 @@ your cursor never moves), `Navigate`/`Focus`/window targets are `visual`
 untargeted typing/scroll are `physical` (real CGEvent input).
 
 Physical is **denied by default** — a batch `--approve-all` never covers
-moving your pointer. Grant it explicitly per invocation with `--coords`,
-or in the policy file:
+moving your pointer. `--coords` lifts the deny floor for the invocation;
+the mutating policy then still applies (a point click typically needs
+approval too, or pair with `--approve-all`/`--approve`), or set the tier
+in the policy file:
 
 ```toml
 [defaults]

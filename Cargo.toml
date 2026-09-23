@@ -58,3 +58,9 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Release builds: small + fast binaries for `cargo install` users.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
