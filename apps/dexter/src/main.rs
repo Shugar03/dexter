@@ -142,9 +142,14 @@ struct TaskArgs {
     /// Structural completion check (JSON ExpectedState).
     #[arg(long)]
     done: String,
-    /// Decision engine: `rule-based` (only one that ships offline).
+    /// Decision engine: `rule-based` | `laya` (needs --engine-path or
+    /// DEXTER_LAYA_WORKER).
     #[arg(long, default_value = "rule-based")]
     engine: String,
+    /// Worker command for --engine laya (NDJSON sidecar). Defaults to
+    /// $DEXTER_LAYA_WORKER or the repo's dev worker.
+    #[arg(long)]
+    engine_path: Option<String>,
     /// Scope to an application.
     #[arg(long)]
     app: Option<String>,
@@ -496,10 +501,19 @@ fn run_task(engine: &mut Engine<MacOsDriver>, goal: &str, args: TaskArgs) -> Res
         serde_json::from_str(&args.done).context("invalid --done ExpectedState JSON")?;
     let decider: Box<dyn dexter_decision::DecisionEngine> = match args.engine.as_str() {
         "rule-based" => Box::new(dexter_decision::RuleBased::default()),
-        other => anyhow::bail!(
-            "unknown decision engine '{other}' — available: rule-based \
-             (laya engine lands with the sidecar worker)"
-        ),
+        "laya" => {
+            let cmd = args
+                .engine_path
+                .clone()
+                .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
+                .unwrap_or_else(|| {
+                    "python3 workers/laya/worker.py --provider dev".to_string()
+                });
+            let engine = dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(10))
+                .with_context(|| format!("spawning laya worker '{cmd}'"))?;
+            Box::new(engine)
+        }
+        other => anyhow::bail!("unknown decision engine '{other}' — available: rule-based, laya"),
     };
     let generator = dexter_decision::HeuristicGenerator::default();
     let outcome = engine.run_task(

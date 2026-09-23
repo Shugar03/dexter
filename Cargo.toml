@@ -8,6 +8,7 @@ members = [
     "crates/verify",
     "crates/engine",
     "crates/decision",
+    "crates/laya",
     "drivers/macos",
     "drivers/sim",
     "apps/dexter",
@@ -26,6 +27,7 @@ dexter-policy = { path = "crates/policy" }
 dexter-verify = { path = "crates/verify" }
 dexter-engine = { path = "crates/engine" }
 dexter-decision = { path = "crates/decision" }
+dexter-laya = { path = "crates/laya" }
 dexter-macos = { path = "drivers/macos" }
 dexter-sim = { path = "drivers/sim" }
 
