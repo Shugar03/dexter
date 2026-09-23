@@ -166,6 +166,15 @@
         });
     });
 
+    // journal feed writes itself on scroll — the way it does mid-run
+    document.querySelectorAll(".jline").forEach((el) => {
+      gsap.to(el, {
+        opacity: el.classList.contains("jline-dim") ? 0.55 : 1,
+        y: 0, duration: 0.5, ease: "power2.out",
+        scrollTrigger: { trigger: el, start: "top 92%" },
+      });
+    });
+
     // generic reveals
     document.querySelectorAll(".reveal").forEach((el, i) => {
       gsap.to(el, {

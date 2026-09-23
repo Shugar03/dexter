@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@500,700,800&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=2">
+<link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
 
@@ -67,60 +67,67 @@
     <h2 class="display">Why agents run<br>on dexter.</h2>
     <p class="section-sub">Four operating convictions, enforced by the runtime — not by the prompt.</p>
   </header>
-  <div class="pr-grid">
-    <article class="pr-card reveal">
-      <span class="pr-numeral" aria-hidden="true">I</span>
-      <div class="pr-top"><span class="pr-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/></svg></span><span class="mono pr-label">principle / i</span></div>
-      <h3>Semantic first</h3>
-      <p>Elements carry role, name, and actions — not pixels. Coordinates exist, behind a gate, for when semantics genuinely run out.</p>
-      <div class="pr-meta mono">accessibility tree · dom · ocr evidence</div>
+  <div class="pr-index">
+    <article class="pr-row reveal">
+      <div class="pr-num display">I</div>
+      <div class="pr-main">
+        <h3>Semantic first</h3>
+        <div class="mono pr-meta">accessibility tree · dom · ocr evidence</div>
+      </div>
+      <p class="pr-desc">Elements carry role, name, and actions — not pixels. Coordinates exist, behind a gate, for when semantics genuinely run out.</p>
     </article>
-    <article class="pr-card reveal">
-      <span class="pr-numeral" aria-hidden="true">II</span>
-      <div class="pr-top"><span class="pr-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg></span><span class="mono pr-label">principle / ii</span></div>
-      <h3>Fail closed</h3>
-      <p>Unmatched mutations return needs_approval, never a guess. Trust lives with the operator; the agent cannot approve itself.</p>
-      <div class="pr-meta mono">policy outside the llm · fingerprint grants</div>
+    <article class="pr-row reveal">
+      <div class="pr-num display">II</div>
+      <div class="pr-main">
+        <h3>Fail closed</h3>
+        <div class="mono pr-meta">policy outside the llm · fingerprint grants</div>
+      </div>
+      <p class="pr-desc">Unmatched mutations return needs_approval, never a guess. Trust lives with the operator; the agent cannot approve itself.</p>
     </article>
-    <article class="pr-card reveal">
-      <span class="pr-numeral" aria-hidden="true">III</span>
-      <div class="pr-top"><span class="pr-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg></span><span class="mono pr-label">principle / iii</span></div>
-      <h3>Non-invasive by default</h3>
-      <p>Every action reports an intrusiveness tier derived from its target. Physical input is never taken implicitly.</p>
-      <div class="pr-meta mono">semantic · synthesised · physical floor</div>
+    <article class="pr-row reveal">
+      <div class="pr-num display">III</div>
+      <div class="pr-main">
+        <h3>Non-invasive by default</h3>
+        <div class="mono pr-meta">semantic · synthesised · physical floor</div>
+      </div>
+      <p class="pr-desc">Every action reports an intrusiveness tier derived from its target. Physical input is never taken implicitly.</p>
     </article>
-    <article class="pr-card reveal">
-      <span class="pr-numeral" aria-hidden="true">IV</span>
-      <div class="pr-top"><span class="pr-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 12h4l2-7 4 14 2-7h4"/></svg></span><span class="mono pr-label">principle / iv</span></div>
-      <h3>Receipts, not vibes</h3>
-      <p>Every step lands in a bounded journal: context, decision, result, evidence. Uncertainty is reported, never smoothed over.</p>
-      <div class="pr-meta mono">live audit · replayable · honest counters</div>
+    <article class="pr-row reveal">
+      <div class="pr-num display">IV</div>
+      <div class="pr-main">
+        <h3>Receipts, not vibes</h3>
+        <div class="mono pr-meta">live audit · replayable · honest counters</div>
+      </div>
+      <p class="pr-desc">Every step lands in a bounded journal: context, decision, result, evidence. Uncertainty is reported, never smoothed over.</p>
     </article>
   </div>
 </section>
 
 <section class="artifact">
-  <div class="artifact-card reveal">
-    <div class="artifact-copy">
-      <div class="mono artifact-label">journal · live</div>
-      <h3 class="display">Every step leaves<br>a receipt.</h3>
-      <p>The journal is the audit trail the harness reads mid-run: what the engine saw, what it chose, what the world answered. This excerpt is the real format.</p>
-      <a class="btn-ghost mono" href="https://github.com/Shugar03/dexter/blob/main/docs/for-agents.md">read the agent contract</a>
-    </div>
-    <pre class="artifact-journal mono">{"kind":"CandidatesGenerated","data":{
+  <div class="artifact-head">
+    <div class="mono artifact-label">journal · live</div>
+    <h3 class="display">Every step leaves a receipt.</h3>
+    <p class="artifact-sub">The journal is the audit trail the harness reads mid-run: what the engine saw, what it chose, what the world answered. Real wire format below — it appends as you scroll, the way it appends mid-task.</p>
+    <a class="btn-ghost mono" href="https://github.com/Shugar03/dexter/blob/main/docs/for-agents.md">read the agent contract</a>
+  </div>
+  <div class="jfeed">
+    <pre class="jline mono">{"kind":"CandidatesGenerated","data":{
   "count":2,"step":3,"context":{
     "goal":"save the document","obs":14,
-    "candidates":["click e_7","press cmd+s"]}}}
-
-{"kind":"DecisionMade","data":{
+    "candidates":["click e_7","press cmd+s"]}}}</pre>
+    <pre class="jline mono">{"kind":"DecisionMade","data":{
   "engine":"laya","step":3,
-  "decision":{"action":"click e_7"}}}
-
-{"kind":"HumanApprovalRequired","data":{
+  "decision":{"action":"click e_7"}}}</pre>
+    <pre class="jline mono">{"kind":"HumanApprovalRequired","data":{
   "fingerprint":"fp:a91c",
-  "reason":"physical input on window 2"}}}
-
-{"kind":"VerificationPassed","data":{
+  "reason":"physical input on window 2"}}}</pre>
+    <pre class="jline mono jline-dim">{"kind":"PolicyChecked","data":{
+  "decision":"approved","fingerprint":"fp:a91c",
+  "intrusiveness":"physical"}}</pre>
+    <pre class="jline mono">{"kind":"ActionExecuted","data":{
+  "status":"Success","mechanism":"Coordinates",
+  "detail":"clicked e_7","attempt":1}}</pre>
+    <pre class="jline mono">{"kind":"VerificationPassed","data":{
   "expected":"title contains 'saved'",
   "obs":15}}</pre>
   </div>
@@ -157,6 +164,16 @@
       <div class="mono loop-meta">dexter_verify → status: pass</div>
     </div>
   </div>
+  <div class="loop-back reveal">
+    <svg class="loop-arc" viewBox="0 0 1200 72" fill="none" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M1120 8 C 1120 60, 80 60, 80 8" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="5 6"/>
+      <path d="M73 14 L80 4 L87 14" stroke="var(--red)" stroke-width="1.5" fill="none"/>
+    </svg>
+    <div class="loop-back-label mono">
+      <span>verify failed → RecoveryStarted → reobserve</span>
+      <span>bounded: max_attempts · max_secs · dexter_cancel</span>
+    </div>
+  </div>
 </section>
 
 <section class="tools" id="tools">
@@ -165,15 +182,15 @@
     <p class="section-sub">Register once in your harness config. The same engine backs the CLI and the MCP surface.</p>
   </header>
   <div class="tool-table mono reveal">
-    <div class="tool-row"><span class="tool-name">dexter_observe</span><span class="tool-desc">semantic digest + structured elements</span></div>
-    <div class="tool-row"><span class="tool-name">dexter_candidates</span><span class="tool-desc">ranked advisory action menu for a goal</span></div>
-    <div class="tool-row"><span class="tool-name">dexter_act</span><span class="tool-desc">policy-gated step: act, verify, recover</span></div>
-    <div class="tool-row"><span class="tool-name">dexter_grant</span><span class="tool-desc">human approval for a fingerprint</span></div>
-    <div class="tool-row"><span class="tool-name">dexter_verify</span><span class="tool-desc">check expected state against the world</span></div>
-    <div class="tool-row"><span class="tool-name">dexter_task</span><span class="tool-desc">optional closed loop to a done condition</span></div>
-    <div class="tool-row"><span class="tool-name">dexter_journal</span><span class="tool-desc">live audit trail, readable mid-run</span></div>
-    <div class="tool-row"><span class="tool-name">dexter_cancel</span><span class="tool-desc">cooperative stop for the running task</span></div>
-    <div class="tool-row"><span class="tool-name">dexter_status</span><span class="tool-desc">driver + engine health, live</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_observe</span><span class="tool-sig">{app?, window?, vision?, max_elements?}</span><span class="tool-desc">semantic digest + structured elements</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_candidates</span><span class="tool-sig">{goal, app?, max?}</span><span class="tool-desc">ranked advisory action menu for a goal</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_act</span><span class="tool-sig">{action, app?, expect?}</span><span class="tool-desc">policy-gated step: act, verify, recover</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_grant</span><span class="tool-sig">{fingerprint}</span><span class="tool-desc">human approval for a fingerprint</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_verify</span><span class="tool-sig">{expected, app?}</span><span class="tool-desc">check expected state against the world</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_task</span><span class="tool-sig">{goal, done, app?, max_steps?, max_secs?}</span><span class="tool-desc">optional closed loop to a done condition</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_journal</span><span class="tool-sig">{}</span><span class="tool-desc">live audit trail, readable mid-run</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_cancel</span><span class="tool-sig">{}</span><span class="tool-desc">cooperative stop for the running task</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_status</span><span class="tool-sig">{}</span><span class="tool-desc">driver + engine health, live</span></div>
   </div>
 </section>
 
@@ -225,6 +242,6 @@
 
 <script src="vendor/gsap.min.js"></script>
 <script src="vendor/ScrollTrigger.min.js"></script>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

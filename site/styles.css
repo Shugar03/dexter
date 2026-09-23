@@ -192,64 +192,48 @@ a { color: inherit; text-decoration: none; }
   color: var(--muted); text-align: right;
 }
 
-/* ---------- principles ---------- */
+/* ---------- principles — manifesto index ---------- */
 .principles { padding: var(--pad) 0; background: var(--bg-soft); }
-.pr-grid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+.pr-index {
   max-width: 1440px; margin: 0 auto; padding: 0 40px;
+  border-top: 1px solid var(--line);
 }
-.pr-card {
-  position: relative; overflow: hidden;
-  background: var(--card); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 40px;
+.pr-row {
+  display: grid;
+  grid-template-columns: 140px 1fr 1fr;
+  gap: 48px; align-items: baseline;
+  padding: 56px 0;
+  border-bottom: 1px solid var(--line-soft);
 }
-.pr-numeral {
-  position: absolute; top: -30px; right: 12px;
-  font-family: var(--display); font-weight: 800;
-  font-size: 200px; line-height: 1;
-  color: rgba(255,255,255,.028);
-  pointer-events: none; user-select: none;
+.pr-num {
+  font-size: 64px; font-weight: 800; line-height: 1;
+  color: var(--red); opacity: .9;
 }
-.pr-top {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 96px;
-}
-.pr-icon {
-  width: 44px; height: 44px; border-radius: 50%;
-  border: 1px solid var(--line);
-  display: flex; align-items: center; justify-content: center;
-  color: var(--red);
-}
-.pr-icon svg { width: 20px; height: 20px; }
-.pr-label { color: var(--muted); }
-.pr-card h3 { font-size: 34px; font-weight: 700; letter-spacing: -.02em; margin-bottom: 16px; }
-.pr-card p { font-size: 16px; line-height: 1.55; color: var(--ink-2); max-width: 46ch; }
-.pr-meta {
-  margin-top: 36px; padding-top: 20px;
-  border-top: 1px solid var(--line-soft);
-  color: var(--muted);
-}
+.pr-main h3 { font-size: 38px; font-weight: 700; letter-spacing: -.02em; margin-bottom: 20px; }
+.pr-meta { color: var(--muted); font-size: 10px; }
+.pr-desc { font-size: 17px; line-height: 1.55; color: var(--ink-2); max-width: 44ch; }
 
-/* ---------- artifact ---------- */
+/* ---------- artifact — self-writing journal ---------- */
 .artifact { padding: var(--pad) 40px; max-width: 1440px; margin: 0 auto; }
-.artifact-card {
-  display: grid; grid-template-columns: .9fr 1.1fr; gap: 64px;
-  background: var(--card); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 56px;
-}
+.artifact-head { max-width: 720px; margin-bottom: 72px; }
 .artifact-label { color: var(--red); margin-bottom: 24px; }
-.artifact-copy .display { font-size: clamp(36px, 3.6vw, 52px); }
-.artifact-copy p {
-  margin: 24px 0 32px; max-width: 40ch;
+.artifact-head .display { font-size: clamp(40px, 4.6vw, 64px); }
+.artifact-sub {
+  margin: 24px 0 32px; max-width: 52ch;
   font-size: 16px; line-height: 1.6; color: var(--ink-2);
 }
-.artifact-journal {
-  background: var(--bg); border: 1px solid var(--line-soft);
-  border-radius: 12px; padding: 28px;
+.jfeed { display: flex; flex-direction: column; gap: 12px; }
+.jline {
+  background: var(--card); border: 1px solid var(--line);
+  border-left: 2px solid var(--red);
+  border-radius: 8px; padding: 20px 24px;
   font-size: 11px; line-height: 1.7; letter-spacing: 0;
   text-transform: none; color: var(--ink-2);
   overflow-x: auto; white-space: pre;
+  opacity: 0; transform: translateY(16px);
 }
+.jline-dim { border-left-color: var(--muted); opacity: 0; }
+.no-anim .jline { opacity: 1; transform: none; }
 
 /* ---------- loop ---------- */
 .loop { padding: var(--pad) 0; background: var(--bg-soft); }
@@ -268,6 +252,16 @@ a { color: inherit; text-decoration: none; }
 .loop-step p { font-size: 15px; line-height: 1.55; color: var(--ink-2); }
 .loop-meta { margin-top: 28px; color: var(--muted); font-size: 10px; letter-spacing: .18em; }
 
+/* recovery back-edge — the loop actually loops */
+.loop-back {
+  max-width: 1440px; margin: 0 auto; padding: 0 40px;
+}
+.loop-arc { display: block; width: 100%; height: 72px; margin-top: 8px; }
+.loop-back-label {
+  display: flex; justify-content: space-between; gap: 24px;
+  color: var(--muted); font-size: 10px; letter-spacing: .18em;
+}
+
 /* ---------- tools ---------- */
 .tools { padding: var(--pad) 40px; max-width: 1440px; margin: 0 auto; }
 .tool-table {
@@ -275,7 +269,8 @@ a { color: inherit; text-decoration: none; }
   overflow: hidden;
 }
 .tool-row {
-  display: grid; grid-template-columns: 260px 1fr; gap: 32px;
+  display: grid; grid-template-columns: 240px minmax(0,1.2fr) minmax(0,1fr);
+  gap: 32px; align-items: baseline;
   padding: 20px 28px;
   border-bottom: 1px solid var(--line-soft);
   background: var(--card);
@@ -283,6 +278,7 @@ a { color: inherit; text-decoration: none; }
 .tool-row:last-child { border-bottom: 0; }
 .tool-row:nth-child(even) { background: var(--card-2); }
 .tool-name { color: var(--red); }
+.tool-sig { color: var(--muted); letter-spacing: .08em; text-transform: none; font-size: 11px; }
 .tool-desc { color: var(--ink-2); letter-spacing: .12em; }
 
 /* ---------- compat ---------- */
@@ -335,11 +331,14 @@ a { color: inherit; text-decoration: none; }
   .hero h1 { font-size: clamp(44px, 11vw, 72px); }
   .section-head { flex-direction: column; align-items: flex-start; gap: 20px; padding: 0 20px; }
   .section-sub { text-align: left; }
-  .pr-grid { grid-template-columns: 1fr; padding: 0 20px; }
-  .pr-top { margin-bottom: 48px; }
+  .pr-index { padding: 0 20px; }
+  .pr-row { grid-template-columns: 48px 1fr; gap: 20px; padding: 36px 0; }
+  .pr-num { font-size: 32px; }
+  .pr-desc { grid-column: 2; }
+  .pr-main h3 { font-size: 28px; }
   .statement, .artifact, .tools { padding-left: 20px; padding-right: 20px; }
-  .artifact-card { grid-template-columns: 1fr; gap: 32px; padding: 28px; }
   .loop-track { grid-template-columns: 1fr 1fr; padding: 0 20px; row-gap: 48px; }
+  .loop-back { padding: 0 20px; }
   .tool-row { grid-template-columns: 1fr; gap: 6px; }
   .foot-grid { grid-template-columns: 1fr 1fr; }
   .foot-base { flex-direction: column; gap: 8px; }
