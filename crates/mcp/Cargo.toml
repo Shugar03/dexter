@@ -1,30 +1,26 @@
 [package]
-name = "dexter-cu"
-description = "dexter CLI — agent computer runtime (doctor, windows, observe, actions, scenarios)"
+name = "dexter-mcp"
+description = "Dexter MCP stdio server — exposes observe/act/verify/task to MCP agents"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "dexter"
-path = "src/main.rs"
-
 [dependencies]
 dexter-core.workspace = true
 dexter-driver.workspace = true
-dexter-world-model.workspace = true
 dexter-engine.workspace = true
 dexter-decision.workspace = true
-dexter-laya.workspace = true
 dexter-policy.workspace = true
+dexter-verify.workspace = true
 dexter-macos.workspace = true
-dexter-mcp.workspace = true
+rmcp = { version = "0.8.5", features = ["server", "client", "transport-io"] }
 tokio = { version = "1", features = ["rt", "macros", "io-std", "sync"] }
-clap.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-toml.workspace = true
+schemars = "1"
+thiserror.workspace = true
 anyhow.workspace = true
-tracing-subscriber.workspace = true
-tracing.workspace = true
+
+[dev-dependencies]
+dexter-policy.workspace = true

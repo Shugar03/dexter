@@ -118,6 +118,9 @@ enum Command {
         #[command(flatten)]
         args: TaskArgs,
     },
+    /// Serve MCP over stdio — exposes observe/act/verify/task/journal to
+    /// agent clients (Claude Desktop, MCP SDKs). Same engine path as CLI.
+    Mcp,
     /// Run a scenario file (TOML): ordered steps through the full
     /// policy/act/verify loop, stopping at the first failure.
     Run {
@@ -289,7 +292,19 @@ fn run() -> Result<()> {
             events,
         } => run_scenario(&mut engine, &path, coords, approve_all, events),
         Command::Task { goal, args } => run_task(&mut engine, &goal, args),
+        Command::Mcp => run_mcp(&cli.policy),
     }
+}
+
+fn run_mcp(policy_path: &Option<String>) -> Result<()> {
+    // MCP owns its own engine (persistent session) — the CLI's engine is
+    // dropped. Policy comes from the global --policy flag.
+    let policy = load_policy(policy_path)?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("tokio runtime")?
+        .block_on(dexter_mcp::serve_stdio(policy))
 }
 
 /// Parse a `--target` flag into a `Target`. `element:N` takes a fresh
