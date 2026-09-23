@@ -185,14 +185,23 @@ terminal state (done / failed / abstained / denied).
 
 ## MCP tools
 
-`dexter_observe`, `dexter_act`, `dexter_grant`, `dexter_verify`,
-`dexter_task`, `dexter_journal`. A `needs_approval` response carries a
-fingerprint a human grants via `dexter_grant` — then the agent retries.
+`dexter_observe`, `dexter_candidates`, `dexter_act`, `dexter_grant`,
+`dexter_verify`, `dexter_task`, `dexter_journal`. A `needs_approval`
+response carries a fingerprint a human grants via `dexter_grant` — then
+the agent retries.
 
 ```json
 // claude_desktop_config.json
 {"mcpServers": {"dexter": {"command": "/path/to/dexter", "args": ["mcp"]}}}
 ```
+
+`dexter_observe` returns the digest **and** a structured `elements`
+array (id/role/name/enabled/bounds) for programmatic targeting.
+`dexter_candidates {goal}` returns the ranked action menu — the host
+agent stays the decider, Dexter supplies what the world affords.
+`dexter mcp --engine laya` makes `dexter_task` decide with the model
+(worker spawned once at server start). Full agent-facing guide:
+[`docs/for-agents.md`](docs/for-agents.md).
 
 ## Decision engines
 
@@ -216,12 +225,15 @@ Current measured baseline (same frozen items, `eval run`):
 | engine | browser 21 | macOS AX 10 | false_acts |
 |---|---|---|---|
 | rule-based | 18/18 act + 3/3 routes | 8/8 act + 2/2 routes | 0 |
-| laya (multilingual) | 3/13 act + 1/3 routes | 1/8 act + 0/2 routes | 0 |
+| laya root (english) | 14/18 act + 1/3 routes | 5/8 act + 0/2 routes | 1 |
+| laya root, τ=0.25 | — | 2/8 act + 2/2 routes | 0 |
+| laya multilingual | 9/18 act + 1/3 routes | 0/8 act + 2/2 routes | 0 |
 
-The generalist model is far below the tuned heuristic today — expected
-on a domain it never saw. What matters: it never took a wrong action
-(0 false acts — it errs toward routes), and the harness now measures
-every prompt/state-rendering improvement against the same frozen truth.
+The generalist model still trails the tuned heuristic, but the gap is
+closing via rendering/protocol levers (digest budget, typed criteria
+keys, domain-aware prompt, warmup). `--min-confidence` converts shaky
+picks into honest abstains — at τ=0.25 it catches the only false act.
+Details: `docs/sdd/eval.md`.
 
 Decision engines only *propose*. Policy still gates every action.
 

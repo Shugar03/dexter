@@ -62,18 +62,22 @@ step) — live traces are replayable through the same eval path.
   separate correct from wrong yet, so the default stays 0 — the gate is
   wired and reported, not enabled blindly.
 - **Checkpoints** — `--subfolder multilingual` (mmBERT, localized UIs)
-  vs `root` (english). Measured on both frozen datasets:
+  vs `root` (english). Measured on both frozen datasets, criteria keys
+  typed `c{i}`/`r{i}`:
 
   | checkpoint | browser act | routes | macos act | routes | false_acts |
   |---|---|---|---|---|---|
   | rule-based | 18/18 | 3/3 | 8/8 | 2/2 | 0 |
-  | laya root | 13/18 | 1/3 | 5/8 | 0/2 | 1 |
-  | laya multilingual | 4/18 | 2/3 | 0/8 | 2/2 | 0 |
+  | laya root | 14/18 | 1/3 | 5/8 | 0/2 | 1 |
+  | laya root, τ=0.25 | — | — | 2/8 | 2/2 | 0 |
+  | laya multilingual | 9/18 | 1/3 | 0/8 | 2/2 | 0 |
 
-  English checkpoint acts decisively (mostly right); multilingual
-  routes almost everything — safe failure mode, near-zero usefulness.
-  The single false_act: a legitimately-enabled element the model
-  preferred over the gold (candidate filter already drops disabled).
+  English checkpoint acts decisively (mostly right); multilingual still
+  routes on macOS but descriptive keys doubled its browser accuracy
+  (4→9). τ=0.25 shows the abstention gate working on real data: it
+  caught the one false_act (enabled "Abrir" over the gold route) and
+  kept routes 2/2 — at the cost of 3 correct acts. That's the honest
+  trade-off knob.
 
 ## Non-goals
 

@@ -88,16 +88,20 @@ class LayaProvider:
             qid = q["id"]
             order.append((qid, q["type"]))
             if q["type"] == "choice":
-                # Criteria keys are rendered to the model as "key: text"
-                # — terse opt{i} keys, and strip the redundant
+                # Criteria keys are rendered to the model as "key: text".
+                # c{i} = action candidate, r{i} = route option — the key
+                # itself carries the option type. Strip the redundant
                 # "candidate i: " prefix our engine prepends.
+                criteria = {}
+                for i, opt in enumerate(q["options"]):
+                    if re.match(r"^candidate \d+:", opt):
+                        criteria[f"c{i}"] = re.sub(r"^candidate \d+:\s*", "", opt)
+                    else:
+                        criteria[f"r{i}"] = opt
                 laya_qs[qid] = {
                     "type": "choice",
                     "instructions": q["prompt"],
-                    "criteria": {
-                        f"opt{i}": re.sub(r"^candidate \d+:\s*", "", opt)
-                        for i, opt in enumerate(q["options"])
-                    },
+                    "criteria": criteria,
                 }
             elif q["type"] == "score":
                 laya_qs[qid] = {
@@ -113,8 +117,11 @@ class LayaProvider:
         for qid, qtype in order:
             a = res["answers"][qid]
             if qtype == "choice":
-                # choice comes back as the criteria key ("opt3")
-                idx = int(str(a["choice"]).removeprefix("opt"))
+                # choice comes back as the criteria key ("c3" / "r5")
+                m = re.match(r"[cr](\d+)$", str(a["choice"]))
+                if m is None:
+                    raise ValueError(f"unparseable choice key: {a['choice']!r}")
+                idx = int(m.group(1))
                 out.append({
                     "type": "choice", "id": qid, "index": idx,
                     # calibrated P(this pick is correct) — engines may

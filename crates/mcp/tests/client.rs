@@ -38,6 +38,7 @@ async fn handshake_and_tool_list() {
         "dexter_verify",
         "dexter_task",
         "dexter_journal",
+        "dexter_candidates",
     ] {
         assert!(names.contains(&expected.to_string()), "missing {expected}");
     }
@@ -130,5 +131,85 @@ async fn act_needs_approval_returns_grantable_fingerprint() {
         .collect();
     assert!(kinds.contains(&"ActionProposed".to_string()));
     assert!(kinds.contains(&"HumanApprovalRequired".to_string()));
+    client.cancel().await.ok();
+}
+
+fn save_button() -> dexter_core::Element {
+    dexter_core::Element {
+        id: dexter_core::ElementId(4),
+        role: Some("button".into()),
+        name: Some("Save".into()),
+        actions: vec!["press".into()],
+        enabled: Some(true),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn observe_returns_structured_elements() {
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::new(
+        Policy::from_toml("").unwrap(),
+        Box::new(SimDriver::new(vec![save_button()])),
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_observe".into(),
+            arguments: None,
+        })
+        .await
+        .expect("observe");
+    let text = res.content[0].raw.as_text().expect("text");
+    let v: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    let els = v["elements"].as_array().expect("elements array");
+    assert_eq!(els[0]["id"], "e_4");
+    assert_eq!(els[0]["role"], "button");
+    assert_eq!(els[0]["name"], "Save");
+    assert_eq!(els[0]["enabled"], true);
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
+async fn candidates_returns_ranked_menu_for_the_goal() {
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::new(
+        Policy::from_toml("").unwrap(),
+        Box::new(SimDriver::new(vec![save_button()])),
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_candidates".into(),
+            arguments: Some(
+                json!({"goal": "save the document"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        })
+        .await
+        .expect("candidates");
+    let text = res.content[0].raw.as_text().expect("text");
+    let v: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    let cands = v["candidates"].as_array().expect("candidates array");
+    assert!(
+        !cands.is_empty(),
+        "goal 'save' should match the Save button"
+    );
+    assert_eq!(cands[0]["action"]["type"], "click");
+    assert!(cands[0]["prior"].as_f64().unwrap() > 0.0);
     client.cancel().await.ok();
 }

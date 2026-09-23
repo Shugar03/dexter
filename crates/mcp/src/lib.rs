@@ -7,7 +7,7 @@
 //! `dexter_grant`, and the retry then runs.
 
 use dexter_core::{Action, AppSelector, ExpectedState, ObservationScope};
-use dexter_decision::{DecisionEngine, HeuristicGenerator};
+use dexter_decision::{CandidateGenerator, DecisionEngine, HeuristicGenerator};
 use dexter_driver::ComputerDriver;
 use dexter_engine::{Engine, RunConfig, Step, StepStatus, TaskConfig, TaskOutcome};
 use dexter_policy::Policy;
@@ -24,6 +24,9 @@ use std::time::Duration;
 pub struct DexterRuntime {
     engine: Mutex<Engine<Box<dyn ComputerDriver>>>,
     generator: HeuristicGenerator,
+    /// Decider for `dexter_task` — RuleBased unless the host configured
+    /// another engine (e.g. laya) at server start.
+    decider: Box<dyn DecisionEngine>,
 }
 
 impl DexterRuntime {
@@ -31,7 +34,14 @@ impl DexterRuntime {
         Self {
             engine: Mutex::new(Engine::new(driver, policy, Duration::from_secs(300))),
             generator: HeuristicGenerator::default(),
+            decider: Box::new(dexter_decision::RuleBased::default()),
         }
+    }
+
+    /// Swap the decider `dexter_task` uses (spawned once, kept warm).
+    pub fn with_decider(mut self, d: Box<dyn DecisionEngine>) -> Self {
+        self.decider = d;
+        self
     }
 }
 
@@ -84,6 +94,16 @@ pub struct VerifyParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct CandidatesParams {
+    /// The goal, verbatim — candidates are ranked against it.
+    pub goal: String,
+    /// Scope to an app.
+    pub app: Option<String>,
+    /// Cap on returned candidates (default 20).
+    pub max: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskParams {
     /// The goal, verbatim.
     pub goal: String,
@@ -114,8 +134,22 @@ fn err(e: impl std::fmt::Display) -> McpError {
 #[tool_router]
 impl DexterMcp {
     pub fn new(policy: Policy, driver: Box<dyn ComputerDriver>) -> Self {
+        Self::with_decider(policy, driver, None)
+    }
+
+    /// Same as `new`, plus the decider `dexter_task` should use
+    /// (`None` = rule-based).
+    pub fn with_decider(
+        policy: Policy,
+        driver: Box<dyn ComputerDriver>,
+        decider: Option<Box<dyn DecisionEngine>>,
+    ) -> Self {
+        let mut runtime = DexterRuntime::new(policy, driver);
+        if let Some(d) = decider {
+            runtime = runtime.with_decider(d);
+        }
         Self {
-            runtime: Arc::new(DexterRuntime::new(policy, driver)),
+            runtime: Arc::new(runtime),
             tool_router: Self::tool_router(),
         }
     }
@@ -137,13 +171,78 @@ impl DexterMcp {
         };
         let engine = self.runtime.engine.lock().map_err(err)?;
         let obs = engine.driver().observe(&scope).map_err(err)?;
+        // Structured element list alongside the digest — agents target
+        // `element` ids programmatically instead of parsing text. Capped
+        // to keep the payload sane; the digest always stays complete-ish.
+        let elements: Vec<serde_json::Value> = obs
+            .elements
+            .iter()
+            .filter(|e| dexter_world_model::digest_worthy(e))
+            .take(params.max_elements.unwrap_or(4_000).min(500))
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id.to_string(),
+                    "role": e.role,
+                    "name": e.name,
+                    "value": e.value,
+                    "enabled": e.enabled,
+                    "focused": e.focused,
+                    "actions": e.actions,
+                    "bounds": e.bounds,
+                })
+            })
+            .collect();
         Ok(Json(serde_json::json!({
             "observation": obs.id.0,
             "windows": obs.windows.len(),
-            "elements": obs.elements.len(),
+            "element_count": obs.elements.len(),
+            "elements": elements,
             "elements_truncated": obs.elements_truncated,
             "ax_limited": obs.ax_limited,
             "digest": obs.digest,
+        })))
+    }
+
+    /// Ranked menu of plausible actions for a goal — the agent stays the
+    /// decider, Dexter supplies what the world currently affords. Each
+    /// candidate's action is ready to pass straight to dexter_act.
+    #[tool(
+        name = "dexter_candidates",
+        description = "Ranked plausible actions for a goal (action JSON + rationale + heuristic prior)"
+    )]
+    async fn dexter_candidates(
+        &self,
+        Parameters(params): Parameters<CandidatesParams>,
+    ) -> Result<Json<serde_json::Value>, McpError> {
+        let scope = ObservationScope {
+            app: params.app.as_deref().map(AppSelector::parse),
+            max_elements: 4_000,
+            ..Default::default()
+        };
+        let engine = self.runtime.engine.lock().map_err(err)?;
+        let obs = engine.driver().observe(&scope).map_err(err)?;
+        let cands = self.runtime.generator.generate(
+            &obs,
+            &params.goal,
+            &dexter_decision::GenHistory::default(),
+        );
+        let max = params.max.unwrap_or(20);
+        let candidates: Vec<serde_json::Value> = cands
+            .iter()
+            .take(max)
+            .map(|c| {
+                serde_json::json!({
+                    "action": c.action,
+                    "rationale": c.rationale,
+                    "prior": c.prior,
+                })
+            })
+            .collect();
+        Ok(Json(serde_json::json!({
+            "observation": obs.id.0,
+            "candidates": candidates,
+            "note": "priors are heuristic hints — the agent decides; \
+                     dexter_act still runs policy+verify on whatever it picks",
         })))
     }
 
@@ -229,19 +328,18 @@ impl DexterMcp {
     /// recheck until `done` verifies or bounds hit.
     #[tool(
         name = "dexter_task",
-        description = "Run a goal in the closed loop (rule-based decider) until done_when verifies"
+        description = "Run a goal in the closed loop (decider chosen at server start) until done_when verifies"
     )]
     async fn dexter_task(
         &self,
         Parameters(params): Parameters<TaskParams>,
     ) -> Result<Json<serde_json::Value>, McpError> {
-        let decider = dexter_decision::RuleBased::default();
         let outcome = {
             let mut engine = self.runtime.engine.lock().map_err(err)?;
             engine.run_task(
                 &params.goal,
                 &self.runtime.generator,
-                &decider as &dyn DecisionEngine,
+                self.runtime.decider.as_ref(),
                 &TaskConfig {
                     run: run_cfg(
                         params.app.clone(),
@@ -337,22 +435,29 @@ impl ServerHandler for DexterMcp {
                 website_url: Some("https://github.com/Shugar03/dexter".into()),
             },
             instructions: Some(
-                "Observe with dexter_observe, act with dexter_act (actions go \
-                 through the policy engine — needs_approval responses carry a \
-                 fingerprint a human grants via dexter_grant). dexter_task runs \
-                 a goal in the closed loop; dexter_journal shows the audit \
-                 trail. Semantic targets preferred; coordinates require \
-                 coords=true."
+                "Workflow: dexter_observe (digest + structured elements) -> \
+                 dexter_candidates (ranked action menu for your goal) -> \
+                 dexter_act on the action you choose (policy gates every \
+                 call; needs_approval returns a fingerprint a human grants \
+                 via dexter_grant) -> dexter_verify to check post-state. \
+                 dexter_task runs the whole loop itself; dexter_journal is \
+                 the audit trail. Prefer semantic/element targets — \
+                 coordinates are physical-tier and need coords=true."
                     .into(),
             ),
         }
     }
 }
 
-/// Serve over stdio until the client disconnects.
-pub async fn serve_stdio(policy: Policy, driver: Box<dyn ComputerDriver>) -> anyhow::Result<()> {
+/// Serve over stdio until the client disconnects. `decider` overrides
+/// the engine `dexter_task` uses (`None` = rule-based).
+pub async fn serve_stdio(
+    policy: Policy,
+    driver: Box<dyn ComputerDriver>,
+    decider: Option<Box<dyn DecisionEngine>>,
+) -> anyhow::Result<()> {
     use rmcp::service::ServiceExt;
-    let server = DexterMcp::new(policy, driver);
+    let server = DexterMcp::with_decider(policy, driver, decider);
     let running = server.serve(rmcp::transport::stdio()).await?;
     running.waiting().await?;
     Ok(())

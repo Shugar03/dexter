@@ -162,7 +162,8 @@ fn window_line(w: &Window) -> String {
 
 /// Whether an element is worth feeding to a decision engine: named,
 /// actionable, or meaningfully typed. Anonymous containers are noise.
-fn digest_worthy(e: &Element) -> bool {
+/// Shared filter for digests and agent-facing element lists.
+pub fn digest_worthy(e: &Element) -> bool {
     if e.name.as_deref().is_some_and(|n| !n.is_empty()) {
         return true;
     }
@@ -207,7 +208,6 @@ pub fn digest(obs: &Observation, max_lines: usize) -> String {
 pub fn digest_budget(obs: &Observation, max_chars: usize) -> String {
     let mut lines = header_lines(obs);
     let mut used: usize = lines.iter().map(|l| l.len() + 1).sum();
-    let mut shown = 0usize;
     let mut skipped = 0usize;
     for e in &obs.elements {
         if !digest_worthy(e) {
@@ -219,7 +219,6 @@ pub fn digest_budget(obs: &Observation, max_chars: usize) -> String {
             continue;
         }
         used += line.len() + 1;
-        shown += 1;
         lines.push(line);
     }
     if skipped > 0 {

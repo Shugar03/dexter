@@ -130,7 +130,17 @@ enum Command {
     },
     /// Serve MCP over stdio — exposes observe/act/verify/task/journal to
     /// agent clients (Claude Desktop, MCP SDKs). Same engine path as CLI.
-    Mcp,
+    Mcp {
+        /// Decider for dexter_task: rule-based | laya.
+        #[arg(long, default_value = "rule-based")]
+        engine: String,
+        /// Worker command for --engine laya.
+        #[arg(long)]
+        engine_path: Option<String>,
+        /// Abstain below this calibrated confidence (laya). 0 = never.
+        #[arg(long, default_value = "0")]
+        min_confidence: f32,
+    },
     /// Open a URL — browser driver navigates its session; macOS hands it
     /// to LaunchServices. Policy-gated like any mutation.
     Navigate {
@@ -391,20 +401,45 @@ fn run() -> Result<()> {
                 eval_harvest(engine.driver(), &manifest, &out)
             }
         },
-        Command::Mcp => run_mcp(&cli),
+        Command::Mcp {
+            engine: ref eng,
+            ref engine_path,
+            min_confidence,
+        } => run_mcp(&cli, eng, engine_path.clone(), min_confidence),
     }
 }
 
-fn run_mcp(cli: &Cli) -> Result<()> {
+fn run_mcp(
+    cli: &Cli,
+    engine_name: &str,
+    engine_path: Option<String>,
+    min_confidence: f32,
+) -> Result<()> {
     // MCP owns its own engine (persistent session) — the CLI's engine is
     // dropped. Policy and driver come from the global flags.
     let policy = load_policy(&cli.policy)?;
     let driver = build_driver(cli)?;
+    // The task decider is spawned once at server start — a laya worker
+    // loads its model here rather than per dexter_task call.
+    let decider: Option<Box<dyn dexter_decision::DecisionEngine>> = match engine_name {
+        "rule-based" => None, // DexterMcp defaults to RuleBased
+        "laya" => {
+            let cmd = engine_path
+                .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
+                .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
+            Some(Box::new(
+                dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(30))
+                    .with_context(|| format!("spawning laya worker '{cmd}'"))?
+                    .with_min_confidence(min_confidence),
+            ))
+        }
+        other => anyhow::bail!("unknown engine '{other}' — rule-based, laya"),
+    };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("tokio runtime")?
-        .block_on(dexter_mcp::serve_stdio(policy, driver))
+        .block_on(dexter_mcp::serve_stdio(policy, driver, decider))
 }
 
 /// Parse a `--target` flag into a `Target`. `element:N` takes a fresh

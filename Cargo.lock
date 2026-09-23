@@ -916,6 +916,7 @@ dependencies = [
  "dexter-policy",
  "dexter-sim",
  "dexter-verify",
+ "dexter-world-model",
  "rmcp",
  "schemars",
  "serde",
