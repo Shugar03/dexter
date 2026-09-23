@@ -48,6 +48,15 @@ Requires macOS and Rust 1.85+. For real-machine use, grant the `dexter`
 binary **Accessibility** and **Screen Recording** in System Settings →
 Privacy & Security. Run `dexter doctor` to check.
 
+**Stable identity matters:** an adhoc signature changes on every build
+and TCC serves a *degraded* AX tree to it (observations report
+`ax_limited`). Sign once with a self-signed cert so grants stick:
+
+```sh
+./scripts/devsign.sh release   # one-time cert setup documented inside
+dexter doctor                  # grants now apply to com.dexter.cli
+```
+
 ## Quickstart
 
 ```sh
