@@ -37,6 +37,22 @@ Browser, Windows and Linux drivers are on the
 
 ## Install
 
+### Homebrew (recommended)
+
+```sh
+brew install --no-quarantine shugar03/dexter/dexter
+```
+
+Release binaries are **ad-hoc signed, not notarized** — `--no-quarantine`
+skips Gatekeeper's first-run block. If you downloaded a release tarball
+directly instead, clear the quarantine attribute yourself:
+
+```sh
+xattr -d com.apple.quarantine $(which dexter)
+```
+
+### From source
+
 ```sh
 git clone https://github.com/Shugar03/dexter
 cd dexter
@@ -44,9 +60,9 @@ cargo build --release
 # the binary is target/release/dexter
 ```
 
-Requires macOS and Rust 1.85+. For real-machine use, grant the `dexter`
-binary **Accessibility** and **Screen Recording** in System Settings →
-Privacy & Security. Run `dexter doctor` to check.
+Requires macOS 13+ and Rust 1.85+. For real-machine use, grant the
+`dexter` binary **Accessibility** and **Screen Recording** in System
+Settings → Privacy & Security. Run `dexter doctor` to check.
 
 **Stable identity matters:** an adhoc signature changes on every build
 and TCC serves a *degraded* AX tree to it (observations report

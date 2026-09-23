@@ -1,0 +1,145 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  TAP_REPO: Shugar03/homebrew-dexter
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add ${{ matrix.target }}
+
+      - name: build ${{ matrix.target }}
+        run: cargo build --release --locked -p dexter-cu -p dexter-overlay --target ${{ matrix.target }}
+
+      - name: package artifact
+        run: |
+          mkdir out
+          cp target/${{ matrix.target }}/release/dexter out/dexter
+          cp target/${{ matrix.target }}/release/dexter-overlay out/dexter-overlay
+          tar -czf bins-${{ matrix.target }}.tar.gz -C out .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bins-${{ matrix.target }}
+          path: bins-${{ matrix.target }}.tar.gz
+
+  package:
+    needs: build
+    runs-on: macos-14
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      asset: ${{ steps.pack.outputs.asset }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bins-*
+          merge-multiple: true
+
+      - name: universal binary + ad-hoc signature
+        id: pack
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p universal aarch64 x86_64
+          tar -xzf bins-aarch64-apple-darwin.tar.gz -C aarch64
+          tar -xzf bins-x86_64-apple-darwin.tar.gz -C x86_64
+          for bin in dexter dexter-overlay; do
+            lipo -create \
+              -output "universal/$bin" \
+              "aarch64/$bin" \
+              "x86_64/$bin"
+            chmod +x "universal/$bin"
+            # Ad-hoc signature: no Developer ID — see docs/sdd/release.md
+            # for the Gatekeeper/quarantine caveats this implies.
+            codesign --sign - --force --options runtime "universal/$bin"
+            codesign --verify --verbose "universal/$bin"
+            file "universal/$bin"
+          done
+          ASSET="dexter-${VERSION}-macos-universal.tar.gz"
+          tar -czf "$ASSET" -C universal dexter dexter-overlay
+          shasum -a 256 "$ASSET" > SHA256SUMS
+          echo "sha256=$(shasum -a 256 "$ASSET" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+
+      - name: github release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ARGS=(--generate-notes)
+          case "$GITHUB_REF_NAME" in
+            *-*) ARGS+=(--prerelease) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" \
+            "${ARGS[@]}" \
+            --title "dexter $GITHUB_REF_NAME" \
+            "${{ steps.pack.outputs.asset }}" SHA256SUMS
+
+  tap:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: update homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+          SHA256: ${{ needs.package.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::TAP_GITHUB_TOKEN secret not set — the default \
+            GITHUB_TOKEN cannot push to $TAP_REPO. Update the cask manually: \
+            version=${VERSION#v} sha256=$SHA256"
+            exit 0
+          fi
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" tap
+          cd tap
+          mkdir -p Casks
+          cat > Casks/dexter.rb <<EOF
+            cask "dexter" do
+              version "${VERSION#v}"
+              sha256 "$SHA256"
+
+              url "https://github.com/Shugar03/dexter/releases/download/v#{version}/dexter-#{version}-macos-universal.tar.gz"
+              name "dexter"
+              desc "Local-first agent computer runtime for macOS"
+              homepage "https://github.com/Shugar03/dexter"
+
+              depends_on macos: ">= :ventura"
+
+              binary "dexter"
+              binary "dexter-overlay"
+
+              caveats <<~EOS
+                dexter is ad-hoc signed and not notarized. If Gatekeeper blocks it:
+                  xattr -d com.apple.quarantine \$(which dexter)
+                or reinstall with: brew install --no-quarantine shugar03/dexter/dexter
+                It also needs Accessibility and Screen Recording permission —
+                run \`dexter doctor --request\` to check and request them.
+              EOS
+            end
+          EOF
+          ruby -c Casks/dexter.rb
+          git config user.name "dexter-release[bot]"
+          git config user.email "release@users.noreply.github.com"
+          git add Casks/dexter.rb
+          git diff --cached --quiet && { echo "cask already up to date"; exit 0; }
+          git commit -m "dexter ${VERSION}"
+          git push

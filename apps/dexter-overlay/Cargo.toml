@@ -1,6 +1,6 @@
 [package]
 name = "dexter-overlay"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Agent presence overlay: draws a labeled cursor over the observed UI from the event journal — click-through, never captures input"
