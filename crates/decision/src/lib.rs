@@ -165,9 +165,16 @@ impl Default for HeuristicGenerator {
 const STOPWORDS: &[&str] = &[
     "the", "a", "an", "my", "your", "our", "to", "for", "of", "in", "on", "and", "or", "it",
     "this", "that", "with", "from", "into", "me", "we", "i", "you", "is", "are", "be", "do",
-    "does", "can", "could", "should", "would", "will", "please", "now", "all", "any", "some", "up",
-    "out", "then", "than", "so", "such", "no", "not", "only", "get", "each", "more", "most",
-    "other", "much", "many",
+    "does", "can", "could", "should", "would", "will", "please", "now", "any", "some", "up", "out",
+    "then", "than", "so", "such", "no", "not", "only", "get", "each", "more", "most", "other",
+    "much", "many",
+    // Spanish — real machines run localized UIs. Quantifiers ("todo",
+    // "todas", "all") are NOT stopwords: "cerrar" vs "cerrar todo" are
+    // different actions.
+    "una", "un", "el", "la", "los", "las", "del", "al", "para", "por", "con", "en", "de", "y", "o",
+    "que", "se", "su", "sus", "mi", "tu", "es", "son", "hay", "muy", "este", "esta", "estos",
+    "estas", "ese", "esa", "eso", "como", "cuando", "donde", "cada", "entre", "sobre", "desde",
+    "hasta", "ser", "estar", "hacer", "donde",
 ];
 
 /// Multi-word verbs checked before single words ("log in" beats "log").
@@ -182,15 +189,97 @@ const PHRASE_VERBS: &[&str] = &[
 ];
 
 /// Verbs that imply an editing action (type into a field).
-const EDIT_VERBS: &[&str] = &["type", "write", "enter", "fill", "input", "set", "paste"];
+const EDIT_VERBS: &[&str] = &[
+    "type",
+    "write",
+    "enter",
+    "fill",
+    "input",
+    "set",
+    "paste",
+    // Spanish
+    "escribir",
+    "teclear",
+    "ingresar",
+    "rellenar",
+    "completar",
+];
 
 /// Verbs that imply a press action (click a control).
 const PRESS_VERBS: &[&str] = &[
-    "click", "press", "tap", "pay", "submit", "confirm", "cancel", "delete", "remove", "close",
-    "dismiss", "open", "select", "choose", "check", "uncheck", "accept", "reject", "save",
-    "continue", "next", "back", "find", "buy", "order", "add", "create", "sign", "log", "login",
-    "logout", "go", "navigate", "launch", "start", "stop", "apply", "ok", "agree", "claim",
-    "proceed", "enable", "toggle", "search", "send",
+    "click",
+    "press",
+    "tap",
+    "pay",
+    "submit",
+    "confirm",
+    "cancel",
+    "delete",
+    "remove",
+    "close",
+    "dismiss",
+    "open",
+    "select",
+    "choose",
+    "check",
+    "uncheck",
+    "accept",
+    "reject",
+    "save",
+    "continue",
+    "next",
+    "back",
+    "find",
+    "buy",
+    "order",
+    "add",
+    "create",
+    "sign",
+    "log",
+    "login",
+    "logout",
+    "go",
+    "navigate",
+    "launch",
+    "start",
+    "stop",
+    "apply",
+    "ok",
+    "agree",
+    "claim",
+    "proceed",
+    "enable",
+    "toggle",
+    "search",
+    "send",
+    // Spanish
+    "abrir",
+    "cerrar",
+    "guardar",
+    "borrar",
+    "eliminar",
+    "quitar",
+    "pulsar",
+    "clic",
+    "aceptar",
+    "continuar",
+    "siguiente",
+    "volver",
+    "buscar",
+    "enviar",
+    "pagar",
+    "comprar",
+    "crear",
+    "iniciar",
+    "elegir",
+    "seleccionar",
+    "confirmar",
+    "cancelar",
+    "descartar",
+    "activar",
+    "desactivar",
+    "imprimir",
+    "compartir",
 ];
 
 /// Parsed goal: verbs (what to do), object terms (what to do it to),
@@ -255,16 +344,48 @@ fn parse_goal(goal: &str) -> GoalParse {
     gp
 }
 
-/// Word-boundary-ish match: whole token, else substring (e.g.
-/// "destinations" ⊃ "destination").
+/// Prefix-style match: whole token, or a label token starting with the
+/// term (covers plurals/inflections: "destinations" ⊃ "destination").
+/// Mid-word substring is NOT a match — "reescribir" is not "escribir".
 fn term_matches(label: &str, term: &str) -> bool {
     if label.is_empty() || term.is_empty() {
         return false;
     }
+    // Phrase terms ("log in", "proceed to checkout") match by substring —
+    // they were already validated as whole phrases in the goal.
+    if term.contains(' ') {
+        return label.contains(term);
+    }
     label
         .split(|c: char| !c.is_alphanumeric())
-        .any(|tok| tok == term)
-        || label.contains(term)
+        // Empty tokens and label-side stopwords never match — otherwise
+        // "Guardar como…" stem-matches "comprar".
+        .filter(|tok| !tok.is_empty() && !STOPWORDS.contains(tok))
+        .any(|tok| {
+            if tok == term {
+                return true;
+            }
+            // Pure digits are identifiers, not words — "1041" is not
+            // "1042". No stemming.
+            if tok.chars().all(|c| c.is_ascii_digit()) || term.chars().all(|c| c.is_ascii_digit()) {
+                return false;
+            }
+            // Common-prefix stem: covers plurals ("destinations" ~
+            // "destination") and gender inflection ("todas" ~ "todo",
+            // which differ mid-string — a plain prefix check misses it).
+            // Requires min length 4 so tiny words can't fuse; and the
+            // shared prefix must be within one char of the shorter word.
+            let min_len = tok.len().min(term.len());
+            if min_len < 4 {
+                return false;
+            }
+            let common = tok
+                .chars()
+                .zip(term.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            common >= min_len - 1
+        })
 }
 
 fn is_editable(el: &Element) -> bool {
@@ -315,6 +436,7 @@ fn already_tried(el: &Element, attempts: &[Action]) -> bool {
 impl CandidateGenerator for HeuristicGenerator {
     fn generate(&self, obs: &Observation, goal: &str, hist: &GenHistory) -> Vec<CandidateAction> {
         let gp = parse_goal(goal);
+
         // Terms to match: objects carry the load; when a goal is verb-only
         // ("pay") the verbs themselves become the terms.
         let terms: Vec<&str> = if gp.objects.is_empty() {
@@ -340,12 +462,43 @@ impl CandidateGenerator for HeuristicGenerator {
             }
             let label = el.label().unwrap_or("").to_lowercase();
             let matched = terms.iter().filter(|t| term_matches(&label, t)).count();
-            if terms.is_empty() || matched == 0 {
+            if terms.is_empty() {
+                continue;
+            }
+            if matched == 0 {
+                // Focused-editable fallback: the goal wants to type and a
+                // field already holds focus — the caret is the evidence,
+                // no label match needed.
+                if want_edit && editable && el.focused {
+                    out.push(CandidateAction {
+                        action: Action::Focus {
+                            target: element_target(el),
+                        },
+                        rationale: format!(
+                            "{} already focused; edit goal needs no label match",
+                            el.role.as_deref().unwrap_or("?"),
+                        ),
+                        prior: 0.7,
+                    });
+                }
                 continue;
             }
             let coverage = matched as f32 / terms.len() as f32;
+            // Whole label equals a goal term — the strongest signal.
+            // Only object terms and phrase verbs count: a bare verb label
+            // ("Cerrar") must not outrank a more specific match
+            // ("Cerrar todo") when the goal names an object.
+            let exact_label = terms.iter().any(|t| {
+                label == *t
+                    && (gp.objects.is_empty()
+                        || t.contains(' ')
+                        || gp.objects.iter().any(|o| o == t))
+            });
             let verb_aligned = (want_edit && editable) || (!want_edit && pressable);
-            let mut prior = 0.25 + 0.55 * coverage + if verb_aligned { 0.2 } else { 0.0 };
+            let mut prior = 0.25
+                + 0.55 * coverage
+                + if verb_aligned { 0.2 } else { 0.0 }
+                + if exact_label { 0.15 } else { 0.0 };
             // Label fully covered by goal terms ("Search" ⊂ {search,...})
             // beats a partial match ("Search destinations").
             let label_fully_covered = label
@@ -362,6 +515,11 @@ impl CandidateGenerator for HeuristicGenerator {
             }
             if editable && el.focused && want_edit {
                 prior += 0.1;
+            }
+            // Edit goal against a non-editable element is weak evidence —
+            // pressing the "Documento" menu won't type anything.
+            if want_edit && !editable {
+                prior *= 0.5;
             }
             // Delta bonus: element not present in the previous observation.
             if let Some(prev) = &hist.prev {
@@ -441,11 +599,16 @@ impl CandidateGenerator for HeuristicGenerator {
 pub struct RuleBased {
     /// Escalate after this many consecutive steps with no candidates.
     pub max_empty_steps: u32,
+    /// Minimum prior for the top candidate to be executed.
+    pub act_threshold: f32,
 }
 
 impl Default for RuleBased {
     fn default() -> Self {
-        Self { max_empty_steps: 3 }
+        Self {
+            max_empty_steps: 3,
+            act_threshold: 0.65,
+        }
     }
 }
 
@@ -456,10 +619,21 @@ impl DecisionEngine for RuleBased {
 
     fn decide(&self, ctx: &DecisionContext) -> Result<Decision, DecisionError> {
         if let Some(first) = ctx.candidates.first() {
-            return Ok(Decision::Act {
-                action: first.action.clone(),
-                candidate_index: Some(0),
-                rationale: format!("top candidate: {}", first.rationale),
+            // Weak evidence is not a mandate: below the act threshold the
+            // honest move is to abstain, not to click the best bad guess.
+            if first.prior >= self.act_threshold {
+                return Ok(Decision::Act {
+                    action: first.action.clone(),
+                    candidate_index: Some(0),
+                    rationale: format!("top candidate: {}", first.rationale),
+                });
+            }
+            return Ok(Decision::Route {
+                route: Route::Abstain,
+                rationale: format!(
+                    "top candidate prior {:.2} below act threshold {:.2}",
+                    first.prior, self.act_threshold
+                ),
             });
         }
         if ctx.last_error.is_some() && ctx.step > 1 {

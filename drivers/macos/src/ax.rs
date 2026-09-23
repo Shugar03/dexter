@@ -81,6 +81,19 @@ pub fn collect(app: &AXUIElement, max_depth: u32, max_elements: usize) -> AxTree
             }
         }
     }
+    // The menu bar is an app child alongside windows — walk it too, or
+    // agents can never reach menu items (File > Save, Format > Bold).
+    if walked && !ctx.truncated {
+        if let Ok(children) = app.children() {
+            for child in children.iter() {
+                let role = child.role().ok().map(|s| s.to_string());
+                if role.as_deref() == Some("AXMenuBar") {
+                    walk(&child, None, 0, &mut ctx);
+                    break;
+                }
+            }
+        }
+    }
     // Menu bar extras, agents and apps under a degraded grant report no
     // AXWindows — fall back to the app element's direct children.
     if !walked {

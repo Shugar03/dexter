@@ -835,6 +835,15 @@ struct HarvestPage {
     path: Option<String>,
     /// macOS: scope the observation to this app.
     app: Option<String>,
+    /// Shell command to put the app in the intended state before
+    /// observing (e.g. osascript making a new document). Harvest
+    /// tooling only — never part of the agent path.
+    #[serde(default)]
+    prep: Option<String>,
+    /// Shell command to restore state after observing (e.g. close the
+    /// scratch document without saving).
+    #[serde(default)]
+    teardown: Option<String>,
     goal: String,
     gold: HarvestGold,
     /// Extra settle time after navigate/scope before observing (ms).
@@ -951,6 +960,16 @@ fn eval_harvest(driver: &dyn ComputerDriver, manifest_path: &str, out: &str) -> 
                 )
                 .map_err(|e| anyhow::anyhow!("{}: navigate: {e}", page.id))?;
         }
+        if let Some(cmd) = &page.prep {
+            let status = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .status()
+                .with_context(|| format!("{}: prep spawn", page.id))?;
+            if !status.success() {
+                eprintln!("{}: prep exited {status} — continuing", page.id);
+            }
+        }
         std::thread::sleep(Duration::from_millis(page.settle_ms.unwrap_or(600)));
 
         let scope = ObservationScope {
@@ -960,6 +979,9 @@ fn eval_harvest(driver: &dyn ComputerDriver, manifest_path: &str, out: &str) -> 
         let obs = driver
             .observe(&scope)
             .map_err(|e| anyhow::anyhow!("{}: observe: {e}", page.id))?;
+        if let Some(cmd) = &page.teardown {
+            let _ = std::process::Command::new("sh").arg("-c").arg(cmd).status();
+        }
 
         let gold = match &page.gold {
             HarvestGold::Act { target } => {

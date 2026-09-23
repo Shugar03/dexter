@@ -1,0 +1,126 @@
+# Dexter eval dataset — macOS Accessibility trees from real apps.
+#
+# Unlike the browser dataset this harvest is NOT hermetic: it observes
+# the user's real apps. `prep` puts the app in a known state and
+# `teardown` restores it; the committed items.jsonl is the frozen truth
+# — regenerate only deliberately.
+#
+# Goals are in Spanish because this machine's UI is localized — the
+# generator's verb/stopword lexicon covers both languages.
+#
+# Harvest:
+#   dexter eval harvest datasets/macos/manifest.toml -o datasets/macos/items.jsonl
+
+# --- TextEdit (fresh untitled doc; "Guardar" stays disabled under
+#     macOS autosave — a real abstain case) ---
+
+[[page]]
+id = "textedit-new-doc"
+app = "com.apple.TextEdit"
+prep = "open -a TextEdit"
+goal = "crear un documento nuevo"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "menu_item"
+name = "Nuevo"
+
+[[page]]
+id = "textedit-write"
+app = "com.apple.TextEdit"
+goal = "escribir en el documento"
+[page.gold]
+type = "act"
+# The document's text area — matched via the focused-editable signal,
+# not by label (it has none).
+[page.gold.target]
+role = "text_area"
+
+[[page]]
+id = "textedit-bold"
+app = "com.apple.TextEdit"
+goal = "activar la negrita"
+[page.gold]
+type = "act"
+# The formatting toolbar check box is enabled; the Format > Negrita
+# menu item is disabled without a selection — gold is the toolbar one.
+[page.gold.target]
+role = "check_box"
+name_contains = "negrita"
+
+[[page]]
+id = "textedit-save-as"
+app = "com.apple.TextEdit"
+goal = "guardar el documento"
+[page.gold]
+type = "act"
+# Archivo > "Guardar…" IS enabled under autosave (the plain "Guardar" is
+# disabled) — this is the actionable save path. Found by the harness:
+# the engine picked it while I had mislabeled this abstain.
+[page.gold.target]
+role = "menu_item"
+name = "Guardar…"
+
+[[page]]
+id = "textedit-close-all"
+app = "com.apple.TextEdit"
+goal = "cerrar todas las ventanas"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "menu_item"
+name = "Cerrar todo"
+
+[[page]]
+id = "textedit-irrelevant"
+app = "com.apple.TextEdit"
+goal = "comprar un vuelo"
+[page.gold]
+type = "route"
+# Nothing in a text editor buys flights.
+[page.gold.route]
+type = "abstain"
+
+# --- Finder (always running; menu bar is stable) ---
+
+[[page]]
+id = "finder-new-window"
+app = "com.apple.finder"
+goal = "abrir una nueva ventana del finder"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "menu_item"
+name = "Nueva ventana del Finder"
+
+[[page]]
+id = "finder-new-tab"
+app = "com.apple.finder"
+goal = "abrir una pestaña nueva"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "menu_item"
+name = "Nueva pestaña"
+
+[[page]]
+id = "finder-smart-folder"
+app = "com.apple.finder"
+goal = "crear una carpeta inteligente"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "menu_item"
+name = "Nueva carpeta inteligente"
+
+[[page]]
+id = "finder-open-disabled"
+app = "com.apple.finder"
+goal = "abrir el elemento seleccionado"
+[page.gold]
+type = "route"
+# Every "Abrir*" menu item is disabled (nothing selected). Weak partial
+# matches ("Elementos recientes", "Seleccionar disco de arranque") sit
+# below the act threshold — the engine must abstain.
+[page.gold.route]
+type = "abstain"

@@ -224,3 +224,73 @@ fn bounded_candidate_count() {
     let cands = gen().generate(&o, "save the item", &empty());
     assert!(cands.len() <= 12);
 }
+
+/// Regressions found by the macOS AX dataset eval — each case was a
+/// real MISS against a live TextEdit/Finder tree.
+
+#[test]
+fn quantifier_distinguishes_close_from_close_all() {
+    // "cerrar todas las ventanas": "Cerrar todo" must beat bare "Cerrar".
+    let o = obs(vec![
+        el(1, "menu_item", "Cerrar", &["press"]),
+        el(2, "menu_item", "Cerrar todo", &["press"]),
+    ]);
+    let cands = gen().generate(&o, "cerrar todas las ventanas", &empty());
+    match &cands[0].action {
+        Action::Click {
+            target: Target::Semantic(st),
+            ..
+        } => assert_eq!(st.name.as_deref(), Some("Cerrar todo")),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn label_stopwords_and_empty_tokens_never_match() {
+    // "comprar un vuelo" on a text editor: "Guardar como…" must NOT
+    // stem-match "comprar" (label-side stopword "como"), and no
+    // candidate should be generated at all.
+    let o = obs(vec![
+        el(1, "menu_item", "Guardar como…", &["press"]),
+        el(2, "menu_item", "Nuevo", &["press"]),
+    ]);
+    let cands = gen().generate(&o, "comprar un vuelo", &empty());
+    assert!(cands.is_empty());
+}
+
+#[test]
+fn digits_are_identifiers_not_words() {
+    // "open invoice 1042": "1041"/"1043" share the "104" prefix but are
+    // different identifiers — no stemming on pure digits.
+    let o = obs(vec![
+        el(1, "button", "Open invoice 1041", &["press"]),
+        el(2, "button", "Open invoice 1042", &["press"]),
+    ]);
+    let cands = gen().generate(&o, "open invoice 1042", &empty());
+    match &cands[0].action {
+        Action::Click {
+            target: Target::Semantic(st),
+            ..
+        } => assert_eq!(st.name.as_deref(), Some("Open invoice 1042")),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn bare_verb_label_does_not_beat_specific_object_match() {
+    // Regression: exact_label bonus on a bare verb ("Cerrar") must not
+    // outrank an object-bearing label ("Cerrar todo").
+    let o = obs(vec![
+        el(1, "menu_item", "Configuración del Sistema…", &["press"]),
+        el(2, "menu_item", "Nuevo", &["press"]),
+    ]);
+    let cands = gen().generate(&o, "crear un documento nuevo", &empty());
+    assert_eq!(cands.len(), 1);
+    match &cands[0].action {
+        Action::Click {
+            target: Target::Semantic(st),
+            ..
+        } => assert_eq!(st.name.as_deref(), Some("Nuevo")),
+        other => panic!("{other:?}"),
+    }
+}
