@@ -32,6 +32,8 @@ pub struct DexterRuntime {
     /// Shared journal — `dexter_journal` reads it without taking the
     /// engine lock, so audit stays live while a task runs.
     journal: Arc<Mutex<dexter_engine::Journal>>,
+    /// Cooperative-cancel token for the in-flight `dexter_task`.
+    task_cancel: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 impl DexterRuntime {
@@ -49,6 +51,7 @@ impl DexterRuntime {
             decider: Box::new(dexter_decision::RuleBased::default()),
             config,
             journal,
+            task_cancel: Mutex::new(None),
         }
     }
 
@@ -76,6 +79,10 @@ pub struct ObserveParams {
     pub app: Option<String>,
     /// Cap on flattened elements.
     pub max_elements: Option<usize>,
+    /// Narrow to one window id (from a previous observe's `windows`).
+    /// Elements are filtered by bounds intersection; menubar-style
+    /// unpositioned elements don't belong to a window and are dropped.
+    pub window: Option<u32>,
 }
 
 /// Server-level trust configuration — set by the operator at startup,
@@ -132,8 +139,10 @@ pub struct TaskParams {
     pub done: serde_json::Value,
     /// Scope to an app.
     pub app: Option<String>,
-    /// Max decide/act iterations (default 10).
+    /// Max decide/act iterations (default 10, hard cap 200).
     pub max_steps: Option<u32>,
+    /// Wall-clock budget in seconds (default none, hard cap 3600).
+    pub max_secs: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -176,27 +185,35 @@ impl DexterMcp {
     /// digest. This is what a decision layer should read first.
     #[tool(
         name = "dexter_observe",
-        description = "Observe the world: windows, element count, text digest"
+        description = "Observe the world: windows, elements, text digest. Pass `window` (an id from `windows[]`) to scope to one window."
     )]
     async fn dexter_observe(
         &self,
         Parameters(params): Parameters<ObserveParams>,
     ) -> Result<Json<serde_json::Value>, McpError> {
+        // Payload bounds — the AX walk cost scales with max_elements.
+        let max_elements = params.max_elements.unwrap_or(4_000).min(10_000);
         let scope = ObservationScope {
             app: params.app.as_deref().map(AppSelector::parse),
-            max_elements: params.max_elements.unwrap_or(4_000),
+            max_elements,
             ..Default::default()
         };
-        let max_out = params.max_elements.unwrap_or(4_000).min(500);
+        let max_out = max_elements.min(500);
         let runtime = self.runtime.clone();
+        let window = params.window;
         let obs = tokio::task::spawn_blocking(move || {
-            runtime
+            let obs = runtime
                 .engine
                 .lock()
                 .map_err(err)?
                 .driver()
                 .observe(&scope)
-                .map_err(err)
+                .map_err(err)?;
+            match window {
+                Some(id) => dexter_world_model::within_window(&obs, id)
+                    .ok_or_else(|| err(format!("window {id} not in observation"))),
+                None => Ok(obs),
+            }
         })
         .await
         .map_err(|e| err(format!("join: {e}")))??;
@@ -221,9 +238,22 @@ impl DexterMcp {
                 })
             })
             .collect();
+        let windows: Vec<serde_json::Value> = obs
+            .windows
+            .iter()
+            .map(|w| {
+                serde_json::json!({
+                    "id": w.id,
+                    "app": w.app,
+                    "title": w.title,
+                    "bounds": w.bounds,
+                    "on_screen": w.on_screen,
+                })
+            })
+            .collect();
         Ok(Json(serde_json::json!({
             "observation": obs.id.0,
-            "windows": obs.windows.len(),
+            "windows": windows,
             "element_count": obs.elements.len(),
             "elements": elements,
             "elements_truncated": obs.elements_truncated,
@@ -292,6 +322,10 @@ impl DexterMcp {
         &self,
         Parameters(params): Parameters<ActParams>,
     ) -> Result<Json<serde_json::Value>, McpError> {
+        // Payload bound — an action blob has no business being huge.
+        if params.action.to_string().len() > 65_536 {
+            return Err(err("action JSON exceeds 64KB"));
+        }
         let action: Action = serde_json::from_value(params.action)
             .map_err(|e| err(format!("invalid action JSON: {e}")))?;
         let expect: Option<ExpectedState> =
@@ -376,20 +410,38 @@ impl DexterMcp {
     ) -> Result<Json<serde_json::Value>, McpError> {
         let done: ExpectedState = serde_json::from_value(params.done.clone())
             .map_err(|e| err(format!("invalid done JSON: {e}")))?;
+        // Payload bounds — a misbehaving agent can't request an
+        // unbounded loop or an oversized goal/done blob.
+        if params.goal.len() > 4_096 {
+            return Err(err("goal exceeds 4KB"));
+        }
+        if params.done.to_string().len() > 65_536 {
+            return Err(err("done spec exceeds 64KB"));
+        }
+        let max_steps = params.max_steps.unwrap_or(10).min(200);
+        let max_secs = params.max_secs.map(|s| s.min(3_600));
         let runtime = self.runtime.clone();
         let goal = params.goal.clone();
+        // Fresh cooperative-cancel token for this task — dexter_cancel
+        // flips it; cleared when the task returns.
+        let token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *runtime.task_cancel.lock().map_err(err)? = Some(token.clone());
         let outcome = tokio::task::spawn_blocking(move || {
             let mut engine = runtime.engine.lock().map_err(err)?;
-            Ok::<_, McpError>(engine.run_task(
+            let outcome = engine.run_task(
                 &goal,
                 &runtime.generator,
                 runtime.decider.as_ref(),
                 &TaskConfig {
                     run: run_cfg(params.app.clone(), runtime.config),
-                    max_steps: params.max_steps.unwrap_or(10),
+                    max_steps,
+                    max_duration: max_secs.map(Duration::from_secs),
+                    cancel: Some(token),
                     done_when: done,
                 },
-            ))
+            );
+            *runtime.task_cancel.lock().map_err(err)? = None;
+            Ok::<_, McpError>(outcome)
         })
         .await
         .map_err(|e| err(format!("join: {e}")))??;
@@ -409,8 +461,31 @@ impl DexterMcp {
                 serde_json::json!({"status": "failed", "reason": reason})
             }
             TaskOutcome::MaxSteps => serde_json::json!({"status": "max_steps"}),
+            TaskOutcome::Cancelled => serde_json::json!({"status": "cancelled"}),
+            TaskOutcome::TimedOut { elapsed } => serde_json::json!({
+                "status": "timed_out",
+                "elapsed_ms": elapsed.as_millis() as u64,
+            }),
         };
         Ok(Json(status))
+    }
+
+    /// Ask the running `dexter_task` to stop between steps (cooperative —
+    /// the current action finishes first). No-op when nothing is running.
+    #[tool(
+        name = "dexter_cancel",
+        description = "Cancel the running dexter_task cooperatively (checked between steps)"
+    )]
+    async fn dexter_cancel(&self) -> Result<Json<serde_json::Value>, McpError> {
+        let slot = self.runtime.task_cancel.lock().map_err(err)?;
+        let cancelled = match slot.as_ref() {
+            Some(t) => {
+                t.store(true, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            None => false,
+        };
+        Ok(Json(serde_json::json!({"cancelled": cancelled})))
     }
 
     /// Audit journal for this session — every observation, policy check,

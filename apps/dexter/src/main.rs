@@ -68,6 +68,10 @@ enum Command {
         /// Cap on flattened elements.
         #[arg(long)]
         max_elements: Option<usize>,
+        /// Narrow the observation to one window id (bounds intersection;
+        /// unpositioned elements like menubar items are dropped).
+        #[arg(long)]
+        window: Option<u32>,
         /// Print the text digest (decision-engine input) instead of JSON.
         #[arg(long)]
         digest: bool,
@@ -248,6 +252,10 @@ struct TaskArgs {
     /// Max decide/act iterations.
     #[arg(long, default_value = "10")]
     max_steps: u32,
+    /// Wall-clock budget in seconds (checked per step, alongside
+    /// --max-steps).
+    #[arg(long)]
+    max_secs: Option<u64>,
     /// Permit coordinate-level input.
     #[arg(long)]
     coords: bool,
@@ -346,6 +354,7 @@ fn run() -> Result<()> {
             app,
             max_depth,
             max_elements,
+            window,
             digest,
             screenshot,
         } => observe(
@@ -353,6 +362,7 @@ fn run() -> Result<()> {
             app,
             max_depth,
             max_elements,
+            window,
             digest,
             screenshot,
         ),
@@ -741,6 +751,8 @@ fn run_task(
                 observe_max_elements: 4_000,
             },
             max_steps: args.max_steps,
+            max_duration: args.max_secs.map(Duration::from_secs),
+            cancel: None,
             done_when,
         },
     );
@@ -778,6 +790,17 @@ fn run_task(
         TaskOutcome::MaxSteps => {
             println!("{}", serde_json::json!({"status": "max_steps"}));
             anyhow::bail!("task hit step bound without completing")
+        }
+        TaskOutcome::Cancelled => {
+            println!("{}", serde_json::json!({"status": "cancelled"}));
+            anyhow::bail!("task cancelled")
+        }
+        TaskOutcome::TimedOut { elapsed } => {
+            println!(
+                "{}",
+                serde_json::json!({"status": "timed_out", "elapsed_ms": elapsed.as_millis() as u64})
+            );
+            anyhow::bail!("task exceeded its time budget")
         }
     }
 }
@@ -859,6 +882,7 @@ fn observe(
     app: Option<String>,
     max_depth: Option<u32>,
     max_elements: Option<usize>,
+    window: Option<u32>,
     digest: bool,
     screenshot: Option<String>,
 ) -> Result<()> {
@@ -878,6 +902,11 @@ fn observe(
     }
 
     let obs = driver.observe(&scope).context("observe failed")?;
+    let obs = match window {
+        Some(id) => dexter_world_model::within_window(&obs, id)
+            .ok_or_else(|| anyhow::anyhow!("window {id} not in observation"))?,
+        None => obs,
+    };
     if digest {
         println!("{}", obs.digest);
     } else {

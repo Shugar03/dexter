@@ -444,6 +444,31 @@ impl<D: ComputerDriver> Engine<D> {
         };
 
         for step in 1..=cfg.max_steps {
+            // Cooperative stop + wall-clock bound — checked before each
+            // observe so a cancelled/overtime task never takes another
+            // action.
+            if cfg
+                .cancel
+                .as_ref()
+                .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            {
+                self.journal(
+                    EventKind::TaskCancelled,
+                    serde_json::json!({"step": step - 1, "elapsed_ms": started.elapsed().as_millis() as u64}),
+                );
+                return TaskOutcome::Cancelled;
+            }
+            if let Some(deadline) = cfg.max_duration {
+                if started.elapsed() > deadline {
+                    self.journal(
+                        EventKind::TaskTimedOut,
+                        serde_json::json!({"step": step - 1, "elapsed_ms": started.elapsed().as_millis() as u64, "budget_ms": deadline.as_millis() as u64}),
+                    );
+                    return TaskOutcome::TimedOut {
+                        elapsed: started.elapsed(),
+                    };
+                }
+            }
             let obs = match self.driver.observe(&scope) {
                 Ok(o) => o,
                 Err(e) => {
@@ -539,7 +564,26 @@ impl<D: ComputerDriver> Engine<D> {
                 }
                 Decision::Route { route, rationale } => match route {
                     Route::Wait { millis } => {
-                        std::thread::sleep(Duration::from_millis(millis.min(10_000)))
+                        // Interruptible wait — poll the cancel token in
+                        // 25ms slices so a long wait still stops fast.
+                        let total = millis.min(10_000);
+                        let mut slept = 0u64;
+                        while slept < total {
+                            if cfg
+                                .cancel
+                                .as_ref()
+                                .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+                            {
+                                self.journal(
+                                    EventKind::TaskCancelled,
+                                    serde_json::json!({"step": step, "elapsed_ms": started.elapsed().as_millis() as u64}),
+                                );
+                                return TaskOutcome::Cancelled;
+                            }
+                            let slice = (total - slept).min(25);
+                            std::thread::sleep(Duration::from_millis(slice));
+                            slept += slice;
+                        }
                     }
                     Route::Retry | Route::Reobserve => {}
                     Route::Abstain => {
@@ -621,6 +665,10 @@ pub enum TaskOutcome {
     Failed { reason: String },
     /// Step bound reached without `done_when` verifying.
     MaxSteps,
+    /// Cooperative cancellation (`TaskConfig::cancel` set mid-run).
+    Cancelled,
+    /// Wall-clock budget exceeded (`TaskConfig::max_duration`).
+    TimedOut { elapsed: Duration },
 }
 
 /// `run_task` parameters.
@@ -628,6 +676,12 @@ pub struct TaskConfig {
     pub run: RunConfig,
     /// Hard bound on decide/act iterations.
     pub max_steps: u32,
+    /// Optional wall-clock bound — checked per step, alongside
+    /// `max_steps`. `None` = unbounded (steps still apply).
+    pub max_duration: Option<Duration>,
+    /// Cooperative cancellation token — whoever holds a clone can stop
+    /// the task between steps (checked before each observe).
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Structural goal check — verified against every observation.
     pub done_when: ExpectedState,
 }

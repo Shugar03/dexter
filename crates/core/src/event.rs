@@ -20,6 +20,10 @@ pub enum EventKind {
     HumanApprovalRequired,
     TaskCompleted,
     TaskFailed,
+    /// Cooperative cancellation via `TaskConfig::cancel`.
+    TaskCancelled,
+    /// Wall-clock budget exceeded (`TaskConfig::max_duration`).
+    TaskTimedOut,
 }
 
 /// One structured event in the execution log.

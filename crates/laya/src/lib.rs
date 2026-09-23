@@ -59,24 +59,16 @@ struct PredictResponse {
     error: Option<String>,
 }
 
-/// Decision engine that asks a Laya sidecar to rank candidates.
-pub struct LayaEngine {
+/// One worker process: child + its pipes. Swapped wholesale on respawn.
+struct WorkerProc {
     #[allow(dead_code)]
-    child: Mutex<Child>, // kept alive for the worker's lifetime
-    stdin: Mutex<ChildStdin>,
-    responses: Mutex<Receiver<String>>,
-    next_id: Mutex<u64>,
-    timeout: Duration,
-    /// Below this calibrated confidence the engine abstains instead of
-    /// acting. `0.0` = never gate (report only).
-    min_confidence: f32,
-    /// Last provider string reported by the worker (audit).
-    provider: Mutex<String>,
+    child: Child, // kept alive for the worker's lifetime
+    stdin: ChildStdin,
+    responses: Receiver<String>,
 }
 
-impl LayaEngine {
-    /// Spawn a worker process speaking the NDJSON predict protocol.
-    pub fn spawn(worker_cmd: &str, timeout: Duration) -> std::io::Result<Self> {
+impl WorkerProc {
+    fn spawn(worker_cmd: &str) -> std::io::Result<Self> {
         let mut parts = worker_cmd.split_whitespace();
         let program = parts.next().unwrap_or(worker_cmd);
         let mut child = Command::new(program)
@@ -108,13 +100,54 @@ impl LayaEngine {
         });
 
         Ok(Self {
-            child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
-            responses: Mutex::new(rx),
+            child,
+            stdin,
+            responses: rx,
+        })
+    }
+}
+
+/// Bounded respawns per engine — a crash-looping worker fails hard
+/// instead of masking a broken install.
+const MAX_RESPAWNS: u32 = 2;
+
+/// Transport-level failures justify a respawn+retry; protocol-level
+/// ones (bad JSON, ok:false) do not — the worker is alive, the answer
+/// was the problem.
+fn is_transport_error(e: &DecisionError) -> bool {
+    match e {
+        DecisionError::Timeout { .. } => true,
+        DecisionError::Engine { message, .. } => message.starts_with("worker io:"),
+    }
+}
+
+/// Decision engine that asks a Laya sidecar to rank candidates.
+pub struct LayaEngine {
+    worker: Mutex<WorkerProc>,
+    worker_cmd: String,
+    next_id: Mutex<u64>,
+    timeout: Duration,
+    /// Below this calibrated confidence the engine abstains instead of
+    /// acting. `0.0` = never gate (report only).
+    min_confidence: f32,
+    /// Last provider string reported by the worker (audit).
+    provider: Mutex<String>,
+    /// Worker crashes tolerated — a dead child is respawned once per
+    /// failure and the call retried once.
+    respawns_left: std::sync::atomic::AtomicU32,
+}
+
+impl LayaEngine {
+    /// Spawn a worker process speaking the NDJSON predict protocol.
+    pub fn spawn(worker_cmd: &str, timeout: Duration) -> std::io::Result<Self> {
+        Ok(Self {
+            worker: Mutex::new(WorkerProc::spawn(worker_cmd)?),
+            worker_cmd: worker_cmd.to_string(),
             next_id: Mutex::new(0),
             timeout,
             min_confidence: 0.0,
             provider: Mutex::new("unknown".into()),
+            respawns_left: std::sync::atomic::AtomicU32::new(MAX_RESPAWNS),
         })
     }
 
@@ -129,7 +162,56 @@ impl LayaEngine {
         self.provider.lock().unwrap().clone()
     }
 
+    /// Supervised rpc: on a transport failure (dead/hung worker) respawn
+    /// the sidecar once and retry once. Protocol errors (bad JSON,
+    /// `ok:false`) are not retried — the worker is healthy, the answer
+    /// was the problem.
     fn rpc(&self, questions: &[Question], state: &str) -> Result<PredictResponse, DecisionError> {
+        match self.rpc_once(questions, state) {
+            Err(e) if is_transport_error(&e) => {
+                self.respawn()?;
+                let out = self.rpc_once(questions, state);
+                if out.is_ok() {
+                    // Healthy again — refund the respawn budget.
+                    self.respawns_left
+                        .store(MAX_RESPAWNS, std::sync::atomic::Ordering::Relaxed);
+                }
+                out
+            }
+            other => other,
+        }
+    }
+
+    /// Kill the current child (if still running) and spawn a fresh one.
+    /// Bounded by `respawns_left`.
+    fn respawn(&self) -> Result<(), DecisionError> {
+        let left = self
+            .respawns_left
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |n| n.checked_sub(1),
+            )
+            .map_err(|_| DecisionError::Engine {
+                engine: self.name().into(),
+                message: "worker respawn budget exhausted — not retrying".into(),
+            })?;
+        let _ = left; // consumed
+        let mut w = self.worker.lock().unwrap();
+        let _ = w.child.kill(); // already-dead is fine
+        let _ = w.child.wait(); // reap
+        *w = WorkerProc::spawn(&self.worker_cmd).map_err(|e| DecisionError::Engine {
+            engine: self.name().into(),
+            message: format!("worker respawn failed: {e}"),
+        })?;
+        Ok(())
+    }
+
+    fn rpc_once(
+        &self,
+        questions: &[Question],
+        state: &str,
+    ) -> Result<PredictResponse, DecisionError> {
         let id = {
             let mut n = self.next_id.lock().unwrap();
             *n += 1;
@@ -144,19 +226,20 @@ impl LayaEngine {
             engine: self.name().into(),
             message: format!("serialize request: {e}"),
         })?;
-        {
-            let mut stdin = self.stdin.lock().unwrap();
-            stdin
-                .write_all(line.as_bytes())
-                .and_then(|_| stdin.write_all(b"\n"))
-                .and_then(|_| stdin.flush())
-                .map_err(|e| DecisionError::Engine {
-                    engine: self.name().into(),
-                    message: format!("write to worker: {e}"),
-                })?;
-        }
-        let rx = self.responses.lock().unwrap();
-        let line = rx
+        // Hold the worker lock across write+read: the sidecar is a
+        // serial protocol, one outstanding request at a time.
+        let w = self.worker.lock().unwrap();
+        let mut stdin = &w.stdin;
+        stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .and_then(|_| stdin.flush())
+            .map_err(|e| DecisionError::Engine {
+                engine: self.name().into(),
+                message: format!("worker io: {e}"),
+            })?;
+        let line = w
+            .responses
             .recv_timeout(self.timeout)
             .map_err(|_| DecisionError::Timeout {
                 engine: self.name().into(),

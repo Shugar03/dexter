@@ -162,3 +162,60 @@ fn digest_budget_respects_char_cap() {
     // The header is always present — engines see the app + counts.
     assert!(d.contains("elements"));
 }
+
+#[test]
+fn within_window_scopes_to_intersecting_elements() {
+    use dexter_world_model::within_window;
+    let mut a = el(1, "AXButton", Some("Save"), 1);
+    a.bounds = Some(Rect {
+        x: 10.0,
+        y: 10.0,
+        w: 60.0,
+        h: 20.0,
+    });
+    let mut b = el(2, "AXButton", Some("OtherWindow"), 1);
+    b.bounds = Some(Rect {
+        x: 500.0,
+        y: 400.0,
+        w: 60.0,
+        h: 20.0,
+    });
+    let unbound = el(3, "AXMenuItem", Some("About"), 1); // no bounds -> dropped
+    let mut o = obs(vec![a, b, unbound]);
+    o.windows = vec![
+        Window {
+            id: 7,
+            pid: 100,
+            app: "TextEdit".into(),
+            title: None,
+            bounds: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            on_screen: true,
+            layer: 0,
+        },
+        Window {
+            id: 8,
+            pid: 100,
+            app: "TextEdit".into(),
+            title: None,
+            bounds: Rect {
+                x: 400.0,
+                y: 300.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            on_screen: true,
+            layer: 0,
+        },
+    ];
+    let scoped = within_window(&o, 7).expect("window 7 exists");
+    assert_eq!(scoped.elements.len(), 1);
+    assert_eq!(scoped.elements[0].id, ElementId(1), "only in-window kept");
+    assert_eq!(scoped.windows.len(), 1);
+    assert!(scoped.digest.contains("Save"));
+    assert!(within_window(&o, 99).is_none(), "unknown window is a miss");
+}

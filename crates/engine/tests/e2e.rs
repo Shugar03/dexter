@@ -262,6 +262,8 @@ fn run_task_goal_to_verified_via_rule_based() {
         &TaskConfig {
             run: cfg(),
             max_steps: 5,
+            max_duration: None,
+            cancel: None,
             done_when: ExpectedState::ElementExists {
                 target: SemanticTarget {
                     name: Some("Guardado".into()),
@@ -311,6 +313,8 @@ fn action_proposed_journals_intrusiveness_and_target_bounds() {
         &TaskConfig {
             run: cfg(),
             max_steps: 3,
+            max_duration: None,
+            cancel: None,
             done_when: ExpectedState::ElementExists {
                 target: SemanticTarget {
                     name: Some("Guardado".into()),
@@ -376,6 +380,8 @@ fn run_task_abstains_when_nothing_matches() {
         &TaskConfig {
             run: cfg(),
             max_steps: 5,
+            max_duration: None,
+            cancel: None,
             done_when: ExpectedState::ElementExists {
                 target: SemanticTarget {
                     name: Some("Imposible".into()),
@@ -392,4 +398,72 @@ fn run_task_abstains_when_nothing_matches() {
     }
     // Nothing was pressed — the engine abstained rather than flailing.
     assert!(engine.driver().pressed().is_empty());
+}
+
+#[test]
+fn run_task_cancels_cooperatively() {
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{TaskConfig, TaskOutcome};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let sim = SimDriver::new(vec![el(1, "button", "Save")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let cancel = Arc::new(AtomicBool::new(true)); // pre-set
+
+    let outcome = engine.run_task(
+        "click save",
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 10,
+            max_duration: None,
+            cancel: Some(cancel),
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("Nope".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    assert!(matches!(outcome, TaskOutcome::Cancelled));
+    let events = engine.events();
+    assert!(events.iter().any(|e| e.kind == EventKind::TaskCancelled));
+    // Nothing was acted on — the flag was checked before step 1.
+    assert!(engine.driver().pressed().is_empty());
+    let _ = Ordering::Relaxed;
+}
+
+#[test]
+fn run_task_times_out_on_wall_clock() {
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    let sim = SimDriver::new(vec![el(1, "button", "Save")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+
+    let outcome = engine.run_task(
+        "click save",
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 10,
+            max_duration: Some(Duration::ZERO), // already over budget
+            cancel: None,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("Nope".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    assert!(matches!(outcome, TaskOutcome::TimedOut { .. }));
+    assert!(engine
+        .events()
+        .iter()
+        .any(|e| e.kind == EventKind::TaskTimedOut));
 }

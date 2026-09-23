@@ -30,11 +30,14 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
 
 ## The loop you should run
 
-1. **`dexter_observe`** — returns `observation` id, a text `digest`, and
-   a structured `elements` array (`{id:"e_4", role, name, value, enabled,
-   focused, actions, bounds}`). Element ids are scoped to the
-   observation that produced them — a stale id is rejected, so re-observe
-   after the world changes.
+1. **`dexter_observe {app?, window?}`** — returns `observation` id, a
+   text `digest`, a `windows` array (`{id, app, title, bounds,
+   on_screen}`) and a structured `elements` array (`{id:"e_4", role,
+   name, value, enabled, focused, actions, bounds}`). Element ids are
+   scoped to the observation that produced them — a stale id is
+   rejected, so re-observe after the world changes. Pass
+   `window: <id>` to scope to one window — smaller digest, fewer
+   candidates; elements without bounds (menubar items) are dropped.
 2. **`dexter_candidates {goal}`** — ranked plausible actions for your
    goal: `[{action, rationale, prior}]`. Priors are heuristic hints, not
    truth — *you* decide. Each `action` is ready-to-pass JSON for
@@ -45,9 +48,16 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
    `error`.
 4. **`dexter_verify {expected}`** — check an `ExpectedState` against a
    fresh observation. Three-valued: VERIFIED / FAILED / UNCERTAIN.
-5. **`dexter_task {goal, done}`** — hand the whole loop to Dexter when
-   you don't want to drive it yourself.
-6. **`dexter_journal`** — full audit trail of the session.
+5. **`dexter_task {goal, done, max_steps?, max_secs?}`** — hand the
+   whole loop to Dexter when you don't want to drive it yourself.
+   Bounds: goal ≤ 4 KB, done ≤ 64 KB, `max_steps` ≤ 200,
+   `max_secs` ≤ 3600. Returns `done` / `aborted` / `timed_out` /
+   `cancelled`.
+6. **`dexter_cancel`** — cooperatively cancels the in-flight task
+   (checked between steps; a running `wait` is interrupted).
+7. **`dexter_journal`** — live audit trail: `events` (bounded, with a
+   `dropped` count when the cap elides old ones) readable *while* a
+   task runs.
 
 ## Targeting
 

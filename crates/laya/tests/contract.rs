@@ -170,3 +170,32 @@ fn malformed_worker_reply_is_a_decision_error() {
         Ok(d) => panic!("expected DecisionError for garbage reply, got {d:?}"),
     }
 }
+
+#[test]
+fn crashed_worker_is_respawned_and_call_retried() {
+    // die_once.py answers one request then exits. decide #1 succeeds,
+    // #2 hits a dead worker → respawn + retry must still answer.
+    let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/die_once.py");
+    let engine = LayaEngine::spawn(
+        &format!("python3 {} 0", stub.display()),
+        Duration::from_secs(10),
+    )
+    .expect("stub spawns");
+    let ctx = DecisionContext {
+        goal: "click save".into(),
+        state_digest: "button Save".into(),
+        candidates: vec![candidate("Save")],
+        last_error: None,
+        step: 1,
+    };
+    for i in 0..3 {
+        match engine.decide(&ctx) {
+            Ok(Decision::Act {
+                candidate_index, ..
+            }) => {
+                assert_eq!(candidate_index, Some(0), "call {i}")
+            }
+            other => panic!("call {i}: expected Act after respawn, got {other:?}"),
+        }
+    }
+}

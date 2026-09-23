@@ -81,24 +81,97 @@ No `[profile.release]`. Ship `lto = "thin"`, `codegen-units = 1`,
 `cargo install` users.
 
 **Implemented**: workspace `[profile.release]` (thin LTO, 1 CGU,
-stripped symbols).
+stripped symbols). Binario `dexter` ≈ 9.7 MB.
+
+### W5. No task cancellation
+
+`dexter_task` ran to its step budget; there was no way to stop a
+misbehaving loop short of killing the server.
+
+**Contract**: `TaskConfig.cancel` is a cooperative token (shared
+`Arc<AtomicBool>`), checked before every observe and inside `Route::Wait`
+(25 ms slices — a `wait 30s` is interruptible, not a blind sleep).
+Cancellation journals `TaskCancelled` and returns
+`TaskOutcome::Cancelled`. `dexter_cancel` flips the token of the
+in-flight task; safe no-op when none is running.
+
+**Implemented**: `Engine::run_task` checks `cancel` + deadline each
+iteration; `Route::Wait` sleeps in cancellable chunks. Tests:
+`task_cancels_via_token`, `wait_is_interruptible`, MCP
+`dexter_cancel_stops_a_running_task` (real concurrent cancel against
+a stub decider emitting long waits).
+
+### W6. No per-task wall-clock budget
+
+`max_steps` bounded steps but not time; a `Wait`-heavy or driver-stuck
+task could run arbitrarily long.
+
+**Contract**: `TaskConfig.max_duration: Option<Duration>` checked at the
+top of every iteration alongside cancellation. Expiry journals
+`TaskTimedOut` and returns `TaskOutcome::TimedOut { elapsed }`. CLI
+`--max-secs`, MCP `max_secs` (capped at 3600).
+
+**Implemented**: engine loop + `dexter task --max-secs` + `TaskParams.
+max_secs`. Test: `task_times_out_via_deadline`.
+
+### W7. Unbounded MCP payloads
+
+`goal`, `done`, `action` JSON and `max_steps` were deserialized
+unbounded — a hostile or buggy client could force huge allocations or
+an effectively infinite task.
+
+**Contract**: `goal` ≤ 4 KB, `done` ≤ 64 KB, `action` ≤ 64 KB,
+`max_steps` ≤ 200, `max_secs` ≤ 3600. Violations are `McpError`s, not
+tool results — they fail the call before any engine work.
+
+**Implemented**: validated at the top of `dexter_task`/`dexter_act`.
+Test: `oversized_goal_is_rejected`, `task_params_are_bounded`.
+
+### W8. Laya worker unsupervised
+
+A crashed or hung sidecar surfaced as a permanent decision error —
+the first child process was the engine's only lifetime.
+
+**Contract**: `WorkerProc` owns one child + its pipes; `LayaEngine`
+holds it under a mutex with a bounded respawn budget
+(`MAX_RESPAWNS = 2`). Transport errors (timeout, broken pipe, EOF) →
+respawn + retry the request once. Protocol errors (bad JSON,
+`ok: false`, wrong shape) are *not* retried — the transport is alive,
+the reply is wrong; retrying masks a provider bug. `recv_timeout`
+bounds every read. A crash-loop fails hard after the budget.
+
+**Implemented**: `crates/laya` — `is_transport_error` classifier,
+`rpc()` → `rpc_once()` + respawn. Test:
+`dead_worker_is_respawned_and_request_retried` (stub that exits once,
+then serves).
+
+### W9. `observe` is whole-app only
+
+Every observe paid the full AX walk; agents couldn't ask for just the
+dialog they're acting on, and large trees pushed the digest into its
+truncation tail.
+
+**Contract**: `dexter_world_model::within_window(obs, window_id)`
+returns a scoped `Observation` — `windows` narrowed to the target,
+`elements` filtered to bounds intersection with the window rect,
+digest rebuilt. Elements without bounds (menubar items) are dropped —
+they don't live inside a window. Unknown window id → error, never a
+silent empty observation. Exposed as `dexter_observe { window }` and
+`dexter observe --window`. `dexter_observe` now returns a structured
+`windows[]` (id/app/title/bounds) so agents can pick the id.
+
+**Implemented**: world-model `within_window` + `rects_intersect`;
+MCP `ObserveParams.window`; CLI `--window`. Test:
+`within_window_scopes_to_intersecting_elements`.
 
 ## Remaining gaps (known, not yet scheduled)
 
-- **No task cancellation** — `dexter_task` runs to its step budget; an
-  MCP client disconnect mid-task leaves the loop running to completion.
-  Needs a cancellation token threaded through `run_task`.
-- **Laya worker unsupervised** — a crashed sidecar surfaces as a
-  decision error, not a restart. Needs spawn supervision + bounded
-  retries, and bounded stdout reads.
-- **No request/response size limits** beyond `max_elements` — MCP
-  payloads (e.g. `action` JSON, `done` states) are deserialized
-  unbounded. Small for stdio today; matters for remote transports.
-- **No per-task wall-clock budget** — `max_steps` bounds steps, not
-  time. A `Wait`-heavy task can still run long.
-- **`observe` is whole-app** — no incremental/scoped re-observation
-  yet; large AX trees pay the full walk each call (digest budget caps
-  what the *model* sees, not what the driver walks).
+- **Incremental observe** — scoping filters *after* the walk; the
+  driver still walks the app tree. A future `Driver::observe_window`
+  could ask AX for one window subtree only (bigger win on huge apps,
+  needs per-driver support).
+- **Laya health endpoint** — supervision covers crashes/timeouts, not
+  model load progress; no `dexter doctor` check for the worker yet.
 
 ## Non-goals
 

@@ -165,6 +165,16 @@ pub fn reduce(state: &mut PresenceState, ev: &Event) {
                 }
             }
         }
+        EventKind::TaskCancelled => {
+            state.status = PresenceStatus::Abstained;
+            state.status_line = "cancelled".into();
+            state.target = None;
+        }
+        EventKind::TaskTimedOut => {
+            state.status = PresenceStatus::Failed;
+            state.status_line = "timed out".into();
+            state.target = None;
+        }
     }
 }
 

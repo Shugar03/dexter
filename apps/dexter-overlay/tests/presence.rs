@@ -167,3 +167,22 @@ fn replay_reads_from_the_start() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn cancelled_and_timed_out_tasks_clear_presence() {
+    use dexter_overlay::reduce;
+    let mut s = PresenceState::new("dexter");
+    s.status = PresenceStatus::Acting;
+    s.target = Some(dexter_core::Rect {
+        x: 10.0,
+        y: 10.0,
+        w: 5.0,
+        h: 5.0,
+    });
+    reduce(&mut s, &ev(EventKind::TaskCancelled, serde_json::json!({})));
+    assert_eq!(s.status, PresenceStatus::Abstained);
+    assert!(s.target.is_none());
+    reduce(&mut s, &ev(EventKind::TaskTimedOut, serde_json::json!({})));
+    assert_eq!(s.status, PresenceStatus::Failed);
+    assert_eq!(s.status_line, "timed out");
+}

@@ -229,6 +229,27 @@ pub fn digest_budget(obs: &Observation, max_chars: usize) -> String {
     lines.join("\n")
 }
 
+/// Scope an observation to a single window: elements filtered to those
+/// whose bounds intersect the window's rect, windows list narrowed to
+/// the target, digest rebuilt. Elements without bounds (menubar items
+/// and other unpositioned nodes) don't live inside a window — they're
+/// dropped, which is the honest semantic. `None` when the window id
+/// isn't in this observation — a miss, not an empty fake.
+pub fn within_window(obs: &Observation, window_id: u32) -> Option<Observation> {
+    let win = obs.windows.iter().find(|w| w.id == window_id)?.clone();
+    let mut scoped = obs.clone();
+    scoped.windows = vec![win.clone()];
+    scoped
+        .elements
+        .retain(|e| e.bounds.is_some_and(|b| rects_intersect(b, win.bounds)));
+    scoped.digest = digest(&scoped, 500);
+    Some(scoped)
+}
+
+fn rects_intersect(a: dexter_core::Rect, b: dexter_core::Rect) -> bool {
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
 fn header_lines(obs: &Observation) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let app = obs

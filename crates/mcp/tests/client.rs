@@ -311,3 +311,115 @@ async fn candidates_returns_ranked_menu_for_the_goal() {
     assert!(cands[0]["prior"].as_f64().unwrap() > 0.0);
     client.cancel().await.ok();
 }
+
+/// Decider that always routes a long Wait — the task sits in the
+/// interruptible sleep so we can cancel it mid-run.
+struct WaitForever;
+impl dexter_decision::DecisionEngine for WaitForever {
+    fn name(&self) -> &str {
+        "wait-forever"
+    }
+    fn decide(
+        &self,
+        _ctx: &dexter_decision::DecisionContext,
+    ) -> Result<dexter_decision::Decision, dexter_decision::DecisionError> {
+        Ok(dexter_decision::Decision::Route {
+            route: dexter_decision::Route::Wait { millis: 60_000 },
+            rationale: "waiting".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn dexter_cancel_stops_a_waiting_task() {
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::with_decider(
+        Policy::from_toml("").unwrap(),
+        Box::new(SimDriver::new(vec![])),
+        Some(Box::new(WaitForever)),
+        dexter_mcp::ServerConfig::default(),
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    // Kick off a task that will wait forever; cancel it concurrently.
+    let task = client.call_tool(CallToolRequestParam {
+        name: "dexter_task".into(),
+        arguments: Some(
+            json!({
+                "goal": "never done",
+                "done": {"type":"element_exists","target":{"name":"Nope"}},
+                "max_secs": 600,
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    });
+    let cancel = async {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        client
+            .call_tool(CallToolRequestParam {
+                name: "dexter_cancel".into(),
+                arguments: None,
+            })
+            .await
+            .expect("cancel call")
+    };
+    let (task_res, cancel_res) = tokio::join!(task, cancel);
+    let text = cancel_res.content[0].raw.as_text().unwrap().text.clone();
+    assert!(text.contains("\"cancelled\":true"), "cancel no-op? {text}");
+    let text = task_res.expect("task").content[0]
+        .raw
+        .as_text()
+        .unwrap()
+        .text
+        .clone();
+    let status: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        status["status"], "cancelled",
+        "expected cancelled: {status}"
+    );
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
+async fn cancel_with_no_task_is_noop() {
+    let client = client_server("").await;
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_cancel".into(),
+            arguments: None,
+        })
+        .await
+        .expect("call");
+    let text = res.content[0].raw.as_text().unwrap().text.clone();
+    assert!(text.contains("\"cancelled\":false"), "{text}");
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
+async fn task_rejects_oversized_goal() {
+    let client = client_server("").await;
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_task".into(),
+            arguments: Some(
+                json!({
+                    "goal": "x".repeat(5_000),
+                    "done": {"type":"element_exists","target":{"name":"Nope"}},
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        })
+        .await;
+    let e = res.expect_err("oversized goal must be rejected");
+    assert!(e.to_string().contains("4KB"), "{e}");
+    client.cancel().await.ok();
+}
