@@ -95,10 +95,29 @@ pub enum DecisionError {
     Timeout { engine: String, millis: u64 },
 }
 
+/// Liveness self-report for a decision engine. `dexter_status` and
+/// `dexter doctor` surface this — agents probe it before trusting
+/// `dexter_task` with a goal.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EngineHealth {
+    /// Working and responding.
+    Ready,
+    /// Alive but impaired (e.g. respawn budget partially spent).
+    Degraded(String),
+    /// Not responding — the detail says why.
+    Down(String),
+}
+
 /// The plug point for Laya, LLMs and rule engines.
 pub trait DecisionEngine: Send + Sync {
     fn name(&self) -> &str;
     fn decide(&self, ctx: &DecisionContext) -> Result<Decision, DecisionError>;
+    /// Liveness probe. Read-only — it must never mutate supervision
+    /// state (no respawns). Default: embedded engines are always ready.
+    fn health(&self) -> EngineHealth {
+        EngineHealth::Ready
+    }
 }
 
 /// Typed micro-decision DTO for Q&A-style engines (Laya's actual API

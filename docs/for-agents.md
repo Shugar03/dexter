@@ -58,6 +58,29 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
 7. **`dexter_journal`** — live audit trail: `events` (bounded, with a
    `dropped` count when the cap elides old ones) readable *while* a
    task runs.
+8. **`dexter_status`** — liveness probe: driver capabilities, decision
+   engine health (`ready`/`degraded`/`down` — probe a `laya` worker
+   before trusting `dexter_task` with a goal), journal stats, whether a
+   task is running. Never blocks on the engine lock.
+
+## Python SDK
+
+`sdk/python/dexter.py` — zero-dependency client over the same MCP
+stdio wire:
+
+```python
+from dexter import Dexter
+
+with Dexter() as d:                    # spawns `dexter mcp`
+    obs = d.observe(app="TextEdit")
+    for c in d.candidates("save the document"):
+        print(c["action"], c["prior"])
+    d.act(d.candidates("save the document")[0]["action"])
+    print(d.status()["engine"]["health"])
+
+# Operator trust flags go on the server command:
+Dexter(args=("mcp", "--coords"))
+```
 
 ## Targeting
 

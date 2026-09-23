@@ -250,6 +250,20 @@ fn rects_intersect(a: dexter_core::Rect, b: dexter_core::Rect) -> bool {
     a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
 }
 
+/// Apply `ObservationScope.window` semantics to a driver-returned
+/// observation. If the driver already scoped natively (`windows` is
+/// exactly `[window_id]`), the observation is returned unchanged —
+/// re-filtering by bounds would wrongly drop subtree elements that
+/// overflow the window rect (popovers, menus). Otherwise the post-walk
+/// `within_window` filter applies. `Err` on an unknown id — a miss,
+/// never a silent empty observation.
+pub fn scope_to_window(obs: Observation, window_id: u32) -> Result<Observation, String> {
+    if obs.windows.len() == 1 && obs.windows[0].id == window_id {
+        return Ok(obs);
+    }
+    within_window(&obs, window_id).ok_or_else(|| format!("window {window_id} not in observation"))
+}
+
 fn header_lines(obs: &Observation) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let app = obs

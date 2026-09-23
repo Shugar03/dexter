@@ -39,6 +39,12 @@ pub struct ObservationScope {
     /// Restrict to one application. `None` = whole screen, windows only
     /// (accessibility trees are only walked for a scoped app).
     pub app: Option<AppSelector>,
+    /// Restrict the element walk to one window subtree (a `Window::id`
+    /// from a previous observation). Drivers SHOULD honor this natively;
+    /// callers post-filter with `world_model::within_window` when the
+    /// driver did not (detected by `windows` not already narrowed).
+    #[serde(default)]
+    pub window: Option<u32>,
     /// Max accessibility tree depth to walk.
     pub max_depth: u32,
     /// Cap on flattened elements.
@@ -55,6 +61,7 @@ impl Default for ObservationScope {
     fn default() -> Self {
         Self {
             app: None,
+            window: None,
             max_depth: 40,
             max_elements: 4_000,
             screenshot: false,

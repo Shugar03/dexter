@@ -17,8 +17,8 @@
 
 use dexter_core::Action;
 use dexter_decision::{
-    Answer, CandidateAction, Decision, DecisionContext, DecisionEngine, DecisionError, Question,
-    Route,
+    Answer, CandidateAction, Decision, DecisionContext, DecisionEngine, DecisionError,
+    EngineHealth, Question, Route,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
@@ -321,6 +321,23 @@ pub fn route_option_count() -> usize {
 impl DecisionEngine for LayaEngine {
     fn name(&self) -> &str {
         "laya"
+    }
+
+    /// Liveness probe: one `predict` with no questions. Read-only —
+    /// it never respawns; supervision state belongs to real calls.
+    fn health(&self) -> EngineHealth {
+        match self.rpc_once(&[], "health probe") {
+            Ok(r) if r.ok => EngineHealth::Ready,
+            Ok(r) => {
+                EngineHealth::Degraded(r.error.unwrap_or_else(|| "probe returned ok:false".into()))
+            }
+            Err(e) if is_transport_error(&e) => EngineHealth::Down(format!(
+                "{e} (respawns left: {})",
+                self.respawns_left
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            )),
+            Err(e) => EngineHealth::Degraded(format!("probe error: {e}")),
+        }
     }
 
     fn decide(&self, ctx: &DecisionContext) -> Result<Decision, DecisionError> {

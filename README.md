@@ -189,9 +189,12 @@ terminal state (done / failed / abstained / denied).
 ## MCP tools
 
 `dexter_observe`, `dexter_candidates`, `dexter_act`, `dexter_grant`,
-`dexter_verify`, `dexter_task`, `dexter_journal`. A `needs_approval`
-response carries a fingerprint a human grants via `dexter_grant` — then
-the agent retries.
+`dexter_verify`, `dexter_task`, `dexter_cancel`, `dexter_journal`,
+`dexter_status`. A `needs_approval` response carries a fingerprint a
+human grants via `dexter_grant` — then the agent retries.
+
+`sdk/python/dexter.py` wraps all of it in a zero-dependency Python
+client — see `docs/for-agents.md` for per-client MCP configs.
 
 ```json
 // claude_desktop_config.json

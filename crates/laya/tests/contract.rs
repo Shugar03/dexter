@@ -199,3 +199,38 @@ fn crashed_worker_is_respawned_and_call_retried() {
         }
     }
 }
+
+#[test]
+fn health_reports_ready_for_live_worker_and_down_for_dead() {
+    use dexter_decision::EngineHealth;
+    let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stub_worker.py");
+    let engine = LayaEngine::spawn(
+        &format!("python3 {}", stub.display()),
+        Duration::from_secs(10),
+    )
+    .expect("stub spawns");
+    assert_eq!(engine.health(), EngineHealth::Ready);
+
+    // die_once answers exactly once then exits — a second probe finds
+    // a dead transport → Down, and supervision budget is untouched
+    // (health is read-only, it must not respawn).
+    let die = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/die_once.py");
+    let dead = LayaEngine::spawn(
+        &format!("python3 {}", die.display()),
+        Duration::from_secs(10),
+    )
+    .expect("stub spawns");
+    let _ = dead.decide(&DecisionContext {
+        goal: "g".into(),
+        state_digest: "s".into(),
+        candidates: vec![candidate("x")],
+        last_error: None,
+        step: 1,
+    });
+    // consume the one answer; worker exits after
+    std::thread::sleep(Duration::from_millis(150));
+    match dead.health() {
+        EngineHealth::Down(_) => {}
+        other => panic!("dead worker should report Down, got {other:?}"),
+    }
+}

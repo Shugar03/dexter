@@ -115,6 +115,65 @@ pub fn collect(app: &AXUIElement, max_depth: u32, max_elements: usize) -> AxTree
     }
 }
 
+/// Position/size equality within ε — CGWindowList bounds and AX bounds
+/// can differ by subpixel rounding on Retina displays.
+const BOUNDS_EPS: f64 = 2.0;
+
+fn bounds_eq(a: Rect, b: Rect) -> bool {
+    (a.x - b.x).abs() <= BOUNDS_EPS
+        && (a.y - b.y).abs() <= BOUNDS_EPS
+        && (a.w - b.w).abs() <= BOUNDS_EPS
+        && (a.h - b.h).abs() <= BOUNDS_EPS
+}
+
+/// Collect only the window subtree matching `cg_bounds` — the
+/// `ObservationScope.window` fast path: O(window) instead of O(app).
+/// The menubar is intentionally out of scope (it doesn't live in the
+/// window). `NotFound` when no AX window matches — honest miss.
+///
+/// Limitation: two windows with identical bounds are indistinguishable;
+/// the first in `AXWindows` order wins.
+pub fn collect_window(
+    app: &AXUIElement,
+    cg_bounds: Rect,
+    max_depth: u32,
+    max_elements: usize,
+) -> Result<AxTree, crate::DriverError> {
+    let windows = app
+        .windows()
+        .map_err(|e| crate::DriverError::Platform(format!("AXWindows: {e}")))?;
+    let target = windows
+        .iter()
+        .filter(|w| {
+            let r = w.role().ok().map(|s| s.to_string());
+            is_windowish(r.as_deref())
+        })
+        .find(|w| element_bounds(w).is_some_and(|b| bounds_eq(b, cg_bounds)))
+        .ok_or_else(|| {
+            crate::DriverError::NotFound(format!(
+                "no AX window at bounds [{},{},{}x{}]",
+                cg_bounds.x, cg_bounds.y, cg_bounds.w, cg_bounds.h
+            ))
+        })?;
+
+    let mut ctx = Ctx {
+        max_depth,
+        max_elements,
+        elements: Vec::new(),
+        nodes: Vec::new(),
+        truncated: false,
+        errors: 0,
+        next_id: 1,
+    };
+    walk(&target, None, 0, &mut ctx);
+    Ok(AxTree {
+        elements: ctx.elements,
+        nodes: ctx.nodes,
+        truncated: ctx.truncated,
+        errors: ctx.errors,
+    })
+}
+
 fn read_string(
     el: &AXUIElement,
     f: impl Fn(&AXUIElement) -> Result<CFString, accessibility::Error>,

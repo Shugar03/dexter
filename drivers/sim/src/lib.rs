@@ -89,6 +89,11 @@ impl SimDriver {
         self.state.lock().unwrap().rules.push(Rule { when, effect });
     }
 
+    /// Add a window to the simulated world — tests window scoping.
+    pub fn add_window(&self, window: Window) {
+        self.state.lock().unwrap().windows.push(window);
+    }
+
     /// Elements pressed so far — test observability hook.
     pub fn pressed(&self) -> Vec<ElementId> {
         self.state.lock().unwrap().pressed.clone()
@@ -232,8 +237,12 @@ impl ComputerDriver for SimDriver {
         Ok(self.state.lock().unwrap().windows.clone())
     }
 
-    fn observe(&self, _scope: &ObservationScope) -> Result<Observation, DriverError> {
+    fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
         let mut obs = self.snapshot();
+        if let Some(win) = scope.window {
+            obs = dexter_world_model::within_window(&obs, win)
+                .ok_or_else(|| DriverError::NotFound(format!("window {win}")))?;
+        }
         obs.digest = dexter_world_model::digest(&obs, 250);
         let mut s = self.state.lock().unwrap();
         s.obs_cache.retain(|(id, _)| *id != obs.id);

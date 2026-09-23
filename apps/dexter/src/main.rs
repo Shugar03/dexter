@@ -50,6 +50,12 @@ enum Command {
         /// Ask macOS to show the permission prompts.
         #[arg(long)]
         request: bool,
+        /// Also probe a decision engine's health (rule-based | laya).
+        #[arg(long)]
+        engine: Option<String>,
+        /// Worker command for --engine laya (or DEXTER_LAYA_WORKER).
+        #[arg(long)]
+        engine_path: Option<String>,
     },
     /// List windows known to the window server.
     Windows {
@@ -312,6 +318,32 @@ fn load_policy(path: &Option<String>) -> Result<Policy> {
     }
 }
 
+/// Build the decision engine for `task`/`mcp`/`doctor --engine`.
+/// `laya` spawns the sidecar worker; a spawn failure is an error,
+/// never a silent fallback to rule-based.
+fn build_decider(
+    engine_name: &str,
+    engine_path: &Option<String>,
+    min_confidence: f32,
+) -> Result<Box<dyn dexter_decision::DecisionEngine>> {
+    match engine_name {
+        "rule-based" => Ok(Box::new(dexter_decision::RuleBased::default())),
+        "laya" => {
+            let cmd = engine_path
+                .clone()
+                .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
+                .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
+            let engine = dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(30))
+                .with_context(|| format!("spawning laya worker '{cmd}'"))?
+                .with_min_confidence(min_confidence);
+            Ok(Box::new(engine))
+        }
+        other => {
+            anyhow::bail!("unknown decision engine '{other}' — available: rule-based, laya")
+        }
+    }
+}
+
 /// Build the selected driver. `browser` spawns `safaridriver` unless
 /// `--browser-url` points at an already-running endpoint.
 fn build_driver(cli: &Cli) -> Result<Box<dyn ComputerDriver>> {
@@ -347,7 +379,17 @@ fn run() -> Result<()> {
     let mut engine = Engine::new(build_driver(&cli)?, policy, Duration::from_secs(300));
 
     match cli.cmd {
-        Command::Doctor { request } => doctor(engine.driver(), request, is_browser),
+        Command::Doctor {
+            request,
+            engine: engine_name,
+            engine_path,
+        } => doctor(
+            engine.driver(),
+            request,
+            is_browser,
+            engine_name,
+            engine_path,
+        ),
         Command::Navigate { url, args } => run_action(&mut engine, &args, Action::Navigate { url }),
         Command::Windows { app } => windows(engine.driver(), app),
         Command::Observe {
@@ -713,21 +755,7 @@ fn run_task(
 ) -> Result<()> {
     let done_when: ExpectedState =
         serde_json::from_str(&args.done).context("invalid --done ExpectedState JSON")?;
-    let decider: Box<dyn dexter_decision::DecisionEngine> = match args.engine.as_str() {
-        "rule-based" => Box::new(dexter_decision::RuleBased::default()),
-        "laya" => {
-            let cmd = args
-                .engine_path
-                .clone()
-                .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
-                .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
-            let engine = dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(30))
-                .with_context(|| format!("spawning laya worker '{cmd}'"))?
-                .with_min_confidence(args.min_confidence);
-            Box::new(engine)
-        }
-        other => anyhow::bail!("unknown decision engine '{other}' — available: rule-based, laya"),
-    };
+    let decider = build_decider(&args.engine, &args.engine_path, args.min_confidence)?;
     let generator = dexter_decision::HeuristicGenerator::default();
     if args.coords {
         engine.permit_physical();
@@ -805,9 +833,24 @@ fn run_task(
     }
 }
 
-fn doctor(driver: &dyn ComputerDriver, request: bool, is_browser: bool) -> Result<()> {
+fn doctor(
+    driver: &dyn ComputerDriver,
+    request: bool,
+    is_browser: bool,
+    engine_name: Option<String>,
+    engine_path: Option<String>,
+) -> Result<()> {
     let caps = driver.capabilities();
     println!("driver: {}", caps.name);
+    if let Some(name) = &engine_name {
+        let decider = build_decider(name, &engine_path, 0.0)?;
+        use dexter_decision::EngineHealth;
+        match decider.health() {
+            EngineHealth::Ready => println!("engine '{}': ready", decider.name()),
+            EngineHealth::Degraded(d) => println!("engine '{}': DEGRADED — {d}", decider.name()),
+            EngineHealth::Down(d) => println!("engine '{}': DOWN — {d}", decider.name()),
+        }
+    }
     if is_browser {
         println!("element tree: {}", onoff(caps.element_tree));
         println!("screenshots: {}", onoff(caps.screenshots));
@@ -901,10 +944,10 @@ fn observe(
         scope.screenshot_path = Some(path);
     }
 
+    scope.window = window;
     let obs = driver.observe(&scope).context("observe failed")?;
     let obs = match window {
-        Some(id) => dexter_world_model::within_window(&obs, id)
-            .ok_or_else(|| anyhow::anyhow!("window {id} not in observation"))?,
+        Some(id) => dexter_world_model::scope_to_window(obs, id).map_err(anyhow::Error::msg)?,
         None => obs,
     };
     if digest {
@@ -1047,20 +1090,7 @@ fn eval_run(
     let items =
         dexter_eval::load_jsonl(&text).with_context(|| format!("parsing dataset '{dataset}'"))?;
 
-    let decider: Box<dyn dexter_decision::DecisionEngine> = match engine_name {
-        "rule-based" => Box::new(dexter_decision::RuleBased::default()),
-        "laya" => {
-            let cmd = engine_path
-                .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
-                .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
-            Box::new(
-                dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(30))
-                    .with_context(|| format!("spawning laya worker '{cmd}'"))?
-                    .with_min_confidence(min_confidence),
-            )
-        }
-        other => anyhow::bail!("unknown engine '{other}' — rule-based, laya"),
-    };
+    let decider = build_decider(engine_name, &engine_path, min_confidence)?;
     let generator = dexter_decision::HeuristicGenerator::default();
     let report = dexter_eval::run_eval(&items, &generator, decider.as_ref());
 

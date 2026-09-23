@@ -39,9 +39,32 @@ async fn handshake_and_tool_list() {
         "dexter_task",
         "dexter_journal",
         "dexter_candidates",
+        "dexter_cancel",
+        "dexter_status",
     ] {
         assert!(names.contains(&expected.to_string()), "missing {expected}");
     }
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
+async fn status_reports_driver_engine_and_journal() {
+    let client = client_server("").await;
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_status".into(),
+            arguments: None,
+        })
+        .await
+        .expect("status call");
+    let text = res.content[0].raw.as_text().unwrap().text.clone();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["driver"]["name"], "sim");
+    assert_eq!(v["engine"]["name"], "rule-based");
+    assert_eq!(v["engine"]["health"]["status"], "ready");
+    assert_eq!(v["task_running"], false);
+    assert!(v["journal"]["events"].is_number());
+    assert!(v["journal"]["dropped"].is_number());
     client.cancel().await.ok();
 }
 

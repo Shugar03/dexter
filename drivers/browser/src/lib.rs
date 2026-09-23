@@ -227,6 +227,10 @@ impl ComputerDriver for BrowserDriver {
             screenshot,
             digest: String::new(),
         };
+        if let Some(win) = scope.window {
+            obs = dexter_world_model::within_window(&obs, win)
+                .ok_or_else(|| DriverError::NotFound(format!("window {win}")))?;
+        }
         obs.digest = dexter_world_model::digest(&obs, 250);
         self.cache_observation(&obs);
         Ok(obs)

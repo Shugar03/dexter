@@ -219,3 +219,88 @@ fn within_window_scopes_to_intersecting_elements() {
     assert!(scoped.digest.contains("Save"));
     assert!(within_window(&o, 99).is_none(), "unknown window is a miss");
 }
+
+#[test]
+fn scope_to_window_skips_refilter_when_driver_scoped() {
+    use dexter_world_model::scope_to_window;
+    // Driver-scoped obs: windows == [7] already. A subtree element
+    // overflowing the window rect (popover) must survive — refiltering
+    // would drop it.
+    let mut popover = el(1, "AXMenu", Some("Popup"), 1);
+    popover.bounds = Some(Rect {
+        x: -50.0,
+        y: -50.0,
+        w: 30.0,
+        h: 30.0,
+    });
+    let mut o = obs(vec![popover]);
+    o.windows = vec![Window {
+        id: 7,
+        pid: 100,
+        app: "TextEdit".into(),
+        title: None,
+        bounds: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+        },
+        on_screen: true,
+        layer: 0,
+    }];
+    let scoped = scope_to_window(o, 7).expect("driver-scoped");
+    assert_eq!(scoped.elements.len(), 1, "popover kept — no refilter");
+}
+
+#[test]
+fn scope_to_window_filters_when_driver_didnt() {
+    use dexter_world_model::scope_to_window;
+    let mut a = el(1, "AXButton", Some("In"), 1);
+    a.bounds = Some(Rect {
+        x: 10.0,
+        y: 10.0,
+        w: 10.0,
+        h: 10.0,
+    });
+    let mut b = el(2, "AXButton", Some("Out"), 1);
+    b.bounds = Some(Rect {
+        x: 999.0,
+        y: 999.0,
+        w: 10.0,
+        h: 10.0,
+    });
+    let mut o = obs(vec![a, b]);
+    o.windows = vec![
+        Window {
+            id: 7,
+            pid: 100,
+            app: "A".into(),
+            title: None,
+            bounds: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            on_screen: true,
+            layer: 0,
+        },
+        Window {
+            id: 8,
+            pid: 100,
+            app: "A".into(),
+            title: None,
+            bounds: Rect {
+                x: 900.0,
+                y: 900.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            on_screen: true,
+            layer: 0,
+        },
+    ];
+    let scoped = scope_to_window(o, 7).unwrap();
+    assert_eq!(scoped.elements.len(), 1);
+    assert!(scope_to_window(obs(vec![]), 99).is_err());
+}

@@ -34,6 +34,10 @@ pub struct DexterRuntime {
     journal: Arc<Mutex<dexter_engine::Journal>>,
     /// Cooperative-cancel token for the in-flight `dexter_task`.
     task_cancel: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    /// Driver capabilities, snapshotted at construction — `dexter_status`
+    /// reads them without the engine lock so the probe stays live
+    /// while a task runs.
+    caps: dexter_driver::DriverCapabilities,
 }
 
 impl DexterRuntime {
@@ -45,6 +49,7 @@ impl DexterRuntime {
             engine.permit_physical();
         }
         let journal = engine.journal_handle();
+        let caps = engine.driver().capabilities();
         Self {
             engine: Mutex::new(engine),
             generator: HeuristicGenerator::default(),
@@ -52,6 +57,7 @@ impl DexterRuntime {
             config,
             journal,
             task_cancel: Mutex::new(None),
+            caps,
         }
     }
 
@@ -193,14 +199,15 @@ impl DexterMcp {
     ) -> Result<Json<serde_json::Value>, McpError> {
         // Payload bounds — the AX walk cost scales with max_elements.
         let max_elements = params.max_elements.unwrap_or(4_000).min(10_000);
+        let window = params.window;
         let scope = ObservationScope {
             app: params.app.as_deref().map(AppSelector::parse),
             max_elements,
+            window,
             ..Default::default()
         };
         let max_out = max_elements.min(500);
         let runtime = self.runtime.clone();
-        let window = params.window;
         let obs = tokio::task::spawn_blocking(move || {
             let obs = runtime
                 .engine
@@ -210,8 +217,7 @@ impl DexterMcp {
                 .observe(&scope)
                 .map_err(err)?;
             match window {
-                Some(id) => dexter_world_model::within_window(&obs, id)
-                    .ok_or_else(|| err(format!("window {id} not in observation"))),
+                Some(id) => dexter_world_model::scope_to_window(obs, id).map_err(err),
                 None => Ok(obs),
             }
         })
@@ -499,6 +505,47 @@ impl DexterMcp {
         Ok(Json(serde_json::json!({
             "events": journal.events,
             "dropped": journal.dropped,
+        })))
+    }
+
+    /// Runtime status probe: driver capabilities, decision-engine
+    /// health (read-only liveness — never respawns), journal stats and
+    /// whether a task is in flight. Never takes the engine lock, so it
+    /// answers while a task runs.
+    #[tool(
+        name = "dexter_status",
+        description = "Runtime status: driver, decision-engine health, journal stats, task running"
+    )]
+    async fn dexter_status(&self) -> Result<Json<serde_json::Value>, McpError> {
+        let runtime = self.runtime.clone();
+        let (health, jlen, jdropped, task_running) = tokio::task::spawn_blocking(move || {
+            let health = runtime.decider.health();
+            let (jlen, jdropped) = {
+                let j = runtime.journal.lock().map_err(err)?;
+                (j.events.len(), j.dropped)
+            };
+            let task_running = runtime.task_cancel.lock().map_err(err)?.is_some();
+            Ok::<_, McpError>((health, jlen, jdropped, task_running))
+        })
+        .await
+        .map_err(|e| err(format!("join: {e}")))??;
+        let caps = &self.runtime.caps;
+        Ok(Json(serde_json::json!({
+            "driver": {
+                "name": caps.name,
+                "element_tree": caps.element_tree,
+                "background_input": caps.background_input,
+            },
+            "engine": {
+                "name": self.runtime.decider.name(),
+                "health": health,
+            },
+            "trust": {
+                "approve_all": self.runtime.config.approve_all,
+                "coords": self.runtime.config.allow_coords,
+            },
+            "journal": { "events": jlen, "dropped": jdropped },
+            "task_running": task_running,
         })))
     }
 }
