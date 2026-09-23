@@ -95,7 +95,18 @@ Prefer semantic over coordinates — it's non-invasive and more robust:
 {"type":"click","target":{"name":"Save","role":"button"},"button":"left"}
 {"type":"click","target":{"observation":12,"element":"e_4"},"button":"left"}
 {"type":"type_text","target":{"focused":null},"text":"hello"}
+{"type":"focus","target":{"window_id":2}}
 ```
+
+`{"window_id":N}` targets a whole window — on the **browser driver each
+tab is a window**, so `focus` on it switches tabs (an API switch, not
+pointer input). `dexter_observe{window:N}` observes that tab directly.
+Element refs are per-tab: an `{"observation","element"}` pair issued
+while a *different* tab is active is rejected as stale — switch to the
+window or re-observe. Same-origin iframes are flattened into the
+observation (a `web_area` node with its descendants); cross-origin
+frames count toward `collection_errors` — their content is invisible,
+not silently absent.
 
 `{"x":..,"y":..}` is **physical-tier**: it moves the real cursor and is
 denied by default. Only the *operator* can allow it — launch the server

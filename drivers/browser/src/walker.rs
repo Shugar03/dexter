@@ -7,14 +7,21 @@
 use dexter_core::{Element, ElementId, ElementSource, Rect};
 use serde::Deserialize;
 
-/// The in-page walker. Returns `[{id,parent,depth,role,name,value,
-/// bounds,enabled,focused,actions}]` and stashes the live nodes in
-/// `window.__dexterNodes` for later action dispatch.
+/// The in-page walker. Returns `{elements:[{id,parent,depth,role,name,
+/// value,bounds,enabled,focused,actions}], errors}` and stashes the live
+/// nodes in `window.__dexterNodes` for later action dispatch.
+///
+/// Same-origin iframes are walked transparently: the iframe element
+/// becomes a `web_area` node whose descendants carry bounds offset by
+/// the iframe's rect. Cross-origin (or unloaded) frames still appear as
+/// `web_area` elements but increment `errors` — content we cannot see
+/// is reported, never silently dropped.
 pub const WALKER_JS: &str = r#"
 return (() => {
   const els = [];
   const nodes = [];
   const idx = new Map(); // Node -> flat index
+  let errors = 0;
 
   const ROLE_BY_TAG = {
     a: 'link', button: 'button', select: 'combo_box',
@@ -26,6 +33,7 @@ return (() => {
     ul: 'list', ol: 'list', li: 'list_item', img: 'image',
     label: 'static_text', p: 'static_text', span: 'static_text',
     dialog: 'dialog', fieldset: 'group', legend: 'static_text',
+    iframe: 'web_area',
   };
   const INPUT_ROLES = {
     checkbox: 'check_box', radio: 'radio_button', range: 'slider',
@@ -98,7 +106,7 @@ return (() => {
     return style.display !== 'none' && style.visibility !== 'hidden';
   }
 
-  function push(el, parentIdx, depth) {
+  function push(el, parentIdx, depth, ox, oy) {
     const i = els.length;
     const r = el.getBoundingClientRect();
     const role = roleOf(el);
@@ -122,7 +130,7 @@ return (() => {
       raw_role: el.getAttribute('role') || tag,
       name: name || null,
       value,
-      bounds: { x: r.x, y: r.y, w: r.width, h: r.height },
+      bounds: { x: r.x + ox, y: r.y + oy, w: r.width, h: r.height },
       enabled: !el.disabled && el.getAttribute('aria-disabled') !== 'true',
       focused: document.activeElement === el,
       actions: actionsOf(el, role),
@@ -135,11 +143,29 @@ return (() => {
 
   // Walk elements that carry semantics: interactive, named, or textful.
   const SKIP = new Set(['script','style','noscript','template','svg','path','meta','link','head','br','hr']);
-  function walk(node, parentIdx, depth) {
+  // `ox`/`oy` accumulate iframe offsets — getBoundingClientRect inside a
+  // frame is relative to that frame's viewport.
+  function walk(node, parentIdx, depth, ox, oy) {
     if (depth > 24 || els.length >= 4000) return;
     for (const child of node.children) {
       const tag = child.tagName.toLowerCase();
       if (SKIP.has(tag) || !visible(child)) continue;
+      if (tag === 'iframe') {
+        const fr = child.getBoundingClientRect();
+        const fIdx = push(child, parentIdx, depth, ox, oy);
+        try {
+          const doc = child.contentDocument;
+          if (doc && (doc.body || doc.documentElement)) {
+            walk(doc, fIdx, depth + 1, ox + fr.x, oy + fr.y);
+          } else {
+            // Cross-origin or unloaded — content we cannot see.
+            errors++;
+          }
+        } catch (e) {
+          errors++;
+        }
+        continue;
+      }
       const semantic =
         ['a','button','input','select','textarea','summary','option','label','img'].includes(tag) ||
         child.getAttribute('role') != null ||
@@ -150,15 +176,15 @@ return (() => {
       let myIdx = parentIdx;
       let myDepth = depth;
       if (semantic) {
-        myIdx = push(child, parentIdx, depth);
+        myIdx = push(child, parentIdx, depth, ox, oy);
         myDepth = depth + 1;
       }
-      walk(child, myIdx, myDepth);
+      walk(child, myIdx, myDepth, ox, oy);
     }
   }
-  walk(document.body || document.documentElement, null, 0);
+  walk(document.body || document.documentElement, null, 0, 0, 0);
   window.__dexterNodes = nodes;
-  return els;
+  return { elements: els, errors };
 })()
 "#;
 
@@ -187,13 +213,23 @@ struct RawRect {
     h: f64,
 }
 
-/// Parse the walker's JSON output into core `Element`s.
-pub fn parse_elements(raw: serde_json::Value) -> Vec<Element> {
-    let arr: Vec<RawElement> = match serde_json::from_value(raw) {
+#[derive(Debug, Deserialize)]
+struct WalkResult {
+    elements: Vec<RawElement>,
+    #[serde(default)]
+    errors: u32,
+}
+
+/// Parse the walker's JSON output into core `Element`s plus the number
+/// of frames that could not be walked (cross-origin/unloaded).
+pub fn parse_elements(raw: serde_json::Value) -> (Vec<Element>, u32) {
+    let res: WalkResult = match serde_json::from_value(raw) {
         Ok(v) => v,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), 0),
     };
-    arr.into_iter()
+    let elements = res
+        .elements
+        .into_iter()
         .map(|r| Element {
             id: ElementId(r.id as u64),
             parent: r.parent.map(|p| ElementId(p as u64)),
@@ -215,5 +251,6 @@ pub fn parse_elements(raw: serde_json::Value) -> Vec<Element> {
             identifier: r.identifier,
             source: ElementSource::Dom,
         })
-        .collect()
+        .collect();
+    (elements, res.errors)
 }

@@ -214,6 +214,67 @@ impl WebDriverClient {
             .to_string())
     }
 
+    /// All window handles in the session (W3C `GET /window/handles`).
+    pub fn window_handles(&mut self) -> Result<Vec<String>, DriverError> {
+        let sid = self.ensure_session()?.to_string();
+        let resp = self.get(&format!("/session/{sid}/window/handles"))?;
+        Ok(resp["value"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|h| h.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// The currently focused handle (W3C `GET /window`).
+    pub fn current_window_handle(&mut self) -> Result<String, DriverError> {
+        let sid = self.ensure_session()?.to_string();
+        Ok(self.get(&format!("/session/{sid}/window"))?["value"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
+    }
+
+    /// Focus a different tab/window (W3C `POST /window`). This is an
+    /// observable switch — the tab becomes active in the browser.
+    pub fn switch_to_window(&mut self, handle: &str) -> Result<(), DriverError> {
+        let sid = self.ensure_session()?.to_string();
+        self.post(&format!("/session/{sid}/window"), json!({"handle": handle}))
+            .map(|_| ())
+    }
+
+    /// Open a new tab and return its handle (W3C `POST /window/new`).
+    /// The driver focuses it per spec.
+    pub fn new_window(&mut self) -> Result<String, DriverError> {
+        let sid = self.ensure_session()?.to_string();
+        let resp = self.post(
+            &format!("/session/{sid}/window/new"),
+            json!({"type": "tab"}),
+        )?;
+        Ok(resp["value"]["handle"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
+    }
+
+    /// Close the current tab (W3C `DELETE /window`). Returns the
+    /// remaining handles; the caller must switch to one — the session
+    /// has no focused window until then.
+    pub fn close_window(&mut self) -> Result<Vec<String>, DriverError> {
+        let sid = self.ensure_session()?.to_string();
+        let resp = self.delete(&format!("/session/{sid}/window"))?;
+        Ok(resp["value"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|h| h.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     /// Execute a synchronous script; returns the JSON-serialized result.
     /// `args` are passed to the script as `arguments`.
     pub fn execute(&mut self, script: &str, args: Vec<Value>) -> Result<Value, DriverError> {

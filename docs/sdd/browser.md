@@ -26,7 +26,25 @@
   observación siga cacheada + identidad (role+name) contra un walk
   fresco — DOM mutado → `StaleReference`.
 - **Screenshots**: `GET /session/:id/screenshot` → PNG base64 → archivo.
-- **Windows**: la sesión es una "ventana" (title + url reportados).
+- **Windows = tabs**: cada handle WebDriver del session es un `Window`
+  Dexter con id estable (`handle_ids`, nunca reutilizado). Solo el tab
+  activo reporta `title`/`url`/`on_screen` — leer los demás exigiría
+  un switch observable, así que reportan `None`/`false` honestamente.
+  `observe(scope.window)` switchea al tab pedido antes de caminar
+  (acción API observable, nunca input físico); `Focus` sobre
+  `Target::Window` es el switch explícito. `Target::Element` verifica
+  que el tab activo sea el de la observación origen — si no, `Stale`
+  con instrucción de switchear/re-observar (fail-closed cross-tab).
+  `new_tab()`/`close_tab()` exponen `window/new` y `DELETE window`;
+  cerrar el último tab → `false` (sin ventanas, honesto). Los tabs no se
+  aplastan en un árbol: cada observación es de un solo tab.
+- **Iframes**: el walker recorre `iframe.contentDocument` same-origin
+  de forma transparente — el iframe aparece como `web_area` y sus
+  descendientes cuelgan de él con bounds offset por el rect del frame
+  (`getBoundingClientRect` dentro de un frame es relativo al frame).
+  Cross-origin/no-cargados: el `web_area` sigue en el árbol y
+  `collection_errors` se incrementa — lo inobservable se reporta,
+  nunca se omite en silencio ni aborta la observación.
 - **Capabilities**: `element_tree`, `screenshots`,
   `background_input = true` — el browser no roba cursor ni foco.
 - **Navigate**: `Action::Navigate { url }` → `POST /session/:id/url`.
@@ -81,16 +99,19 @@ Sin eso, `POST /session` devuelve http 500 con el mensaje exacto.
   `content-length` completo; scripts grandes llegan en varios reads).
   Cubre: mapping DOM→Element, click/set_value via `__dexterNodes`,
   ambigüedad fail-closed, stale detection en DOM mutado, `Target::Point`
-  → `Unsupported`, screenshot PNG. Hermético, sin browser.
+  → `Unsupported`, screenshot PNG, y multi-tab: ids de window estables,
+  switch via `Focus{Window}` y `observe{window}`, refs stale cross-tab,
+  `new_tab`/`close_tab` (incl. último tab → vacío), e `errors` de iframe
+  → `collection_errors`. Hermético, sin browser.
 - `tests/safari_e2e.rs` — Safari real, gated `DEXTER_E2E_BROWSER=1`.
   data: URL → observe → click → verifica efecto DOM.
 
 ## No-goals del slice
 
-- Múltiples tabs/frames (se reporta la ventana activa; iframe flatten
-  después).
 - Endpoint WebDriver `/actions` (pointer/teclado físico del driver) —
   las acciones DOM cubren el caso real sin coordenadas.
+- Leer title/url de tabs en background (exigiría switches observables;
+  reportan `None` honesto).
 - `Target::Point` → `Unsupported` honesto (el browser no necesita
   coordenadas; un agente que insista con puntos está mal dirigido).
 

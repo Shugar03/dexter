@@ -20,7 +20,7 @@ use dexter_core::{
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
 use serde_json::json;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -31,10 +31,15 @@ pub struct BrowserDriver {
     client: Mutex<WebDriverClient>,
     /// Last N observations' element snapshots — element targets bind to
     /// the observation that produced them.
-    obs_cache: Mutex<VecDeque<(ObservationId, Vec<Element>)>>,
+    /// (observation id, elements, tab handle) — element targets also
+    /// carry the tab they were observed on.
+    obs_cache: Mutex<VecDeque<(ObservationId, Vec<Element>, String)>>,
     next_observation: AtomicU64,
     /// Driver label reported in observations ("safari", "chrome", ...).
     label: String,
+    /// WebDriver handle → stable Dexter `Window.id` for this driver
+    /// instance (assigned lazily, never reused).
+    handle_ids: Mutex<HashMap<String, u32>>,
 }
 
 impl BrowserDriver {
@@ -62,12 +67,54 @@ impl BrowserDriver {
             obs_cache: Mutex::new(VecDeque::new()),
             next_observation: AtomicU64::new(1),
             label: label.to_string(),
+            handle_ids: Mutex::new(HashMap::new()),
         })
     }
 
     /// Navigate the current session to `url`.
     pub fn navigate(&self, url: &str) -> Result<(), DriverError> {
         self.client.lock().unwrap().navigate(url)
+    }
+
+    /// Open a new tab; it becomes the active context per WebDriver spec.
+    pub fn new_tab(&self) -> Result<u32, DriverError> {
+        let handle = self.client.lock().unwrap().new_window()?;
+        Ok(self.id_for_handle(&handle))
+    }
+
+    /// Close the current tab and switch to the first remaining one, if
+    /// any. Returns `false` when the session has no windows left.
+    pub fn close_tab(&self) -> Result<bool, DriverError> {
+        let mut c = self.client.lock().unwrap();
+        let remaining = c.close_window()?;
+        match remaining.first() {
+            Some(h) => {
+                c.switch_to_window(h)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Stable Dexter window id for a WebDriver handle.
+    fn id_for_handle(&self, handle: &str) -> u32 {
+        let mut map = self.handle_ids.lock().unwrap();
+        if let Some(id) = map.get(handle) {
+            return *id;
+        }
+        let id = map.len() as u32 + 1;
+        map.insert(handle.to_string(), id);
+        id
+    }
+
+    /// The WebDriver handle behind a Dexter `Window.id`, if known.
+    fn handle_for_id(&self, id: u32) -> Option<String> {
+        self.handle_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, v)| **v == id)
+            .map(|(h, _)| h.clone())
     }
 
     /// Run a script in the page (test/debug/CLI escape hatch).
@@ -79,8 +126,8 @@ impl BrowserDriver {
         self.client.lock().unwrap().execute(script, args)
     }
 
-    /// Fresh DOM walk → element list.
-    fn walk(&self) -> Result<Vec<Element>, DriverError> {
+    /// Fresh DOM walk → (element list, iframe collection errors).
+    fn walk(&self) -> Result<(Vec<Element>, u32), DriverError> {
         let raw = self.client.lock().unwrap().execute(WALKER_JS, vec![])?;
         Ok(walker::parse_elements(raw))
     }
@@ -101,10 +148,10 @@ impl BrowserDriver {
         )
     }
 
-    fn cache_observation(&self, obs: &Observation) {
+    fn cache_observation(&self, obs: &Observation, tab: &str) {
         let mut cache = self.obs_cache.lock().unwrap();
-        cache.retain(|(id, _)| *id != obs.id);
-        cache.push_front((obs.id, obs.elements.clone()));
+        cache.retain(|(id, _, _)| *id != obs.id);
+        cache.push_front((obs.id, obs.elements.clone(), tab.to_string()));
         cache.truncate(4);
     }
 
@@ -115,16 +162,16 @@ impl BrowserDriver {
                 observation,
                 element,
             } => {
-                let stored = {
+                let (stored, tab) = {
                     let cache = self.obs_cache.lock().unwrap();
-                    let entry = cache.iter().find(|(id, _)| *id == *observation);
-                    let (_, elements) = entry.ok_or_else(|| {
+                    let entry = cache.iter().find(|(id, _, _)| *id == *observation);
+                    let (_, elements, tab) = entry.ok_or_else(|| {
                         DriverError::StaleReference(format!(
                             "observation {} not held — re-observe",
                             observation.0
                         ))
                     })?;
-                    elements
+                    let stored = elements
                         .iter()
                         .find(|e| e.id == *element)
                         .cloned()
@@ -133,10 +180,20 @@ impl BrowserDriver {
                                 "element {} not in observation {}",
                                 element.0, observation.0
                             ))
-                        })?
+                        })?;
+                    (stored, tab.clone())
                 };
-                // Fresh walk + identity check — DOMs mutate.
-                let fresh_els = self.walk()?;
+                // Fresh walk + identity check — DOMs mutate. The walk
+                // must happen on the tab the observation came from.
+                let current = self.client.lock().unwrap().current_window_handle()?;
+                if current != tab {
+                    return Err(DriverError::StaleReference(format!(
+                        "observation {} belongs to another tab — switch to it \
+                         (Target::Window) or re-observe",
+                        observation.0
+                    )));
+                }
+                let (fresh_els, _) = self.walk()?;
                 let fresh = fresh_els.iter().find(|e| e.id == *element).ok_or_else(|| {
                     DriverError::StaleReference(format!("element {} vanished", element.0))
                 })?;
@@ -178,30 +235,67 @@ impl ComputerDriver for BrowserDriver {
         }
     }
 
+    /// Every session tab is a window. Only the *active* tab carries
+    /// title/url — reading the others would require an observable tab
+    /// switch, so they honestly report `None` and `on_screen: false`.
+    /// WebDriver handles are strings; `id` is a stable per-driver u32
+    /// via `handle_ids`.
     fn windows(&self) -> Result<Vec<Window>, DriverError> {
-        let (title, url) = {
+        let (handles, current, title, url) = {
             let mut c = self.client.lock().unwrap();
-            (c.title().unwrap_or_default(), c.url().unwrap_or_default())
+            (
+                c.window_handles()?,
+                c.current_window_handle().unwrap_or_default(),
+                c.title().unwrap_or_default(),
+                c.url().unwrap_or_default(),
+            )
         };
-        Ok(vec![Window {
-            id: 1,
-            pid: 0,
-            app: self.label.clone(),
-            title: Some(format!("{title} — {url}")),
-            bounds: Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 0.0,
-                h: 0.0,
-            },
-            on_screen: true,
-            layer: 0,
-        }])
+        Ok(handles
+            .iter()
+            .map(|h| Window {
+                id: self.id_for_handle(h),
+                pid: 0,
+                app: self.label.clone(),
+                title: (*h == current).then(|| format!("{title} — {url}")),
+                bounds: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 0.0,
+                    h: 0.0,
+                },
+                on_screen: *h == current,
+                layer: 0,
+            })
+            .collect())
     }
 
+    /// Observations are per-tab: `scope.window` selects *which* tab to
+    /// look at — switching to it first when needed (an observable API
+    /// action, never coordinate input). Tabs are never flattened into
+    /// one tree.
     fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
-        let elements = self.walk()?;
-        let windows = self.windows().unwrap_or_default();
+        let mut windows = self.windows().unwrap_or_default();
+        if let Some(win) = scope.window {
+            let handle = self.handle_for_id(win).ok_or_else(|| {
+                DriverError::NotFound(format!(
+                    "window {win} — not a live browser tab id (re-observe for fresh ids)"
+                ))
+            })?;
+            let mut c = self.client.lock().unwrap();
+            if c.current_window_handle()? != handle {
+                c.switch_to_window(&handle)?;
+                for w in &mut windows {
+                    w.on_screen = w.id == win;
+                }
+            }
+        }
+        let tab = self
+            .client
+            .lock()
+            .unwrap()
+            .current_window_handle()
+            .unwrap_or_default();
+        let (elements, errors) = self.walk()?;
         let screenshot = if scope.screenshot {
             match &scope.screenshot_path {
                 Some(path) => {
@@ -222,17 +316,13 @@ impl ComputerDriver for BrowserDriver {
             windows,
             elements,
             elements_truncated: truncated,
-            collection_errors: 0,
+            collection_errors: errors,
             ax_limited: false, // DOM has no degraded-grant mode
             screenshot,
             digest: String::new(),
         };
-        if let Some(win) = scope.window {
-            obs = dexter_world_model::within_window(&obs, win)
-                .ok_or_else(|| DriverError::NotFound(format!("window {win}")))?;
-        }
         obs.digest = dexter_world_model::digest(&obs, 250);
-        self.cache_observation(&obs);
+        self.cache_observation(&obs, &tab);
         Ok(obs)
     }
 
@@ -280,6 +370,20 @@ impl ComputerDriver for BrowserDriver {
                 ))
             }
             Action::Focus { target } => {
+                // A window target is a tab switch — an observable API
+                // action, not pointer input.
+                if let Target::Window { window_id } = target {
+                    let handle = self.handle_for_id(*window_id).ok_or_else(|| {
+                        DriverError::NotFound(format!(
+                            "window {window_id} — not a live browser tab id"
+                        ))
+                    })?;
+                    self.client.lock().unwrap().switch_to_window(&handle)?;
+                    return Ok(ActionResult::success(
+                        Mechanism::Api,
+                        Some(format!("switched to tab (window {window_id})")),
+                    ));
+                }
                 let id = self.resolve(target)?;
                 let resp = self.exec_on(id, "el.focus(); 'focused'")?;
                 if resp["__dexter_err"].is_string() {

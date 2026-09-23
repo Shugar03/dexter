@@ -562,6 +562,12 @@ fn resolve_target(driver: &dyn ComputerDriver, args: &ActionArgs) -> Result<Targ
     if raw == "focused" {
         return Ok(Target::Focused);
     }
+    if let Some(rest) = raw.strip_prefix("window:") {
+        let n: u32 = rest
+            .parse()
+            .with_context(|| format!("invalid window id '{rest}'"))?;
+        return Ok(Target::Window { window_id: n });
+    }
     if let Some(rest) = raw.strip_prefix("point:") {
         let (x, y) = rest
             .split_once(',')
@@ -577,7 +583,8 @@ fn resolve_target(driver: &dyn ComputerDriver, args: &ActionArgs) -> Result<Targ
         return Ok(Target::Semantic(t));
     }
     anyhow::bail!(
-        "invalid --target '{raw}' — use a semantic JSON object, `element:N`, `focused` or `point:x,y`"
+        "invalid --target '{raw}' — use a semantic JSON object, `element:N`, \
+         `window:N`, `focused` or `point:x,y`"
     )
 }
 
