@@ -1,110 +1,181 @@
-/* dexter landing — presence animation + scroll reveals */
-gsap.registerPlugin(ScrollTrigger);
+/* dexter — the page observes itself.
+   The obs card digests the real DOM, e_N outlines mark real elements,
+   and the presence cursor performs on them — the overlay concept,
+   on the product's own surface. */
 
-const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+(() => {
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const hasGsap = typeof gsap !== "undefined";
+  if (reduced || !hasGsap) document.documentElement.classList.add("no-anim");
+  if (hasGsap && typeof ScrollTrigger !== "undefined") gsap.registerPlugin(ScrollTrigger);
 
-/* ---- hero presence cursor: a tiny journal, replayed forever ---- */
-(function () {
-  const cursor = document.getElementById("hp-cursor");
-  const tag = document.getElementById("hp-tag");
-  const reticle = document.getElementById("hp-reticle");
-  const email = document.getElementById("hp-email");
-  const card = document.getElementById("hp-card");
-  const pay = document.getElementById("hp-pay");
-  if (!cursor || !email || !card || !pay) return;
+  /* ---------- 1. observe the real DOM ---------- */
+  const OBSERVED = [
+    ...document.querySelectorAll(
+      ".nav .brand, .nav-links a, .nav .btn, .hero-ctas a, .artifact-copy a, .foot-cta .btn"
+    ),
+  ];
 
-  function rectOf(el, pad) {
-    const w = el.closest(".win").getBoundingClientRect();
+  const roleOf = (el) =>
+    el.tagName === "A" ? "link" : el.tagName === "BUTTON" ? "button" : "element";
+
+  const elements = OBSERVED.filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }).map((el, i) => {
     const r = el.getBoundingClientRect();
     return {
-      x: r.left - w.left - (pad || 0),
-      y: r.top - w.top - (pad || 0),
-      w: r.width + (pad || 0) * 2,
-      h: r.height + (pad || 0) * 2,
+      id: `e_${i + 1}`,
+      el,
+      role: roleOf(el),
+      name: (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 40),
+      rect: { x: Math.round(r.x), y: Math.round(r.y + scrollY), w: Math.round(r.width), h: Math.round(r.height) },
     };
-  }
-  function flyTo(el, tagText) {
-    const r = rectOf(el);
-    return gsap.to(cursor, {
-      x: r.x + r.w / 2, y: r.y + r.h / 2, duration: 0.55, ease: "power2.inOut",
-      onStart: () => { tag.textContent = tagText; },
-    });
-  }
-  function flash(el) {
-    return gsap.fromTo(el, { scale: 1 }, { scale: 1.02, yoyo: true, repeat: 1, duration: 0.09 });
-  }
-  function typeInto(el, text) {
-    const tl = gsap.timeline();
-    tl.call(() => el.classList.add("hot"));
-    for (const ch of text) {
-      tl.call(() => {
-        let s = el.querySelector(".f-typed");
-        if (!s) { s = document.createElement("span"); s.className = "f-typed"; el.appendChild(s); }
-        s.textContent += ch;
-      });
-      tl.to({}, { duration: 0.045 });
-    }
-    return tl;
-  }
-
-  function buildTimeline() {
-    const tl = gsap.timeline({ repeat: -1, repeatDelay: 1.6 });
-    tl.set(cursor, { x: 40, y: 110 });
-    tl.set(reticle, { opacity: 0 });
-    tl.call(() => { tag.textContent = "dexter · observing"; });
-
-    tl.to({}, { duration: 0.6 });
-    tl.add(flyTo(email, "dexter · typing e_3"));
-    tl.add(typeInto(email, "agent@dexter.dev"));
-    tl.add(flyTo(card, "dexter · typing e_4"));
-    tl.add(typeInto(card, "4242 4242 4242 4242"));
-    tl.add(flyTo(pay, "dexter · clicking e_5"));
-    tl.call(() => {
-      const r = rectOf(pay, 5);
-      gsap.set(reticle, { x: r.x, y: r.y, width: r.w, height: r.h });
-    });
-    tl.to(reticle, { opacity: 1, duration: 0.18 });
-    tl.add(flash(pay));
-    tl.to(pay, { duration: 0.01, onStart: () => pay.classList.add("hot") });
-    tl.call(() => { tag.textContent = "dexter · verifying"; });
-    tl.to({}, { duration: 0.7 });
-    tl.call(() => { tag.textContent = "dexter · verified ✓"; tag.style.background = "#30a46c"; });
-    tl.to({}, { duration: 1.4 });
-
-    // reset
-    tl.to(reticle, { opacity: 0, duration: 0.2 });
-    tl.call(() => {
-      tag.style.background = "";
-      email.classList.remove("hot"); card.classList.remove("hot"); pay.classList.remove("hot");
-      email.querySelectorAll(".f-typed").forEach((n) => n.remove());
-      card.querySelectorAll(".f-typed").forEach((n) => n.remove());
-    });
-    return tl;
-  }
-
-  if (reduced) {
-    // Static composed state: cursor on Pay, verified.
-    const r = rectOf(pay);
-    gsap.set(cursor, { x: r.x + r.w / 2, y: r.y + r.h / 2 });
-    tag.textContent = "dexter · verified ✓";
-    tag.style.background = "#30a46c";
-    return;
-  }
-  // build after fonts/layout settle; rebuild on resize so rects stay true
-  let tl;
-  const start = () => { if (tl) tl.kill(); tl = buildTimeline(); };
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(start);
-  else start();
-  let rt;
-  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(start, 250); });
-})();
-
-/* ---- scroll reveals ---- */
-if (!reduced) {
-  gsap.utils.toArray(".reveal").forEach((el) => {
-    gsap.to(el, {
-      opacity: 1, y: 0, duration: 0.7, ease: "power2.out",
-      scrollTrigger: { trigger: el, start: "top 86%", once: true },
-    });
   });
-}
+
+  const digest = document.getElementById("obs-digest");
+  const status = document.getElementById("obs-status");
+  const app = "dexter.landing";
+
+  const lines = [
+    `observation 14 of ${app} (1 windows, ${elements.length} elements)`,
+    `window 1 "${document.title.slice(0, 42)}" [0,0,${innerWidth}x${innerHeight}] focused`,
+    ...elements.map(
+      (e) =>
+        `${e.id} ${e.role} "${e.name}" enabled actions=[click] [${e.rect.x},${e.rect.y},${e.rect.w}x${e.rect.h}]`
+    ),
+  ];
+
+  const paint = (n) => {
+    digest.innerHTML = lines
+      .slice(0, n)
+      .map((l, i) => {
+        if (i === 0) return `<span class="k">${l}</span>`;
+        if (i === 1) return `<span class="k">${l}</span>`;
+        return l.replace(/^(e_\d+)/, '<span class="tag">$1</span>');
+      })
+      .join("\n");
+  };
+
+  /* ---------- 2. e_N outlines on real elements ---------- */
+  const outlines = elements.map((e) => {
+    const box = document.createElement("div");
+    box.className = "obs-outline";
+    box.style.cssText = "position:fixed;pointer-events:none";
+    const tag = document.createElement("span");
+    tag.className = "obs-eid";
+    tag.textContent = e.id;
+    box.appendChild(tag);
+    document.body.appendChild(box);
+    return { e, box };
+  });
+
+  const trackOutlines = () => {
+    outlines.forEach(({ e, box }) => {
+      const r = e.el.getBoundingClientRect();
+      box.style.left = r.x - 4 + "px";
+      box.style.top = r.y - 4 + "px";
+      box.style.width = r.width + 8 + "px";
+      box.style.height = r.height + 8 + "px";
+      box.style.opacity = r.bottom < 0 || r.top > innerHeight ? 0 : 0.85;
+    });
+  };
+
+  /* ---------- 3. presence cursor ---------- */
+  const cursor = document.getElementById("presence");
+  const tag = document.getElementById("presence-tag");
+  let pulseEl = null;
+
+  const pulse = (el) => {
+    if (pulseEl) pulseEl.remove();
+    const r = el.getBoundingClientRect();
+    pulseEl = document.createElement("div");
+    pulseEl.style.cssText = `position:fixed;left:${r.x - 4}px;top:${r.y - 4}px;width:${r.width + 8}px;height:${r.height + 8}px;border:1.5px solid var(--red);border-radius:8px;pointer-events:none;z-index:59`;
+    document.body.appendChild(pulseEl);
+    gsap.fromTo(pulseEl, { opacity: 0.9, scale: 0.96 }, { opacity: 0, scale: 1.12, duration: 0.7, ease: "power2.out", onComplete: () => { pulseEl?.remove(); pulseEl = null; } });
+  };
+
+  const visit = (e, act) => {
+    const r = e.el.getBoundingClientRect();
+    const cx = r.x + r.width / 2;
+    const cy = r.y + r.height / 2;
+    tag.textContent = `dexter · ${act} ${e.id}`;
+    return gsap.to(cursor, { x: cx - 4, y: cy - 6, duration: 0.9, ease: "power3.inOut" })
+      .then(() => { if (act === "click") pulse(e.el); });
+  };
+
+  const tour = () => {
+    const tl = gsap.timeline({ delay: 0.4 });
+    // first pass: tour the nav + hero CTAs
+    elements.slice(0, 6).forEach((e) => {
+      tl.call(() => visit(e, "hover"));
+      tl.to({}, { duration: 1.1 });
+    });
+    // then act on the github CTA
+    const gh = elements.find((e) => e.name.toLowerCase().includes("github"));
+    if (gh) {
+      tl.call(() => visit(gh, "click"));
+      tl.to({}, { duration: 1.6 });
+    }
+    // idle revisit loop
+    tl.call(function loop() {
+      const e = elements[Math.floor(Math.random() * elements.length)];
+      const acts = ["hover", "hover", "click"];
+      visit(e, acts[Math.floor(Math.random() * acts.length)]).then(() =>
+        gsap.delayedCall(2.2 + Math.random() * 2, loop)
+      );
+    });
+  };
+
+  /* ---------- 4. intro sequence ---------- */
+  const startObserved = () => {
+    // digest types out, then outlines appear
+    const total = lines.length;
+    let shown = 0;
+    const type = setInterval(() => {
+      shown += 1;
+      paint(shown);
+      status.textContent = `observation 14 · ${Math.min(shown - 2, elements.length)}/${elements.length} elements`;
+      if (shown >= total) {
+        clearInterval(type);
+        status.textContent = `observation 14 · ${elements.length} elements · live`;
+        trackOutlines();
+        outlines.forEach(({ box }, i) => gsap.to(box, { opacity: 0.85, duration: 0.3, delay: i * 0.05 }));
+        gsap.to(cursor, { opacity: 1, duration: 0.4, delay: 0.5, onComplete: tour });
+      }
+    }, 90);
+  };
+
+  if (reduced || !hasGsap) {
+    paint(lines.length);
+    status.textContent = `observation 14 · ${elements.length} elements`;
+  } else {
+    // headline lines
+    gsap.to(".hero .line > span", { y: 0, duration: 1.0, ease: "power4.out", stagger: 0.12, delay: 0.15 });
+    gsap.from(".hero-sub, .hero-ctas", { opacity: 0, y: 20, duration: 0.8, delay: 0.6, stagger: 0.1 });
+    gsap.from(".obs-card", { opacity: 0, y: 32, duration: 0.9, delay: 0.45, onComplete: startObserved });
+    cursor.style.transform = `translate(${innerWidth * 0.6}px, ${innerHeight * 0.5}px)`;
+
+    // statement + footer line reveals
+    [".statement", ".foot-cta"].forEach((sel) => {
+      const spans = document.querySelectorAll(`${sel} .line > span`);
+      if (spans.length)
+        gsap.to(spans, {
+          y: 0, duration: 1.0, ease: "power4.out", stagger: 0.12,
+          scrollTrigger: { trigger: sel, start: "top 75%" },
+        });
+    });
+
+    // generic reveals
+    document.querySelectorAll(".reveal").forEach((el, i) => {
+      gsap.to(el, {
+        opacity: 1, y: 0, duration: 0.8, ease: "power3.out",
+        scrollTrigger: { trigger: el, start: "top 88%" },
+        delay: (i % 4) * 0.07,
+      });
+    });
+  }
+
+  addEventListener("scroll", trackOutlines, { passive: true });
+  addEventListener("resize", trackOutlines);
+})();
