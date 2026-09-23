@@ -1,0 +1,22 @@
+[package]
+name = "dexter-overlay"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+description = "Agent presence overlay: draws a labeled cursor over the observed UI from the event journal — click-through, never captures input"
+
+[dependencies]
+dexter-core.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa.workspace = true
+objc.workspace = true
+
+[lib]
+name = "dexter_overlay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dexter-overlay"
+path = "src/main.rs"

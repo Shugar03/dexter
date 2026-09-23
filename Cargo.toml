@@ -15,6 +15,7 @@ members = [
     "drivers/sim",
     "drivers/browser",
     "apps/dexter",
+    "apps/dexter-overlay",
 ]
 
 [workspace.package]

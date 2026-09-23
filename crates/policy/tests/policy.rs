@@ -15,6 +15,13 @@ fn ctx(app: Option<&str>) -> ActionContext {
 
 fn click() -> Action {
     Action::Click {
+        target: Target::Semantic(Default::default()),
+        button: Default::default(),
+    }
+}
+
+fn coordinate_click() -> Action {
+    Action::Click {
         target: Target::Point { x: 1.0, y: 2.0 },
         button: Default::default(),
     }
@@ -43,8 +50,107 @@ fn embedded_policy_allows_reads_and_gates_mutations() {
     ));
     assert!(matches!(
         p.evaluate(&key(), &ctx(Some("Safari"))),
+        // Keys are physical input — denied, never merely approval-gated.
+        PolicyDecision::Deny { .. }
+    ));
+}
+
+#[test]
+fn physical_actions_are_denied_by_default() {
+    // Coordinate clicks move the real cursor — a batch approval for
+    // semantic mutations must never cover them silently.
+    let p = Policy::embedded();
+    assert!(matches!(
+        p.evaluate(&coordinate_click(), &ctx(Some("Safari"))),
+        PolicyDecision::Deny { .. }
+    ));
+    // Keys are physical too: no semantic equivalent exists.
+    assert!(matches!(
+        p.evaluate(&key(), &ctx(Some("Safari"))),
+        PolicyDecision::Deny { .. }
+    ));
+    // Semantic clicks still reach the normal mutating gate.
+    assert!(matches!(
+        p.evaluate(&click(), &ctx(Some("Safari"))),
         PolicyDecision::RequireApproval { .. }
     ));
+}
+
+#[test]
+fn physical_default_is_configurable() {
+    let p = Policy::from_toml(
+        r#"
+        [defaults]
+        physical = "require_approval"
+        "#,
+    )
+    .unwrap();
+    assert!(matches!(
+        p.evaluate(&coordinate_click(), &ctx(None)),
+        PolicyDecision::RequireApproval { .. }
+    ));
+}
+
+#[test]
+fn intrusiveness_matcher_scopes_a_rule() {
+    let p = Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "click"
+        intrusiveness = "physical"
+        decision = "allow"
+        reason = "coordinate clicks approved for this environment"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        p.evaluate(&coordinate_click(), &ctx(None)),
+        PolicyDecision::Allow
+    );
+    // A semantic click does not match the physical-scoped rule and
+    // falls back to the mutating default.
+    assert!(matches!(
+        p.evaluate(&click(), &ctx(None)),
+        PolicyDecision::RequireApproval { .. }
+    ));
+}
+
+#[test]
+fn permit_physical_fills_absent_but_never_overrides_explicit() {
+    // --coords consent: lifts the implicit deny…
+    let mut p = Policy::embedded();
+    p.permit_physical();
+    assert_eq!(
+        p.evaluate(&coordinate_click(), &ctx(None)),
+        PolicyDecision::Allow
+    );
+
+    // …but an explicit deny in the file survives the flag.
+    let mut strict = Policy::from_toml(
+        r#"
+        [defaults]
+        physical = "deny"
+        "#,
+    )
+    .unwrap();
+    strict.permit_physical();
+    assert!(matches!(
+        strict.evaluate(&coordinate_click(), &ctx(None)),
+        PolicyDecision::Deny { .. }
+    ));
+}
+
+#[test]
+fn invalid_intrusiveness_fails_closed() {
+    assert!(Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "click"
+        intrusiveness = "loud"
+        decision = "allow"
+        "#
+    )
+    .is_err());
 }
 
 #[test]

@@ -141,6 +141,48 @@ reason = "never touch system settings"
 Run with `dexter --policy dexter.toml <command>`. Without a file, the
 embedded policy allows reads and requires approval for every mutation.
 
+### Intrusiveness tiers
+
+Every action derives an `intrusiveness` from its *target* — never from
+the model: element/semantic actions are `background` (DOM/AX mutations,
+your cursor never moves), `Navigate`/`Focus`/window targets are `visual`
+(visible, captures nothing), and `point:x,y` clicks, key chords and
+untargeted typing/scroll are `physical` (real CGEvent input).
+
+Physical is **denied by default** — a batch `--approve-all` never covers
+moving your pointer. Grant it explicitly per invocation with `--coords`,
+or in the policy file:
+
+```toml
+[defaults]
+physical = "require_approval"   # absent = deny
+
+[[rule]]
+action = "click"
+intrusiveness = "physical"      # rule matcher: background|visual|physical
+decision = "allow"
+reason = "coordinate clicks approved for this environment"
+```
+
+An explicit `physical = "deny"` in the file always wins over `--coords`.
+
+### Presence overlay
+
+`dexter-overlay` draws the agent's presence on screen — a labeled cursor
+(gliding to each action's target bounds, tagged `dexter · <state>`) on a
+borderless, click-through window. It tails the live journal; it never
+injects or captures input.
+
+```sh
+dexter-overlay --events /tmp/journal.jsonl &   # live tail
+dexter task "pay the order" --app Chrome --events /tmp/journal.jsonl
+dexter-overlay --events /tmp/journal.jsonl --replay  # replay a journal
+```
+
+Physical-tier actions render red with `— physical input` while they run,
+so exclusive control is always visible. The overlay exits ~8s after a
+terminal state (done / failed / abstained / denied).
+
 ## MCP tools
 
 `dexter_observe`, `dexter_act`, `dexter_grant`, `dexter_verify`,

@@ -15,8 +15,8 @@
 //! failures. Every step writes structured events into the journal.
 
 use dexter_core::{
-    Action, ActionResult, AppSelector, Event, EventKind, ExpectedState, ObservationScope,
-    Verification, VerificationStatus,
+    Action, ActionResult, AppSelector, Event, EventKind, ExpectedState, Observation,
+    ObservationScope, Rect, Target, Verification, VerificationStatus,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverError};
 use dexter_policy::{ActionContext, ApprovalStore, Policy, PolicyDecision};
@@ -119,6 +119,10 @@ pub struct Engine<D: ComputerDriver> {
     policy: Policy,
     approvals: ApprovalStore,
     events: Vec<Event>,
+    /// Live append sink — every journaled event is flushed here
+    /// immediately so a presence overlay (or any consumer) can tail the
+    /// journal while the task is still running.
+    journal_sink: Option<std::io::BufWriter<std::fs::File>>,
 }
 
 impl<D: ComputerDriver> Engine<D> {
@@ -128,7 +132,15 @@ impl<D: ComputerDriver> Engine<D> {
             policy,
             approvals: ApprovalStore::new(approval_ttl),
             events: Vec::new(),
+            journal_sink: None,
         }
+    }
+
+    /// Stream every event to `path` (truncated at open) as it happens —
+    /// one JSON line each, flushed. The in-memory journal is unaffected.
+    pub fn set_journal_sink(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        self.journal_sink = Some(std::io::BufWriter::new(std::fs::File::create(path)?));
+        Ok(())
     }
 
     pub fn driver(&self) -> &D {
@@ -145,21 +157,56 @@ impl<D: ComputerDriver> Engine<D> {
         self.approvals.grant(fingerprint);
     }
 
+    /// Consent to physical input for this engine — fills the policy's
+    /// physical default only when the file left it absent. Pair with
+    /// `RunConfig::allow_coordinates` (the driver-side second line).
+    pub fn permit_physical(&mut self) {
+        self.policy.permit_physical();
+    }
+
     fn journal(&mut self, kind: EventKind, data: serde_json::Value) {
-        self.events.push(Event::new(kind, data));
+        let ev = Event::new(kind, data);
+        if let Some(w) = &mut self.journal_sink {
+            use std::io::Write;
+            if serde_json::to_writer(&mut *w, &ev).is_ok() {
+                let _ = w.write_all(b"\n");
+                let _ = w.flush(); // live consumers read this immediately
+            }
+        }
+        self.events.push(ev);
     }
 
     /// Run one step: policy gate → bounded act/verify loop.
     pub fn run_step(&mut self, step: &Step, cfg: &RunConfig) -> StepStatus {
+        self.run_step_inner(step, cfg, None)
+    }
+
+    /// `obs` is the live observation when one exists (the `run_task` loop);
+    /// it lets the journal carry the target's on-screen bounds so an
+    /// overlay can render presence without touching the machine.
+    fn run_step_inner(
+        &mut self,
+        step: &Step,
+        cfg: &RunConfig,
+        obs: Option<&Observation>,
+    ) -> StepStatus {
         let app = step.app.clone().or_else(|| cfg.app.clone());
         let ctx = ActionContext {
             app: app.clone(),
             target_hint: None,
         };
         let fp = dexter_policy::fingerprint(&step.action, &ctx);
+        let intrusiveness = step.action.intrusiveness();
+        let bounds = target_bounds(&step.action, obs);
         self.journal(
             EventKind::ActionProposed,
-            serde_json::json!({"action": &step.action, "app": &app, "fingerprint": &fp}),
+            serde_json::json!({
+                "action": &step.action,
+                "app": &app,
+                "fingerprint": &fp,
+                "intrusiveness": intrusiveness,
+                "target_bounds": bounds,
+            }),
         );
 
         match self.policy.evaluate(&step.action, &ctx) {
@@ -167,7 +214,11 @@ impl<D: ComputerDriver> Engine<D> {
             PolicyDecision::Deny { reason } => {
                 self.journal(
                     EventKind::PolicyChecked,
-                    serde_json::json!({"decision": "deny", "reason": &reason}),
+                    serde_json::json!({
+                        "decision": "deny",
+                        "reason": &reason,
+                        "intrusiveness": intrusiveness,
+                    }),
                 );
                 return StepStatus::Denied { reason };
             }
@@ -193,7 +244,11 @@ impl<D: ComputerDriver> Engine<D> {
                 }
                 self.journal(
                     EventKind::PolicyChecked,
-                    serde_json::json!({"decision": "approved", "fingerprint": &fp}),
+                    serde_json::json!({
+                        "decision": "approved",
+                        "fingerprint": &fp,
+                        "intrusiveness": intrusiveness,
+                    }),
                 );
             }
         }
@@ -424,7 +479,7 @@ impl<D: ComputerDriver> Engine<D> {
                     action, rationale, ..
                 } => {
                     hist.attempts.push(action.clone());
-                    let status = self.run_step(
+                    let status = self.run_step_inner(
                         &Step {
                             note: Some(rationale),
                             action,
@@ -433,6 +488,7 @@ impl<D: ComputerDriver> Engine<D> {
                             app: cfg.run.app.clone(),
                         },
                         &cfg.run,
+                        Some(&obs),
                     );
                     match status {
                         StepStatus::Done { .. } => last_error = None,
@@ -473,6 +529,35 @@ impl<D: ComputerDriver> Engine<D> {
             serde_json::json!({"outcome": "max_steps", "max_steps": cfg.max_steps}),
         );
         TaskOutcome::MaxSteps
+    }
+}
+
+/// The on-screen rect an action will land on — the presence contract an
+/// overlay renders from. Resolved against the live observation for
+/// element targets; a `Point` is its own (1×1) rect; `Navigate` has none.
+fn target_bounds(action: &Action, obs: Option<&Observation>) -> Option<Rect> {
+    let target = match action {
+        Action::Click { target, .. }
+        | Action::Focus { target }
+        | Action::SetValue { target, .. } => Some(target),
+        Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
+        _ => None,
+    }?;
+    match target {
+        Target::Point { x, y } => Some(Rect {
+            x: *x,
+            y: *y,
+            w: 1.0,
+            h: 1.0,
+        }),
+        Target::Window { window_id } => obs?
+            .windows
+            .iter()
+            .find(|w| w.id == *window_id)
+            .map(|w| w.bounds),
+        _ => obs
+            .and_then(|o| dexter_world_model::resolve_element(o, target).ok())
+            .and_then(|e| e.bounds),
     }
 }
 

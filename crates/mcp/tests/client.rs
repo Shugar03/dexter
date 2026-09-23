@@ -89,7 +89,7 @@ async fn act_needs_approval_returns_grantable_fingerprint() {
             name: "dexter_act".into(),
             arguments: Some(
                 json!({
-                    "action": {"type":"key","chord":{"modifiers":["cmd"],"key":"s"}},
+                    "action": {"type":"click","target":{"name":"Save"},"button":"left"},
                 })
                 .as_object()
                 .unwrap()
@@ -101,7 +101,7 @@ async fn act_needs_approval_returns_grantable_fingerprint() {
     let text = res.content[0].raw.as_text().expect("text content");
     let status: serde_json::Value = serde_json::from_str(&text.text).unwrap();
     assert_eq!(status["status"], "needs_approval");
-    assert!(status["fingerprint"].as_str().unwrap().contains("cmd"));
+    assert!(status["fingerprint"].as_str().unwrap().contains("Save"));
 
     // Grant it, then verify the journal shows the approval path.
     let fp = status["fingerprint"].as_str().unwrap().to_string();

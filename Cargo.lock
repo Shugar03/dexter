@@ -855,6 +855,7 @@ dependencies = [
  "dexter-policy",
  "dexter-sim",
  "dexter-verify",
+ "dexter-world-model",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -921,6 +922,16 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "dexter-overlay"
+version = "0.0.1"
+dependencies = [
+ "cocoa",
+ "dexter-core",
+ "objc",
+ "serde_json",
 ]
 
 [[package]]

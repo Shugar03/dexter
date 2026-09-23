@@ -56,6 +56,62 @@ pub struct ScrollDelta {
     pub dy: f64,
 }
 
+/// How much an action can disturb the human using the machine.
+/// Derived from the action's target — never model-declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Intrusiveness {
+    /// Semantic mutation (DOM/AX) — the physical cursor never moves and
+    /// focus is not stolen. The user keeps full control.
+    Background,
+    /// Visible but non-capturing — a window raises, a page navigates.
+    Visual,
+    /// Moves or captures the real pointer/keyboard (CGEvent, typing into
+    /// whatever happens to be focused). Gated separately by policy.
+    Physical,
+}
+
+impl Target {
+    /// The intrusiveness of acting through this target alone.
+    pub fn intrusiveness(&self) -> Intrusiveness {
+        match self {
+            // Element, semantic and focused targets resolve to a control —
+            // drivers act on it semantically (AXPress, DOM click).
+            Target::Element { .. } | Target::Semantic(_) | Target::Focused => {
+                Intrusiveness::Background
+            }
+            // A window target activates/raises — visible, captures nothing.
+            Target::Window { .. } => Intrusiveness::Visual,
+            // Raw coordinates can only be reached with real input events.
+            Target::Point { .. } => Intrusiveness::Physical,
+        }
+    }
+}
+
+impl Action {
+    /// Worst-case intrusiveness of this action — the tier of its most
+    /// invasive target. A click is `Background` on an element and
+    /// `Physical` on coordinates; the verb alone decides nothing.
+    pub fn intrusiveness(&self) -> Intrusiveness {
+        match self {
+            Action::Click { target, .. } | Action::Focus { target } => target.intrusiveness(),
+            Action::SetValue { target, .. } => target.intrusiveness(),
+            Action::Scroll { target, .. } | Action::TypeText { target, .. } => target
+                .as_ref()
+                .map(Target::intrusiveness)
+                // No target = act on whatever is focused / at the pointer —
+                // real keystrokes or pointer-relative scroll.
+                .unwrap_or(Intrusiveness::Physical),
+            // Key chords are physical input: no semantic equivalent exists.
+            Action::Key { .. } => Intrusiveness::Physical,
+            // Raising a window / opening a URL is visible but captures no
+            // input — the user tolerates it without losing control.
+            Action::Navigate { .. } => Intrusiveness::Visual,
+            Action::Observe | Action::Wait { .. } => Intrusiveness::Background,
+        }
+    }
+}
+
 /// A single physical/semantic action against the computer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

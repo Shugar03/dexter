@@ -91,6 +91,97 @@ fn key_chord_parses_modifiers_and_rejects_missing_key() {
 }
 
 #[test]
+fn intrusiveness_follows_the_target_not_the_verb() {
+    // The same verb is background on an element and physical on raw
+    // coordinates — intrusiveness is derived, never model-declared.
+    let semantic = Action::Click {
+        target: Target::Semantic(SemanticTarget {
+            name_contains: Some("Save".into()),
+            ..Default::default()
+        }),
+        button: MouseButton::Left,
+    };
+    let coordinate = Action::Click {
+        target: Target::Point { x: 100.0, y: 200.0 },
+        button: MouseButton::Left,
+    };
+    assert_eq!(semantic.intrusiveness(), Intrusiveness::Background);
+    assert_eq!(coordinate.intrusiveness(), Intrusiveness::Physical);
+}
+
+#[test]
+fn intrusiveness_covers_every_action() {
+    use Intrusiveness::*;
+    let cases: &[(Action, Intrusiveness)] = &[
+        (Action::Observe, Background),
+        (Action::Wait { millis: 10 }, Background),
+        (
+            Action::SetValue {
+                target: Target::Focused,
+                value: "x".into(),
+            },
+            Background,
+        ),
+        (
+            Action::TypeText {
+                text: "hi".into(),
+                target: Some(Target::Focused),
+            },
+            Background,
+        ),
+        (
+            Action::TypeText {
+                text: "hi".into(),
+                target: None,
+            },
+            Physical, // types into whatever is focused — real keystrokes
+        ),
+        (
+            Action::Key {
+                chord: KeyChord::parse("cmd+s").unwrap(),
+            },
+            Physical,
+        ),
+        (
+            Action::Scroll {
+                delta: ScrollDelta { dx: 0.0, dy: 100.0 },
+                target: None,
+            },
+            Physical, // scrolls at the user's pointer location
+        ),
+        (
+            Action::Navigate {
+                url: "https://x".into(),
+            },
+            Visual,
+        ),
+        (
+            Action::Focus {
+                target: Target::Window { window_id: 1 },
+            },
+            Visual,
+        ),
+        (
+            Action::Click {
+                target: Target::Window { window_id: 1 },
+                button: MouseButton::Left,
+            },
+            Visual, // activate/raise — visible, captures nothing
+        ),
+        (
+            Action::Click {
+                target: Target::Focused,
+                button: MouseButton::Left,
+            },
+            Background,
+        ),
+    ];
+    for (action, expected) in cases {
+        assert_eq!(action.intrusiveness(), *expected, "{action:?}");
+    }
+}
+
+#[test]
 fn uncertain_verification_is_not_success() {
     let v = Verification::uncertain(vec!["element list was truncated".into()]);
     assert_eq!(v.status, VerificationStatus::Uncertain);

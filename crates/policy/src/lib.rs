@@ -5,7 +5,7 @@
 //! the crate has no notion of "trusted caller": the CLI, MCP and SDK all
 //! pass through the same `evaluate` path.
 
-use dexter_core::{Action, AppSelector, DexterError};
+use dexter_core::{Action, AppSelector, DexterError, Intrusiveness};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -48,12 +48,19 @@ struct RawPolicy {
 struct Defaults {
     #[serde(default = "default_mutating")]
     mutating: DecisionKind,
+    /// Actions that move or capture the real pointer/keyboard. `None`
+    /// means "deny" — and lets `permit_physical` distinguish an explicit
+    /// `physical = "deny"` (which a CLI flag must not override) from an
+    /// absent key.
+    #[serde(default)]
+    physical: Option<DecisionKind>,
 }
 
 impl Default for Defaults {
     fn default() -> Self {
         Self {
             mutating: default_mutating(),
+            physical: None,
         }
     }
 }
@@ -70,6 +77,8 @@ struct RawRule {
     /// Optional app filter: substring of app name, `bundle:com.x`, or
     /// `pid:123`. Absent = matches any app.
     app: Option<String>,
+    /// Optional intrusiveness filter. Absent = matches any level.
+    intrusiveness: Option<Intrusiveness>,
     decision: DecisionKind,
     #[serde(default)]
     reason: String,
@@ -117,14 +126,22 @@ impl Policy {
         Self::from_toml(&text)
     }
 
+    /// Consent to physical input for this invocation (the CLI's
+    /// `--coords` flag). Only fills an *absent* default — an explicit
+    /// `physical = "deny"` or `require_approval` in the file always wins.
+    pub fn permit_physical(&mut self) {
+        self.defaults.physical.get_or_insert(DecisionKind::Allow);
+    }
+
     /// Evaluate an action. First matching rule wins; no match falls back
-    /// to the mutating default.
+    /// to the intrusiveness-appropriate default.
     pub fn evaluate(&self, action: &Action, ctx: &ActionContext) -> PolicyDecision {
         let Some(kind) = action_kind(action) else {
             return PolicyDecision::Allow; // reads: Observe / Wait
         };
+        let intrusiveness = action.intrusiveness();
         for rule in &self.rules {
-            if !rule_matches(rule, kind, ctx) {
+            if !rule_matches(rule, kind, intrusiveness, ctx) {
                 continue;
             }
             let reason = if rule.reason.is_empty() {
@@ -143,13 +160,27 @@ impl Policy {
                 DecisionKind::RequireApproval => PolicyDecision::RequireApproval { reason },
             };
         }
-        let reason = format!(
-            "no policy rule for {} on {} — {}",
-            kind,
-            describe_ctx(ctx),
-            "mutations are not allowed by default"
-        );
-        match self.defaults.mutating {
+        // No rule matched. Physical input has its own floor — a batch
+        // approval for mutations never silently covers moving the real
+        // cursor.
+        let default = match intrusiveness {
+            Intrusiveness::Physical => self.defaults.physical.unwrap_or(DecisionKind::Deny),
+            _ => self.defaults.mutating,
+        };
+        let reason = match intrusiveness {
+            Intrusiveness::Physical => format!(
+                "physical input for {} on {} — moving the user's pointer is not allowed by default",
+                kind,
+                describe_ctx(ctx)
+            ),
+            _ => format!(
+                "no policy rule for {} on {} — {}",
+                kind,
+                describe_ctx(ctx),
+                "mutations are not allowed by default"
+            ),
+        };
+        match default {
             DecisionKind::Allow => PolicyDecision::Allow,
             DecisionKind::Deny => PolicyDecision::Deny { reason },
             DecisionKind::RequireApproval => PolicyDecision::RequireApproval { reason },
@@ -191,10 +222,20 @@ fn action_kind_of(s: &str) -> Option<()> {
     }
 }
 
-fn rule_matches(rule: &RawRule, kind: &'static str, ctx: &ActionContext) -> bool {
+fn rule_matches(
+    rule: &RawRule,
+    kind: &'static str,
+    intrusiveness: Intrusiveness,
+    ctx: &ActionContext,
+) -> bool {
     let action_ok = rule.action == "*" || rule.action == kind;
     if !action_ok {
         return false;
+    }
+    if let Some(tier) = rule.intrusiveness {
+        if tier != intrusiveness {
+            return false;
+        }
     }
     let Some(pattern) = &rule.app else {
         return true;

@@ -457,6 +457,11 @@ fn run_action(
         .map(serde_json::from_str::<ExpectedState>)
         .transpose()
         .context("invalid --expect JSON")?;
+    if args.coords {
+        // --coords is the user's physical-input consent: it lifts the
+        // policy's implicit deny and permits coordinate mechanisms.
+        engine.permit_physical();
+    }
     let cfg = RunConfig {
         app: app.clone(),
         max_attempts: args.attempts,
@@ -575,6 +580,15 @@ fn run_scenario(
     for fp in &file.grants {
         engine.grant_approval(fp);
     }
+    if coords {
+        engine.permit_physical();
+    }
+    if let Some(path) = &events_path {
+        // Live stream: a presence overlay tails this file mid-run.
+        engine
+            .set_journal_sink(std::path::Path::new(path))
+            .with_context(|| format!("opening events sink '{path}'"))?;
+    }
     let cfg = RunConfig {
         app: file.app.as_deref().map(AppSelector::parse),
         max_attempts: file.max_attempts.unwrap_or(3),
@@ -595,15 +609,6 @@ fn run_scenario(
         })
         .collect();
     let report = engine.run_scenario(&steps, &cfg);
-
-    if let Some(path) = events_path {
-        let mut out = String::new();
-        for e in engine.events() {
-            out.push_str(&serde_json::to_string(e)?);
-            out.push('\n');
-        }
-        std::fs::write(&path, out).with_context(|| format!("writing events '{path}'"))?;
-    }
 
     for (i, status) in &report.steps {
         print!("step {i}: ");
@@ -638,6 +643,14 @@ fn run_task(
         other => anyhow::bail!("unknown decision engine '{other}' — available: rule-based, laya"),
     };
     let generator = dexter_decision::HeuristicGenerator::default();
+    if args.coords {
+        engine.permit_physical();
+    }
+    if let Some(path) = &args.events {
+        engine
+            .set_journal_sink(std::path::Path::new(path))
+            .with_context(|| format!("opening events sink '{path}'"))?;
+    }
     let outcome = engine.run_task(
         goal,
         &generator,
@@ -655,15 +668,6 @@ fn run_task(
             done_when,
         },
     );
-
-    if let Some(path) = args.events {
-        let mut out = String::new();
-        for e in engine.events() {
-            out.push_str(&serde_json::to_string(e)?);
-            out.push('\n');
-        }
-        std::fs::write(&path, out).with_context(|| format!("writing events '{path}'"))?;
-    }
 
     use dexter_engine::TaskOutcome;
     match outcome {

@@ -55,6 +55,8 @@ publicar la primera release.
 - Servidor MCP (`rmcp`, stdio): `computer.observe`, `click`, `type`, `scroll`, `press`, `windows`, `execute_task` — nunca salta Policy ni Verification
 - Recovery ladder pasos 1–3: retry → refresh observation → alternative semantic target
 - Event log completo + recording/replay de escenarios
+- ✅ Intrusiveness tiers (`background`/`visual`/`physical` derivados del target) — physical gated aparte (`defaults.physical`, matcher `intrusiveness` en rules, `--coords` = consent explícito, deny explícito siempre gana)
+- ✅ `dexter-overlay` — presencia del agente on-screen (cursor etiquetado click-through, tail del journal en vivo); el usuario ve dónde trabaja Dexter sin perder el puntero
 - Onboarding de permisos pulido (`doctor` + prompt del sistema)
 - Repo público ordenado: SECURITY.md, CONTRIBUTING, issue/PR templates, changelog
 - Release **v0.1.0**: binario macOS firmado + Homebrew tap, crates internos como `dexter-*` (binario `dexter` publicado como `dexter-cu`)

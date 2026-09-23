@@ -282,6 +282,85 @@ fn run_task_goal_to_verified_via_rule_based() {
 }
 
 #[test]
+fn action_proposed_journals_intrusiveness_and_target_bounds() {
+    // Presence contract: an overlay tails the journal and needs the
+    // action's intrusiveness tier plus the on-screen rect of its target.
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    let mut btn = el(1, "button", "Guardar");
+    btn.bounds = Some(Rect {
+        x: 10.0,
+        y: 20.0,
+        w: 80.0,
+        h: 24.0,
+    });
+    let sim = SimDriver::new(vec![btn]);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "Guardado")),
+    );
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let outcome = engine.run_task(
+        "click guardar",
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 3,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("Guardado".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    assert!(matches!(outcome, TaskOutcome::Completed { .. }));
+
+    let proposed = engine
+        .events()
+        .iter()
+        .find(|e| e.kind == EventKind::ActionProposed)
+        .expect("ActionProposed");
+    assert_eq!(proposed.data["intrusiveness"], "background");
+    let b = &proposed.data["target_bounds"];
+    assert_eq!(b["x"], 10.0, "bounds resolved from the live observation");
+    assert_eq!(b["w"], 80.0);
+}
+
+#[test]
+fn physical_action_denied_before_touching_driver() {
+    // A coordinate click with the embedded policy: physical input is
+    // denied by default — the driver never sees it.
+    let sim = SimDriver::new(vec![el(1, "button", "A")]);
+    let mut engine = Engine::new(sim, Policy::embedded(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Point { x: 5.0, y: 5.0 },
+            button: MouseButton::Left,
+        },
+        expect: None,
+        max_attempts: None,
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Denied { reason } => assert!(reason.contains("physical")),
+        other => panic!("expected Denied, got {other:?}"),
+    }
+    let checked = engine
+        .events()
+        .iter()
+        .find(|e| e.kind == EventKind::PolicyChecked)
+        .expect("PolicyChecked");
+    assert_eq!(checked.data["intrusiveness"], "physical");
+}
+
+#[test]
 fn run_task_abstains_when_nothing_matches() {
     use dexter_decision::{HeuristicGenerator, RuleBased};
     use dexter_engine::{TaskConfig, TaskOutcome};
