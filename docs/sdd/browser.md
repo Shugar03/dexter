@@ -13,6 +13,9 @@
   walker guarda los nodos vivos en `window.__dexterNodes` — los
   `ElementId` son índices estables *dentro de la observación*.
 - **Act**: `execute/sync` con `__dexterNodes[N]` + acción DOM pura
+  (los scripts siempre empiezan `return ` — WebDriver devuelve el valor
+  del return top-level; sin él los side-effects corren pero el chequeo
+  de `__dexter_err` queda ciego — bug encontrado en E2E real)
   (`el.click()`, `el.focus()`, `el.value=...+input/change events`,
   `scrollIntoView`, `KeyboardEvent` dispatch) → `Mechanism::Dom`.
   Nunca coordenadas: las acciones DOM se despachan dentro de la página
@@ -36,8 +39,14 @@ espera `/status` ready, y crea la sesión *lazy* en el primer observe/act.
 `Drop` → `DELETE /session` + kill del proceso.
 
 `BrowserDriver::connect(url, label)` attachea a un endpoint ya corriendo
-(chromedriver:9515, geckodriver:4444, grid remoto) — el proceso no es
-nuestro, no se mata.
+(chromedriver:9515, geckodriver:4444, grid remoto) y abre sesión propia
+— el proceso no es nuestro, no se mata.
+
+`BrowserDriver::connect_attach(url, label)` (lo que usa el CLI
+`--browser-url`) adopta la sesión viva del endpoint via `GET /sessions`
+(no-W3C pero universal) — un comando one-shot puede observar/actuar la
+página que el usuario ya tiene abierta. Las sesiones adoptadas no se
+cierran en `Drop` (`owns_session=false`); las propias sí.
 
 Errores HTTP 4xx/5xx: el cliente lee el body WebDriver
 (`{"value":{"error","message"}}`) y propaga el mensaje real — p.ej. el

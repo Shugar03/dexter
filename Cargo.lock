@@ -813,6 +813,7 @@ dependencies = [
  "dexter-decision",
  "dexter-driver",
  "dexter-engine",
+ "dexter-eval",
  "dexter-laya",
  "dexter-macos",
  "dexter-mcp",
@@ -854,6 +855,19 @@ dependencies = [
  "dexter-policy",
  "dexter-sim",
  "dexter-verify",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "dexter-eval"
+version = "0.0.1"
+dependencies = [
+ "dexter-core",
+ "dexter-decision",
+ "dexter-sim",
+ "dexter-world-model",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

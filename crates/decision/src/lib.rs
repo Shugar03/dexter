@@ -127,14 +127,30 @@ pub enum Answer {
     Bool { id: String, value: bool },
 }
 
-/// Reduces an observation to plausible next actions for a goal.
-pub trait CandidateGenerator: Send + Sync {
-    fn generate(&self, obs: &Observation, goal: &str) -> Vec<CandidateAction>;
+/// Task history available to the generator: what was already tried and
+/// what the world looked like before. Repeat penalties and observation
+/// deltas live here.
+#[derive(Debug, Default)]
+pub struct GenHistory {
+    /// Actions already executed in this task (in order).
+    pub attempts: Vec<Action>,
+    /// Last step's failure summary, if any.
+    pub last_error: Option<String>,
+    /// Previous observation, for delta signals (new elements get a
+    /// small bonus — a dialog that just appeared is often the point).
+    pub prev: Option<Observation>,
 }
 
-/// Default generator: elements advertising press/focus actions whose
-/// labels relate to goal keywords, ranked by name-match strength.
-/// Deterministic, no model — that's the point of the seam.
+/// Reduces an observation to plausible next actions for a goal.
+pub trait CandidateGenerator: Send + Sync {
+    fn generate(&self, obs: &Observation, goal: &str, hist: &GenHistory) -> Vec<CandidateAction>;
+}
+
+/// Default generator: goal is parsed into verbs + object terms, elements
+/// are scored by term coverage (no saturation), verb→affordance
+/// alignment, focus state and history. Emits action variety (click /
+/// focus / set_value / type_text) so engines pick *what* to do, not
+/// just *where*. Deterministic, no model — that's the point of the seam.
 pub struct HeuristicGenerator {
     /// Max candidates emitted per observation.
     pub max_candidates: usize,
@@ -142,90 +158,286 @@ pub struct HeuristicGenerator {
 
 impl Default for HeuristicGenerator {
     fn default() -> Self {
-        Self { max_candidates: 8 }
+        Self { max_candidates: 12 }
     }
 }
 
-fn goal_keywords(goal: &str) -> Vec<String> {
-    goal.split(|c: char| !c.is_alphanumeric())
-        .map(|w| w.to_lowercase())
-        .filter(|w| w.len() >= 3)
-        .collect()
+const STOPWORDS: &[&str] = &[
+    "the", "a", "an", "my", "your", "our", "to", "for", "of", "in", "on", "and", "or", "it",
+    "this", "that", "with", "from", "into", "me", "we", "i", "you", "is", "are", "be", "do",
+    "does", "can", "could", "should", "would", "will", "please", "now", "all", "any", "some", "up",
+    "out", "then", "than", "so", "such", "no", "not", "only", "get", "each", "more", "most",
+    "other", "much", "many",
+];
+
+/// Multi-word verbs checked before single words ("log in" beats "log").
+const PHRASE_VERBS: &[&str] = &[
+    "log in",
+    "sign in",
+    "sign up",
+    "log out",
+    "check out",
+    "go back",
+    "proceed to checkout",
+];
+
+/// Verbs that imply an editing action (type into a field).
+const EDIT_VERBS: &[&str] = &["type", "write", "enter", "fill", "input", "set", "paste"];
+
+/// Verbs that imply a press action (click a control).
+const PRESS_VERBS: &[&str] = &[
+    "click", "press", "tap", "pay", "submit", "confirm", "cancel", "delete", "remove", "close",
+    "dismiss", "open", "select", "choose", "check", "uncheck", "accept", "reject", "save",
+    "continue", "next", "back", "find", "buy", "order", "add", "create", "sign", "log", "login",
+    "logout", "go", "navigate", "launch", "start", "stop", "apply", "ok", "agree", "claim",
+    "proceed", "enable", "toggle", "search", "send",
+];
+
+/// Parsed goal: verbs (what to do), object terms (what to do it to),
+/// and any literal text to type (quoted or after a colon).
+#[derive(Debug, Default)]
+struct GoalParse {
+    verbs: Vec<String>,
+    objects: Vec<String>,
+    quoted: Option<String>,
 }
 
-/// Score one element against the goal. Higher is better; 0 = unrelated.
-/// Uses the element's *advertised actions* (press/set_value/focus), not
-/// role guessing.
-fn score(el: &Element, keywords: &[String]) -> f32 {
-    if el.enabled == Some(false) {
-        return 0.0;
-    }
-    let can_press = el.actions.iter().any(|a| a == "press" || a == "show_menu");
-    let can_edit = el.actions.iter().any(|a| a == "set_value" || a == "focus");
-    if !can_press && !can_edit {
-        return 0.0;
-    }
-    let label = el.label().unwrap_or("").to_lowercase();
-    let mut s: f32 = if can_press { 0.2 } else { 0.15 };
-    for kw in keywords {
-        if label == *kw {
-            s += 1.0;
-        } else if !label.is_empty() && label.contains(kw) {
-            s += 0.5;
+fn parse_goal(goal: &str) -> GoalParse {
+    let mut gp = GoalParse::default();
+    // Literal text: 'quoted', "quoted" or trailing `: value`.
+    let mut cleaned = goal.to_string();
+    for (open, close) in [('\'', '\''), ('"', '"')] {
+        if let Some(a) = cleaned.find(open) {
+            if let Some(b) = cleaned[a + 1..].find(close) {
+                gp.quoted = Some(cleaned[a + 1..a + 1 + b].to_string());
+                cleaned = format!("{}{}", &cleaned[..a], &cleaned[a + 2 + b..]);
+                break;
+            }
         }
     }
-    s.min(1.0)
+    if gp.quoted.is_none() {
+        if let Some(c) = cleaned.find(": ") {
+            let v = cleaned[c + 2..].trim();
+            if !v.is_empty() && v.len() < goal.len() / 2 + 20 {
+                gp.quoted = Some(v.to_string());
+                cleaned = cleaned[..c].to_string();
+            }
+        }
+    }
+
+    let lower = cleaned.to_lowercase();
+    let mut consumed = vec![false; lower.len()];
+    for phrase in PHRASE_VERBS {
+        if let Some(pos) = lower.find(phrase) {
+            gp.verbs.push(phrase.to_string());
+            for (i, c) in consumed.iter_mut().enumerate().skip(pos) {
+                if i >= pos + phrase.len() {
+                    break;
+                }
+                *c = true;
+            }
+        }
+    }
+    for w in lower.split(|c: char| !c.is_alphanumeric()) {
+        if w.is_empty() {
+            continue;
+        }
+        let pos = lower.find(w).unwrap_or(0);
+        if consumed[pos] {
+            continue;
+        }
+        if PRESS_VERBS.contains(&w) || EDIT_VERBS.contains(&w) {
+            gp.verbs.push(w.to_string());
+        } else if w.len() >= 2 && !STOPWORDS.contains(&w) {
+            gp.objects.push(w.to_string());
+        }
+    }
+    gp
+}
+
+/// Word-boundary-ish match: whole token, else substring (e.g.
+/// "destinations" ⊃ "destination").
+fn term_matches(label: &str, term: &str) -> bool {
+    if label.is_empty() || term.is_empty() {
+        return false;
+    }
+    label
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|tok| tok == term)
+        || label.contains(term)
+}
+
+fn is_editable(el: &Element) -> bool {
+    el.actions.iter().any(|a| a == "set_value" || a == "focus")
+        || matches!(
+            el.role.as_deref(),
+            Some("text_field" | "text_area" | "combo_box" | "slider" | "search_field")
+        )
+}
+
+fn is_pressable(el: &Element) -> bool {
+    el.actions.iter().any(|a| a == "press" || a == "show_menu")
+        || matches!(
+            el.role.as_deref(),
+            Some(
+                "button"
+                    | "link"
+                    | "check_box"
+                    | "radio_button"
+                    | "menu_item"
+                    | "tab"
+                    | "pop_up_button"
+            )
+        )
+}
+
+/// The target Dexter would pass to an action on this element.
+fn element_target(el: &Element) -> Target {
+    Target::Semantic(SemanticTarget {
+        role: el.role.clone(),
+        name: el.name.clone(),
+        ..Default::default()
+    })
+}
+
+/// Does `attempted` already contain an action on this same element?
+fn already_tried(el: &Element, attempts: &[Action]) -> bool {
+    let wanted = element_target(el);
+    attempts.iter().any(|a| match a {
+        Action::Click { target, .. }
+        | Action::Focus { target }
+        | Action::SetValue { target, .. } => target == &wanted,
+        Action::TypeText { target, .. } => target.as_ref() == Some(&wanted),
+        _ => false,
+    })
 }
 
 impl CandidateGenerator for HeuristicGenerator {
-    fn generate(&self, obs: &Observation, goal: &str) -> Vec<CandidateAction> {
-        let keywords = goal_keywords(goal);
-        let mut scored: Vec<(f32, &Element)> = obs
-            .elements
-            .iter()
-            .map(|el| (score(el, &keywords), el))
-            // Base affordance alone (0.2) is not a candidate — a goal
-            // keyword must relate the element to the task, else we'd
-            // propose every button on screen.
-            .filter(|(s, _)| *s > 0.25)
-            .collect();
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-        scored
-            .into_iter()
-            .take(self.max_candidates)
-            .map(|(prior, el)| {
-                let st = SemanticTarget {
-                    role: el.role.clone(),
-                    name: el.name.clone(),
-                    ..Default::default()
-                };
-                let target = Target::Semantic(st);
-                let action = if el.actions.iter().any(|a| a == "press") {
-                    Action::Click {
+    fn generate(&self, obs: &Observation, goal: &str, hist: &GenHistory) -> Vec<CandidateAction> {
+        let gp = parse_goal(goal);
+        // Terms to match: objects carry the load; when a goal is verb-only
+        // ("pay") the verbs themselves become the terms.
+        let terms: Vec<&str> = if gp.objects.is_empty() {
+            gp.verbs.iter().map(|s| s.as_str()).collect()
+        } else {
+            gp.objects
+                .iter()
+                .chain(gp.verbs.iter())
+                .map(|s| s.as_str())
+                .collect()
+        };
+        let want_edit = gp.verbs.iter().any(|v| EDIT_VERBS.contains(&v.as_str()));
+
+        let mut out: Vec<CandidateAction> = Vec::new();
+        for el in &obs.elements {
+            if el.enabled == Some(false) {
+                continue;
+            }
+            let editable = is_editable(el);
+            let pressable = is_pressable(el);
+            if !editable && !pressable {
+                continue;
+            }
+            let label = el.label().unwrap_or("").to_lowercase();
+            let matched = terms.iter().filter(|t| term_matches(&label, t)).count();
+            if terms.is_empty() || matched == 0 {
+                continue;
+            }
+            let coverage = matched as f32 / terms.len() as f32;
+            let verb_aligned = (want_edit && editable) || (!want_edit && pressable);
+            let mut prior = 0.25 + 0.55 * coverage + if verb_aligned { 0.2 } else { 0.0 };
+            // Label fully covered by goal terms ("Search" ⊂ {search,...})
+            // beats a partial match ("Search destinations").
+            let label_fully_covered = label
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|t| !t.is_empty())
+                .all(|t| terms.contains(&t) || STOPWORDS.contains(&t));
+            if label_fully_covered && !label.is_empty() {
+                prior += 0.12;
+            }
+            // Clicking an editable field is *focus*, not action — penalize
+            // it when the goal wants a press.
+            if editable && pressable && !want_edit {
+                prior *= 0.8;
+            }
+            if editable && el.focused && want_edit {
+                prior += 0.1;
+            }
+            // Delta bonus: element not present in the previous observation.
+            if let Some(prev) = &hist.prev {
+                let seen_before = prev
+                    .elements
+                    .iter()
+                    .any(|p| p.role == el.role && p.name == el.name && p.name.is_some());
+                if !seen_before {
+                    prior += 0.15;
+                }
+            }
+            if already_tried(el, &hist.attempts) {
+                prior *= 0.35;
+            }
+            let prior = prior.min(1.0);
+            let target = element_target(el);
+            let role = el.role.as_deref().unwrap_or("?");
+            let name = el.label().unwrap_or("?");
+            let base = format!(
+                "{role} \"{name}\" matches {matched}/{} goal terms (prior {prior:.2})",
+                terms.len()
+            );
+            if editable && want_edit {
+                if let Some(text) = &gp.quoted {
+                    out.push(CandidateAction {
+                        action: Action::SetValue {
+                            target: target.clone(),
+                            value: text.clone(),
+                        },
+                        rationale: format!("{base}; editable + literal text in goal"),
+                        prior,
+                    });
+                    out.push(CandidateAction {
+                        action: Action::TypeText {
+                            text: text.clone(),
+                            target: Some(target.clone()),
+                        },
+                        rationale: format!("{base}; editable + literal text in goal"),
+                        prior: prior * 0.92,
+                    });
+                } else {
+                    out.push(CandidateAction {
+                        action: Action::Focus { target },
+                        rationale: format!("{base}; editable field, focus to prepare input"),
+                        prior,
+                    });
+                }
+            } else if pressable {
+                out.push(CandidateAction {
+                    action: Action::Click {
                         target,
                         button: MouseButton::Left,
-                    }
-                } else {
-                    Action::Focus { target }
-                };
-                CandidateAction {
-                    action,
-                    rationale: format!(
-                        "{} \"{}\" advertises [{}], matches goal (prior {prior:.2})",
-                        el.role.as_deref().unwrap_or("?"),
-                        el.label().unwrap_or("?"),
-                        el.actions.join(","),
-                    ),
+                    },
+                    rationale: base,
                     prior,
-                }
-            })
-            .collect()
+                });
+            } else if editable {
+                // Editable element matching a press-y goal ("submit the
+                // search") — focus is still a plausible move.
+                out.push(CandidateAction {
+                    action: Action::Focus { target },
+                    rationale: format!("{base}; editable fallback"),
+                    prior: prior * 0.85,
+                });
+            }
+        }
+        out.sort_by(|a, b| b.prior.total_cmp(&a.prior));
+        out.truncate(self.max_candidates);
+        out
     }
 }
 
-/// Deterministic baseline: execute the top candidate, escalate when
-/// nothing plausible exists, retry once after an error. Ships with the
-/// runtime so `run_task` works with zero model dependencies.
+/// Deterministic baseline: execute the top candidate; when nothing is
+/// plausible, wait if the world looks busy, abstain otherwise; retry once
+/// after an error. Ships with the runtime so `run_task` works with zero
+/// model dependencies.
 pub struct RuleBased {
     /// Escalate after this many consecutive steps with no candidates.
     pub max_empty_steps: u32,
@@ -256,9 +468,25 @@ impl DecisionEngine for RuleBased {
                 rationale: "no candidates; retrying after error".into(),
             });
         }
+        let digest = ctx.state_digest.to_lowercase();
+        let busy = [
+            "loading",
+            "processing",
+            "please wait",
+            "spinner",
+            "progress",
+        ]
+        .iter()
+        .any(|hint| digest.contains(hint));
+        if busy {
+            return Ok(Decision::Route {
+                route: Route::Wait { millis: 500 },
+                rationale: "no candidates and the world looks busy — wait".into(),
+            });
+        }
         Ok(Decision::Route {
-            route: Route::EscalateLlm,
-            rationale: "no candidate matches the goal — beyond rule-based scope".into(),
+            route: Route::Abstain,
+            rationale: "no candidate matches the goal — abstaining".into(),
         })
     }
 }

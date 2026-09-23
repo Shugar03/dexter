@@ -139,6 +139,12 @@ enum Command {
         #[command(flatten)]
         args: ActionArgs,
     },
+    /// Eval harness: replay labeled decision points against engines,
+    /// or harvest new labeled items by observing real pages/apps.
+    Eval {
+        #[command(subcommand)]
+        cmd: EvalCommand,
+    },
     /// Run a scenario file (TOML): ordered steps through the full
     /// policy/act/verify loop, stopping at the first failure.
     Run {
@@ -154,6 +160,35 @@ enum Command {
         /// Write the event journal (JSONL) to this path.
         #[arg(long)]
         events: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum EvalCommand {
+    /// Replay a JSONL dataset of labeled decision points against a
+    /// decision engine — offline, deterministic, no machine access.
+    Run {
+        /// Dataset JSONL (one EvalItem per line).
+        dataset: String,
+        /// Decision engine under test: rule-based | laya.
+        #[arg(long, default_value = "rule-based")]
+        engine: String,
+        /// Worker command for --engine laya.
+        #[arg(long)]
+        engine_path: Option<String>,
+        /// Emit per-item verdicts as JSONL to this path.
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Harvest labeled items: observe each page/app in a TOML manifest,
+    /// resolve the declared gold target, emit EvalItem JSONL.
+    /// Requires the driver selected by --driver (browser recommended).
+    Harvest {
+        /// Manifest TOML: [[page]] entries with url/app, goal, gold.
+        manifest: String,
+        /// Output JSONL dataset.
+        #[arg(short, long)]
+        out: String,
     },
 }
 
@@ -337,6 +372,17 @@ fn run() -> Result<()> {
             events,
         } => run_scenario(&mut engine, &path, coords, approve_all, events),
         Command::Task { goal, args } => run_task(&mut engine, &goal, args),
+        Command::Eval { cmd } => match cmd {
+            EvalCommand::Run {
+                dataset,
+                engine: eng,
+                engine_path,
+                out,
+            } => eval_run(&dataset, &eng, engine_path, out),
+            EvalCommand::Harvest { manifest, out } => {
+                eval_harvest(engine.driver(), &manifest, &out)
+            }
+        },
         Command::Mcp => run_mcp(&cli),
     }
 }
@@ -769,5 +815,183 @@ fn observe(
         }
         println!("{}", serde_json::to_string_pretty(&obs)?);
     }
+    Ok(())
+}
+
+// ---- eval harness ----
+
+#[derive(Deserialize)]
+struct HarvestManifest {
+    #[serde(default)]
+    page: Vec<HarvestPage>,
+}
+
+#[derive(Deserialize)]
+struct HarvestPage {
+    id: String,
+    /// Browser: URL to navigate. macOS: omit and use `app` instead.
+    url: Option<String>,
+    /// Browser: HTML file relative to the manifest's directory.
+    path: Option<String>,
+    /// macOS: scope the observation to this app.
+    app: Option<String>,
+    goal: String,
+    gold: HarvestGold,
+    /// Extra settle time after navigate/scope before observing (ms).
+    #[serde(default)]
+    settle_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum HarvestGold {
+    /// The correct move is acting on the element matching `target`.
+    Act { target: SemanticTarget },
+    /// The correct move is a route (wait/abstain/escalate/...).
+    Route { route: dexter_decision::Route },
+}
+
+fn eval_run(
+    dataset: &str,
+    engine_name: &str,
+    engine_path: Option<String>,
+    out: Option<String>,
+) -> Result<()> {
+    let text =
+        std::fs::read_to_string(dataset).with_context(|| format!("reading dataset '{dataset}'"))?;
+    let items =
+        dexter_eval::load_jsonl(&text).with_context(|| format!("parsing dataset '{dataset}'"))?;
+
+    let decider: Box<dyn dexter_decision::DecisionEngine> = match engine_name {
+        "rule-based" => Box::new(dexter_decision::RuleBased::default()),
+        "laya" => {
+            let cmd = engine_path
+                .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
+                .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
+            Box::new(
+                dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(10))
+                    .with_context(|| format!("spawning laya worker '{cmd}'"))?,
+            )
+        }
+        other => anyhow::bail!("unknown engine '{other}' — rule-based, laya"),
+    };
+    let generator = dexter_decision::HeuristicGenerator::default();
+    let report = dexter_eval::run_eval(&items, &generator, decider.as_ref());
+
+    if let Some(path) = out {
+        let mut buf = String::new();
+        for v in &report.verdicts {
+            buf.push_str(&serde_json::to_string(&serde_json::json!({
+                "item": v.item_id,
+                "covered": v.covered,
+                "correct": v.correct,
+                "decision": v.decision,
+                "note": v.note,
+            }))?);
+            buf.push('\n');
+        }
+        std::fs::write(&path, buf).with_context(|| format!("writing '{path}'"))?;
+    }
+
+    for v in &report.verdicts {
+        let mark = match v.correct {
+            Some(true) => "ok",
+            Some(false) => "MISS",
+            None => "err",
+        };
+        println!(
+            "{mark:>4}  {}  (covered={}) {}",
+            v.item_id, v.covered, v.note
+        );
+    }
+    let act_items = report.covered.saturating_sub(report.route_items);
+    let act_acc = if act_items > 0 {
+        report.correct as f64 / act_items as f64
+    } else {
+        0.0
+    };
+    println!(
+        "\n{} items | coverage {:.0}% | act-accuracy {}/{} ({:.0}%) | routes {}/{} | false_acts {} | false_routes {}",
+        report.items,
+        report.coverage() * 100.0,
+        report.correct,
+        act_items,
+        act_acc * 100.0,
+        report.routes_correct,
+        report.route_items,
+        report.false_acts,
+        report.false_routes,
+    );
+    Ok(())
+}
+
+fn eval_harvest(driver: &dyn ComputerDriver, manifest_path: &str, out: &str) -> Result<()> {
+    let text = std::fs::read_to_string(manifest_path)
+        .with_context(|| format!("reading manifest '{manifest_path}'"))?;
+    let manifest: HarvestManifest =
+        toml::from_str(&text).with_context(|| format!("parsing manifest '{manifest_path}'"))?;
+
+    let manifest_dir = std::path::Path::new(manifest_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .canonicalize()
+        .with_context(|| format!("resolving manifest dir '{manifest_path}'"))?;
+    let mut buf = String::new();
+    for page in &manifest.page {
+        let url = page.url.clone().or_else(|| {
+            page.path
+                .as_ref()
+                .map(|rel| format!("file://{}", manifest_dir.join(rel).display()))
+        });
+        if let Some(url) = &url {
+            driver
+                .act(
+                    &Action::Navigate { url: url.clone() },
+                    &dexter_driver::ActContext::default(),
+                )
+                .map_err(|e| anyhow::anyhow!("{}: navigate: {e}", page.id))?;
+        }
+        std::thread::sleep(Duration::from_millis(page.settle_ms.unwrap_or(600)));
+
+        let scope = ObservationScope {
+            app: page.app.as_deref().map(AppSelector::parse),
+            ..Default::default()
+        };
+        let obs = driver
+            .observe(&scope)
+            .map_err(|e| anyhow::anyhow!("{}: observe: {e}", page.id))?;
+
+        let gold = match &page.gold {
+            HarvestGold::Act { target } => {
+                let el =
+                    dexter_world_model::resolve_element(&obs, &Target::Semantic(target.clone()))
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "{}: gold target did not resolve uniquely: {e}",
+                                page.id
+                            )
+                        })?;
+                dexter_eval::Gold::Act {
+                    target: target.clone(),
+                    element: el.id,
+                }
+            }
+            HarvestGold::Route { route } => dexter_eval::Gold::Route { route: *route },
+        };
+
+        let item = dexter_eval::EvalItem {
+            id: page.id.clone(),
+            goal: page.goal.clone(),
+            observation: obs,
+            gold,
+            source: "harvest".into(),
+            meta: serde_json::json!({"url": url, "app": page.app}),
+        };
+        buf.push_str(&serde_json::to_string(&item)?);
+        buf.push('\n');
+        eprintln!("harvested {}", page.id);
+    }
+    std::fs::write(out, buf).with_context(|| format!("writing '{out}'"))?;
+    println!("wrote {} items to {out}", manifest.page.len());
     Ok(())
 }

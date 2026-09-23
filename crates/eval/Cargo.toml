@@ -1,0 +1,18 @@
+[package]
+name = "dexter-eval"
+description = "Dexter eval harness — offline decision replay over labeled items"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+dexter-core.workspace = true
+dexter-decision.workspace = true
+dexter-world-model.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+dexter-sim.workspace = true

@@ -340,9 +340,10 @@ impl<D: ComputerDriver> Engine<D> {
         decider: &dyn dexter_decision::DecisionEngine,
         cfg: &TaskConfig,
     ) -> TaskOutcome {
-        use dexter_decision::{Decision, DecisionContext, Route};
+        use dexter_decision::{Decision, DecisionContext, GenHistory, Route};
         let started = Instant::now();
         let mut last_error: Option<String> = None;
+        let mut hist = GenHistory::default();
         let scope = ObservationScope {
             app: cfg.run.app.clone(),
             max_elements: cfg.run.observe_max_elements,
@@ -377,18 +378,8 @@ impl<D: ComputerDriver> Engine<D> {
                 return TaskOutcome::Completed { steps: step - 1 };
             }
 
-            let candidates = generator.generate(&obs, goal);
-            self.journal(
-                EventKind::CandidatesGenerated,
-                serde_json::json!({
-                    "count": candidates.len(),
-                    "candidates": candidates.iter().map(|c| serde_json::json!({
-                        "rationale": c.rationale, "prior": c.prior,
-                    })).collect::<Vec<_>>(),
-                    "step": step,
-                }),
-            );
-
+            hist.last_error = last_error.clone();
+            let candidates = generator.generate(&obs, goal, &hist);
             let ctx = DecisionContext {
                 goal: goal.to_string(),
                 state_digest: obs.digest.clone(),
@@ -396,6 +387,17 @@ impl<D: ComputerDriver> Engine<D> {
                 last_error: last_error.clone(),
                 step,
             };
+            // The full decision context is journaled — this is what makes
+            // a trace replayable offline (eval harness re-feeds it to any
+            // DecisionEngine without touching the machine).
+            self.journal(
+                EventKind::CandidatesGenerated,
+                serde_json::json!({
+                    "count": ctx.candidates.len(),
+                    "step": step,
+                    "context": &ctx,
+                }),
+            );
             let decision = match decider.decide(&ctx) {
                 Ok(d) => d,
                 Err(e) => {
@@ -421,6 +423,7 @@ impl<D: ComputerDriver> Engine<D> {
                 Decision::Act {
                     action, rationale, ..
                 } => {
+                    hist.attempts.push(action.clone());
                     let status = self.run_step(
                         &Step {
                             note: Some(rationale),
@@ -462,6 +465,7 @@ impl<D: ComputerDriver> Engine<D> {
                     }
                 },
             }
+            hist.prev = Some(obs);
         }
 
         self.journal(

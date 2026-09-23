@@ -85,8 +85,14 @@ tarea real en una app macOS nativa, con aprobación humana en acciones sensibles
 
 **Objetivo:** que la micro-decision layer demuestre valor medido, no asumido.
 
-- Eval harness: dataset etiquetado de árboles AX reales + preguntas tipadas
-  (contribución novel: primera eval pública de Laya sobre decisiones de UI)
+- ~~Eval harness~~ ✅ `crates/eval` + `dexter eval run|harvest`: replay
+  offline de decision points etiquetados (goal + observación completa +
+  gold teacher-authored), métricas separadas coverage/accuracy/routes —
+  dataset browser de 21 páginas commiteado en `datasets/browser/`
+- Candidates v2 ✅: parse verb+objeto, acciones variadas
+  (click/focus/set_value/type_text), señales focused/delta/repeat
+- Pendiente: dataset sobre árboles AX macOS reales (mismo harness,
+  `eval harvest` ya es driver-agnóstico)
 - Calibración de umbrales sobre datos reales; cascada reglas → Laya → LLM
 - Usos concretos: detección de modal bloqueante, "¿la acción tuvo efecto?",
   resolución de targets ambiguos, detección de completitud

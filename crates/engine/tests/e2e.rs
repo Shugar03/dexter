@@ -282,7 +282,7 @@ fn run_task_goal_to_verified_via_rule_based() {
 }
 
 #[test]
-fn run_task_escalates_when_nothing_matches() {
+fn run_task_abstains_when_nothing_matches() {
     use dexter_decision::{HeuristicGenerator, RuleBased};
     use dexter_engine::{TaskConfig, TaskOutcome};
 
@@ -305,11 +305,11 @@ fn run_task_escalates_when_nothing_matches() {
             },
         },
     );
+    // No candidates and no busy-world signal: the honest route is
+    // abstain, not escalation.
     match outcome {
-        TaskOutcome::Escalated { route, .. } => {
-            assert_eq!(route, dexter_decision::Route::EscalateLlm)
-        }
-        other => panic!("expected Escalated, got {other:?}"),
+        TaskOutcome::Abstained { .. } => {}
+        other => panic!("expected Abstained, got {other:?}"),
     }
     // Nothing was pressed — the engine abstained rather than flailing.
     assert!(engine.driver().pressed().is_empty());

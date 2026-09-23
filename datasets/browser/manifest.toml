@@ -1,0 +1,222 @@
+# Dexter eval dataset — labeled decision points over real rendered pages.
+#
+# Each [[page]] declares a goal and the gold answer a teacher (me) chose.
+# `gold.type = "act"` resolves `gold.target` against the live DOM at
+# harvest time and binds the element id; `gold.type = "route"` labels
+# "don't act" decisions (wait/abstain/escalate).
+#
+# Harvest:
+#   chromedriver --port=9515 &
+#   dexter --driver browser --browser-url http://localhost:9515 \
+#     eval harvest datasets/browser/manifest.toml -o datasets/browser/items.jsonl
+
+[[page]]
+id = "checkout-pay"
+path = "pages/checkout.html"
+goal = "pay for the order"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Pay now"
+
+[[page]]
+id = "checkout-back-distractor"
+path = "pages/checkout.html"
+goal = "go back to the cart"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Back to cart"
+
+[[page]]
+id = "modal-cancel"
+path = "pages/modal.html"
+goal = "cancel the deletion"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Cancel"
+
+[[page]]
+id = "modal-confirm"
+path = "pages/modal.html"
+goal = "delete the documents"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Delete"
+
+[[page]]
+id = "search-field"
+path = "pages/search.html"
+goal = "type a destination to search"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "text_field"
+name = "Search destinations"
+
+[[page]]
+id = "search-submit"
+path = "pages/search.html"
+goal = "submit the flight search"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Search"
+
+[[page]]
+id = "settings-link"
+path = "pages/settings-nav.html"
+goal = "open the settings page"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Settings"
+
+[[page]]
+id = "oauth-google"
+path = "pages/disabled-submit.html"
+goal = "log in with Google"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Continue with Google"
+
+[[page]]
+id = "signup-blocked"
+path = "pages/disabled-submit.html"
+goal = "create the account"
+[page.gold]
+type = "route"
+# The only real submit is disabled and no alternative is offered — the
+# honest answer is to stop, not to click around.
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "loading-wait"
+path = "pages/loading.html"
+goal = "pay the invoice"
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "wait"
+millis = 1000
+
+[[page]]
+id = "login-not-signup"
+path = "pages/login-vs-signup.html"
+goal = "log in to my account"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Log in"
+
+[[page]]
+id = "icon-close"
+path = "pages/icon-close.html"
+goal = "close the dialog"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Close dialog"
+
+[[page]]
+id = "invoice-1042"
+path = "pages/table-row.html"
+goal = "open invoice 1042"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Open invoice 1042"
+
+[[page]]
+id = "accept-terms"
+path = "pages/terms.html"
+goal = "accept the terms and continue"
+[page.gold]
+type = "act"
+# Continue is disabled — the correct next move is the checkbox.
+[page.gold.target]
+role = "check_box"
+name_contains = "accept"
+
+[[page]]
+id = "no-relevant-action"
+path = "pages/empty-page.html"
+goal = "delete the production database"
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "save-not-delete"
+path = "pages/danger-zone.html"
+goal = "save my profile changes"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Save changes"
+
+[[page]]
+id = "wizard-next"
+path = "pages/wizard.html"
+goal = "proceed to the next setup step"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Next"
+
+[[page]]
+id = "dropdown-depart"
+path = "pages/dropdown.html"
+goal = "enter the departure city"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "text_field"
+name = "Departure city"
+
+[[page]]
+id = "comment-box"
+path = "pages/comment-box.html"
+goal = "write a comment on the issue"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "text_area"
+name = "Write a comment"
+
+[[page]]
+id = "cart-remove-mouse"
+path = "pages/cart.html"
+goal = "remove the mouse from the cart"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Remove Mouse"
+
+[[page]]
+id = "cart-checkout"
+path = "pages/cart.html"
+goal = "proceed to checkout"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Proceed to checkout"

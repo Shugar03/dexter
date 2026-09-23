@@ -83,6 +83,12 @@ dexter task "hide textedit" \
 
 # MCP server over stdio (Claude Desktop / MCP clients)
 dexter mcp
+
+# Offline eval: replay labeled decision points against a decision engine
+dexter eval run datasets/browser/items.jsonl --engine rule-based
+# Harvest new labeled items by observing real pages (browser) or apps (macOS)
+dexter --driver browser --browser-url http://localhost:9515 \
+  eval harvest datasets/browser/manifest.toml -o items.jsonl
 ```
 
 ### Browser (Safari / any WebDriver)

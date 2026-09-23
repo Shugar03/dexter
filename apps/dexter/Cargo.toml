@@ -20,6 +20,7 @@ dexter-laya.workspace = true
 dexter-policy.workspace = true
 dexter-macos.workspace = true
 dexter-browser.workspace = true
+dexter-eval.workspace = true
 dexter-mcp.workspace = true
 tokio = { version = "1", features = ["rt", "macros", "io-std", "sync"] }
 clap.workspace = true
