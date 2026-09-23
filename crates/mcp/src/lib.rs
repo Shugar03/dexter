@@ -38,7 +38,6 @@ impl DexterRuntime {
             generator: HeuristicGenerator::default(),
         }
     }
-
 }
 
 fn run_cfg(app: Option<String>, coords: bool, approve_all: bool) -> RunConfig {
@@ -128,7 +127,10 @@ impl DexterMcp {
 
     /// Observe the current world: window list + element count + text
     /// digest. This is what a decision layer should read first.
-    #[tool(name = "dexter_observe", description = "Observe the world: windows, element count, text digest")]
+    #[tool(
+        name = "dexter_observe",
+        description = "Observe the world: windows, element count, text digest"
+    )]
     async fn dexter_observe(
         &self,
         Parameters(params): Parameters<ObserveParams>,
@@ -153,18 +155,22 @@ impl DexterMcp {
     /// Execute one action through policy -> act -> verify. Returns the
     /// StepStatus JSON: done | needs_approval(fingerprint) | denied |
     /// failed | error.
-    #[tool(name = "dexter_act", description = "Run one action through policy+verify; needs_approval returns a fingerprint for dexter_grant")]
+    #[tool(
+        name = "dexter_act",
+        description = "Run one action through policy+verify; needs_approval returns a fingerprint for dexter_grant"
+    )]
     async fn dexter_act(
         &self,
         Parameters(params): Parameters<ActParams>,
     ) -> Result<Json<serde_json::Value>, McpError> {
         let action: Action = serde_json::from_value(params.action)
             .map_err(|e| err(format!("invalid action JSON: {e}")))?;
-        let expect: Option<ExpectedState> = params
-            .expect
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|e| err(format!("invalid expect JSON: {e}")))?;
+        let expect: Option<ExpectedState> =
+            params
+                .expect
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| err(format!("invalid expect JSON: {e}")))?;
         let step = Step {
             note: None,
             action,
@@ -184,7 +190,10 @@ impl DexterMcp {
 
     /// Grant an approval fingerprint for this session (single use,
     /// TTL-bound). This is the human-in-the-loop hook.
-    #[tool(name = "dexter_grant", description = "Grant an approval fingerprint returned by a needs_approval step (single-use, session-scoped)")]
+    #[tool(
+        name = "dexter_grant",
+        description = "Grant an approval fingerprint returned by a needs_approval step (single-use, session-scoped)"
+    )]
     async fn dexter_grant(
         &self,
         Parameters(params): Parameters<GrantParams>,
@@ -198,7 +207,10 @@ impl DexterMcp {
     }
 
     /// Check an ExpectedState against a fresh observation.
-    #[tool(name = "dexter_verify", description = "Check an ExpectedState against a fresh observation (VERIFIED/FAILED/UNCERTAIN)")]
+    #[tool(
+        name = "dexter_verify",
+        description = "Check an ExpectedState against a fresh observation (VERIFIED/FAILED/UNCERTAIN)"
+    )]
     async fn dexter_verify(
         &self,
         Parameters(params): Parameters<VerifyParams>,
@@ -220,7 +232,10 @@ impl DexterMcp {
 
     /// Closed-loop task: observe -> candidates -> decide -> act ->
     /// recheck until `done` verifies or bounds hit.
-    #[tool(name = "dexter_task", description = "Run a goal in the closed loop (rule-based decider) until done_when verifies")]
+    #[tool(
+        name = "dexter_task",
+        description = "Run a goal in the closed loop (rule-based decider) until done_when verifies"
+    )]
     async fn dexter_task(
         &self,
         Parameters(params): Parameters<TaskParams>,
@@ -266,7 +281,10 @@ impl DexterMcp {
 
     /// Audit journal for this session — every observation, policy check,
     /// decision, action and verification.
-    #[tool(name = "dexter_journal", description = "Session audit journal (JSONL-shaped event list)")]
+    #[tool(
+        name = "dexter_journal",
+        description = "Session audit journal (JSONL-shaped event list)"
+    )]
     async fn dexter_journal(&self) -> Result<Json<serde_json::Value>, McpError> {
         let engine = self.runtime.engine.lock().map_err(err)?;
         Ok(Json(serde_json::json!({
@@ -290,7 +308,10 @@ fn status_json(status: StepStatus) -> Result<Json<serde_json::Value>, McpError> 
         StepStatus::Denied { reason } => {
             serde_json::json!({"status": "denied", "reason": reason})
         }
-        StepStatus::NeedsApproval { fingerprint, reason } => serde_json::json!({
+        StepStatus::NeedsApproval {
+            fingerprint,
+            reason,
+        } => serde_json::json!({
             "status": "needs_approval",
             "reason": reason,
             "fingerprint": fingerprint,

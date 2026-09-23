@@ -10,8 +10,8 @@
 //! behind `allow_coordinates`.
 
 use dexter_core::{
-    Action, ActionResult, ActionStatus, Element, ElementId, Mechanism, Observation,
-    ObservationId, ObservationScope, SemanticTarget, Target, Window,
+    Action, ActionResult, ActionStatus, Element, ElementId, Mechanism, Observation, ObservationId,
+    ObservationScope, SemanticTarget, Target, Window,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
 use std::collections::VecDeque;
@@ -138,9 +138,13 @@ impl SimDriver {
                 })?;
                 // Same contract as macOS: verify the element still matches
                 // in the *current* world.
-                let fresh = s.elements.iter().find(|e| e.id == *element).ok_or_else(|| {
-                    DriverError::StaleReference(format!("element {} vanished", element.0))
-                })?;
+                let fresh = s
+                    .elements
+                    .iter()
+                    .find(|e| e.id == *element)
+                    .ok_or_else(|| {
+                        DriverError::StaleReference(format!("element {} vanished", element.0))
+                    })?;
                 if fresh.role != stored.role || fresh.name != stored.name {
                     return Err(DriverError::StaleReference(format!(
                         "element {} changed since observation {}",
@@ -151,16 +155,17 @@ impl SimDriver {
             }
             Target::Semantic(_) | Target::Focused => {
                 let obs = self.snapshot();
-                let el = dexter_world_model::resolve_element(&obs, target).map_err(|e| match e {
-                    dexter_core::DexterError::Ambiguous(m) => DriverError::Ambiguous(m),
-                    dexter_core::DexterError::NotFound(m) => DriverError::NotFound(m),
-                    other => DriverError::Platform(other.to_string()),
-                })?;
+                let el =
+                    dexter_world_model::resolve_element(&obs, target).map_err(|e| match e {
+                        dexter_core::DexterError::Ambiguous(m) => DriverError::Ambiguous(m),
+                        dexter_core::DexterError::NotFound(m) => DriverError::NotFound(m),
+                        other => DriverError::Platform(other.to_string()),
+                    })?;
                 Ok(el.id)
             }
-            Target::Point { .. } | Target::Window { .. } => Err(DriverError::Unsupported(
-                "target is not an element".into(),
-            )),
+            Target::Point { .. } | Target::Window { .. } => {
+                Err(DriverError::Unsupported("target is not an element".into()))
+            }
         }
     }
 
@@ -231,10 +236,8 @@ impl ComputerDriver for SimDriver {
         let mut obs = self.snapshot();
         obs.digest = dexter_world_model::digest(&obs, 250);
         let mut s = self.state.lock().unwrap();
-        s.obs_cache
-            .retain(|(id, _)| *id != obs.id);
-        s.obs_cache
-            .push_front((obs.id, obs.elements.clone()));
+        s.obs_cache.retain(|(id, _)| *id != obs.id);
+        s.obs_cache.push_front((obs.id, obs.elements.clone()));
         s.obs_cache.truncate(4);
         Ok(obs)
     }

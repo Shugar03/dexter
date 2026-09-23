@@ -138,16 +138,17 @@ fn window_title_uncertain_when_all_titles_hidden() {
         pid: 1,
         app: "Finder".into(),
         title: None, // screen recording off
-        bounds: Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
+        bounds: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        },
         on_screen: true,
         layer: 0,
     });
     assert_eq!(
-        verify(
-            &o,
-            &ExpectedState::WindowTitleContains { text: "x".into() }
-        )
-        .status,
+        verify(&o, &ExpectedState::WindowTitleContains { text: "x".into() }).status,
         VerificationStatus::Uncertain
     );
 }
@@ -156,33 +157,62 @@ fn window_title_uncertain_when_all_titles_hidden() {
 fn combinators_three_valued() {
     let o = obs_with(vec![el(1, "button", Some("Save"))]);
     let present = ExpectedState::ElementExists {
-        target: SemanticTarget { name: Some("Save".into()), ..Default::default() },
+        target: SemanticTarget {
+            name: Some("Save".into()),
+            ..Default::default()
+        },
     };
     let missing = ExpectedState::ElementExists {
-        target: SemanticTarget { name: Some("Nope".into()), ..Default::default() },
+        target: SemanticTarget {
+            name: Some("Nope".into()),
+            ..Default::default()
+        },
     };
     assert_eq!(
-        verify(&o, &ExpectedState::All { all: vec![present.clone(), missing.clone()] }).status,
+        verify(
+            &o,
+            &ExpectedState::All {
+                all: vec![present.clone(), missing.clone()]
+            }
+        )
+        .status,
         VerificationStatus::Failed
     );
     assert_eq!(
-        verify(&o, &ExpectedState::Any { any: vec![present.clone(), missing.clone()] }).status,
+        verify(
+            &o,
+            &ExpectedState::Any {
+                any: vec![present.clone(), missing.clone()]
+            }
+        )
+        .status,
         VerificationStatus::Verified
     );
     assert_eq!(
-        verify(&o, &ExpectedState::Not { not: Box::new(missing) }).status,
+        verify(
+            &o,
+            &ExpectedState::Not {
+                not: Box::new(missing)
+            }
+        )
+        .status,
         VerificationStatus::Verified
     );
     // All with an uncertain member -> uncertain
     let mut partial = o.clone();
     partial.elements_truncated = true;
     let uncertain = ExpectedState::ElementAbsent {
-        target: SemanticTarget { name: Some("Nope".into()), ..Default::default() },
+        target: SemanticTarget {
+            name: Some("Nope".into()),
+            ..Default::default()
+        },
     };
     assert_eq!(
         verify(
             &partial,
-            &ExpectedState::All { all: vec![present, uncertain] }
+            &ExpectedState::All {
+                all: vec![present, uncertain]
+            }
         )
         .status,
         VerificationStatus::Uncertain

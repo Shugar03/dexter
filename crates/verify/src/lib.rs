@@ -6,10 +6,7 @@
 //! is `UNCERTAIN` when no window exposes a title. `UNCERTAIN` is never a
 //! success — callers must retry, escalate, or fail.
 
-use dexter_core::{
-    ExpectedState, Observation, ValuePredicate, Verification,
-    VerificationStatus,
-};
+use dexter_core::{ExpectedState, Observation, ValuePredicate, Verification, VerificationStatus};
 
 fn partial_tree(obs: &Observation) -> bool {
     obs.elements_truncated || obs.ax_limited
@@ -25,7 +22,11 @@ fn absence(status: VerificationStatus, partial: bool) -> VerificationStatus {
     }
 }
 
-fn eval(obs: &Observation, expected: &ExpectedState, checks: &mut Vec<String>) -> VerificationStatus {
+fn eval(
+    obs: &Observation,
+    expected: &ExpectedState,
+    checks: &mut Vec<String>,
+) -> VerificationStatus {
     let partial = partial_tree(obs);
     match expected {
         ExpectedState::ElementExists { target } => {
@@ -48,9 +49,11 @@ fn eval(obs: &Observation, expected: &ExpectedState, checks: &mut Vec<String>) -
         }
         ExpectedState::ElementValue { target, predicate } => {
             let found = dexter_world_model::find_elements(obs, target);
-            let hit = found
-                .iter()
-                .any(|e| e.value.as_deref().is_some_and(|v| value_ok(v, predicate, checks)));
+            let hit = found.iter().any(|e| {
+                e.value
+                    .as_deref()
+                    .is_some_and(|v| value_ok(v, predicate, checks))
+            });
             checks.push(format!(
                 "element_value {target:?}: {} candidates, satisfied={hit}",
                 found.len()
@@ -113,10 +116,7 @@ fn eval(obs: &Observation, expected: &ExpectedState, checks: &mut Vec<String>) -
             }
         }
         ExpectedState::AppRunning { name } => {
-            let hit = obs
-                .windows
-                .iter()
-                .any(|w| w.app.eq_ignore_ascii_case(name));
+            let hit = obs.windows.iter().any(|w| w.app.eq_ignore_ascii_case(name));
             checks.push(format!("app_running {name:?}: {hit}"));
             if hit {
                 VerificationStatus::Verified

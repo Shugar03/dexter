@@ -9,8 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 fn worker_cmd() -> String {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../workers/laya/worker.py");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/laya/worker.py");
     let root = root.canonicalize().expect("worker.py exists");
     format!("python3 {}", root.display())
 }
@@ -31,8 +30,7 @@ fn candidate(name: &str) -> CandidateAction {
 
 #[test]
 fn laya_picks_candidate_matching_goal() {
-    let engine = LayaEngine::spawn(&worker_cmd(), Duration::from_secs(10))
-        .expect("worker spawns");
+    let engine = LayaEngine::spawn(&worker_cmd(), Duration::from_secs(10)).expect("worker spawns");
     let ctx = DecisionContext {
         goal: "click the save button".into(),
         state_digest: "button Save [press]\nbutton Delete [press]".into(),
@@ -56,8 +54,7 @@ fn laya_picks_candidate_matching_goal() {
 
 #[test]
 fn laya_route_when_no_candidates() {
-    let engine = LayaEngine::spawn(&worker_cmd(), Duration::from_secs(10))
-        .expect("worker spawns");
+    let engine = LayaEngine::spawn(&worker_cmd(), Duration::from_secs(10)).expect("worker spawns");
     let ctx = DecisionContext {
         goal: "nothing matches anything".into(),
         state_digest: "empty".into(),
@@ -80,10 +77,7 @@ fn laya_route_when_no_candidates() {
 
 #[test]
 fn missing_worker_is_an_honest_error() {
-    let res = LayaEngine::spawn(
-        "/nonexistent/dexter-laya-worker",
-        Duration::from_secs(1),
-    );
+    let res = LayaEngine::spawn("/nonexistent/dexter-laya-worker", Duration::from_secs(1));
     assert!(res.is_err(), "missing worker must fail at spawn");
 }
 
@@ -91,8 +85,7 @@ fn missing_worker_is_an_honest_error() {
 fn malformed_worker_reply_is_a_decision_error() {
     // A "worker" that just echoes garbage — the engine must surface a
     // DecisionError, not panic or accept it.
-    let engine = LayaEngine::spawn("/bin/cat", Duration::from_secs(10))
-        .expect("cat spawns");
+    let engine = LayaEngine::spawn("/bin/cat", Duration::from_secs(10)).expect("cat spawns");
     let ctx = DecisionContext {
         goal: "g".into(),
         state_digest: "s".into(),

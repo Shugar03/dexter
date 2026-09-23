@@ -104,9 +104,7 @@ async fn act_needs_approval_returns_grantable_fingerprint() {
     client
         .call_tool(CallToolRequestParam {
             name: "dexter_grant".into(),
-            arguments: Some(
-                json!({"fingerprint": fp}).as_object().unwrap().clone(),
-            ),
+            arguments: Some(json!({"fingerprint": fp}).as_object().unwrap().clone()),
         })
         .await
         .expect("grant");

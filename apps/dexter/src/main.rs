@@ -208,8 +208,9 @@ fn main() -> ExitCode {
 
 fn load_policy(path: &Option<String>) -> Result<Policy> {
     match path {
-        Some(p) => Policy::load(std::path::Path::new(p))
-            .with_context(|| format!("loading policy '{p}'")),
+        Some(p) => {
+            Policy::load(std::path::Path::new(p)).with_context(|| format!("loading policy '{p}'"))
+        }
         None => Ok(Policy::embedded()),
     }
 }
@@ -244,11 +245,7 @@ fn run() -> Result<()> {
                 other => anyhow::bail!("unknown button '{other}' (left|right|middle)"),
             };
             let target = resolve_target(engine.driver(), &args)?;
-            run_action(
-                &mut engine,
-                &args,
-                Action::Click { target, button },
-            )
+            run_action(&mut engine, &args, Action::Click { target, button })
         }
         Command::Type { args, text } => {
             let target = args
@@ -403,9 +400,15 @@ fn print_status(status: &StepStatus) {
             );
         }
         StepStatus::Denied { reason } => {
-            println!("{}", serde_json::json!({"status": "denied", "reason": reason}));
+            println!(
+                "{}",
+                serde_json::json!({"status": "denied", "reason": reason})
+            );
         }
-        StepStatus::NeedsApproval { fingerprint, reason } => {
+        StepStatus::NeedsApproval {
+            fingerprint,
+            reason,
+        } => {
             println!(
                 "{}",
                 serde_json::json!({
@@ -423,7 +426,10 @@ fn print_status(status: &StepStatus) {
             );
         }
         StepStatus::Errored { error } => {
-            println!("{}", serde_json::json!({"status": "error", "error": error.to_string()}));
+            println!(
+                "{}",
+                serde_json::json!({"status": "error", "error": error.to_string()})
+            );
         }
     }
 }
@@ -463,8 +469,8 @@ fn run_scenario(
     approve_all: bool,
     events_path: Option<String>,
 ) -> Result<()> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading scenario '{path}'"))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading scenario '{path}'"))?;
     let file: ScenarioFile =
         toml::from_str(&text).with_context(|| format!("parsing scenario '{path}'"))?;
     for fp in &file.grants {
@@ -521,9 +527,7 @@ fn run_task(engine: &mut Engine<MacOsDriver>, goal: &str, args: TaskArgs) -> Res
                 .engine_path
                 .clone()
                 .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
-                .unwrap_or_else(|| {
-                    "python3 workers/laya/worker.py --provider dev".to_string()
-                });
+                .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
             let engine = dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(10))
                 .with_context(|| format!("spawning laya worker '{cmd}'"))?;
             Box::new(engine)
@@ -568,7 +572,10 @@ fn run_task(engine: &mut Engine<MacOsDriver>, goal: &str, args: TaskArgs) -> Res
             Ok(())
         }
         TaskOutcome::Abstained { reason } => {
-            println!("{}", serde_json::json!({"status": "abstained", "reason": reason}));
+            println!(
+                "{}",
+                serde_json::json!({"status": "abstained", "reason": reason})
+            );
             anyhow::bail!("task abstained")
         }
         TaskOutcome::Escalated { route, reason } => {
@@ -579,7 +586,10 @@ fn run_task(engine: &mut Engine<MacOsDriver>, goal: &str, args: TaskArgs) -> Res
             anyhow::bail!("task escalated")
         }
         TaskOutcome::Failed { reason } => {
-            println!("{}", serde_json::json!({"status": "failed", "reason": reason}));
+            println!(
+                "{}",
+                serde_json::json!({"status": "failed", "reason": reason})
+            );
             anyhow::bail!("task failed")
         }
         TaskOutcome::MaxSteps => {

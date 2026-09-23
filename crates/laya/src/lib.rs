@@ -186,8 +186,7 @@ impl DecisionEngine for LayaEngine {
         );
         let questions = [Question::Choice {
             id: "pick".into(),
-            prompt: "Pick the best next step for the goal, or a route option."
-                .into(),
+            prompt: "Pick the best next step for the goal, or a route option.".into(),
             options,
         }];
 

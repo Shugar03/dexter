@@ -237,11 +237,7 @@ impl<D: ComputerDriver> Engine<D> {
                 // Non-success statuses are verdicts, not transient errors —
                 // retrying would repeat the same refusal.
                 return StepStatus::Failed {
-                    reason: format!(
-                        "{:?}: {}",
-                        result.status,
-                        result.detail.unwrap_or_default()
-                    ),
+                    reason: format!("{:?}: {}", result.status, result.detail.unwrap_or_default()),
                     attempts: attempt,
                 };
             }
@@ -423,9 +419,7 @@ impl<D: ComputerDriver> Engine<D> {
 
             match decision {
                 Decision::Act {
-                    action,
-                    rationale,
-                    ..
+                    action, rationale, ..
                 } => {
                     let status = self.run_step(
                         &Step {

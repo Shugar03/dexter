@@ -76,10 +76,7 @@ fn click_verifies_spawned_element() {
             ..
         } => {
             assert_eq!(attempts, 1);
-            assert_eq!(
-                verification.unwrap().status,
-                VerificationStatus::Verified
-            );
+            assert_eq!(verification.unwrap().status, VerificationStatus::Verified);
         }
         other => panic!("expected Done, got {other:?}"),
     }
@@ -245,7 +242,10 @@ fn run_task_goal_to_verified_via_rule_based() {
     use dexter_decision::{HeuristicGenerator, RuleBased};
     use dexter_engine::{TaskConfig, TaskOutcome};
 
-    let sim = SimDriver::new(vec![el(1, "button", "Guardar"), el(2, "button", "Cancelar")]);
+    let sim = SimDriver::new(vec![
+        el(1, "button", "Guardar"),
+        el(2, "button", "Cancelar"),
+    ]);
     sim.on_press(
         SemanticTarget {
             name: Some("Guardar".into()),
