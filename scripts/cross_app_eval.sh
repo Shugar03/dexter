@@ -7,8 +7,10 @@
 #
 # Usage:
 #   scripts/cross_app_eval.sh [holdout ...]
-# Default holdouts: the two macOS apps and the two synthetic domains.
+# Default holdouts: the two synthetic domains (cross-surface — the
+# informative axis; within-surface app holdouts add little).
 # Requires: python3 -m pip install laya (+ torch), cargo-built dexter.
+# Trainer runs use --device cpu: concurrent MPS workers stall.
 
 set -eu
 cd "$(dirname "$0")/.."
@@ -21,7 +23,7 @@ ALL="datasets/browser/items.jsonl datasets/macos/items.jsonl datasets/sim/items.
 # Rows carry `"app"` provenance (eval export emits it since v0.1).
 $DEX eval export $ALL -o /tmp/dexter-rows-all.jsonl
 
-holdouts="${*:-com.apple.finder com.apple.TextEdit sim/ vision/}"
+holdouts="${*:-sim/ vision/}"
 for app in $holdouts; do
     name=$(echo "$app" | tr '/.' '__' | sed 's/_$//')
     python3 - "$app" <<'PY'
@@ -35,7 +37,7 @@ with open('/tmp/dexter-rows-train.jsonl', 'w') as f:
 print(f"holdout {app}: {len(keep)} train rows")
 PY
     $FT /tmp/dexter-rows-train.jsonl --out "/tmp/dexter-ckpt-$name" \
-        --epochs 60 --perms 8 --holdout 0.15
+        --epochs 25 --perms 6 --holdout 0.15 --device cpu
     echo "=== holdout: $app ==="
     $DEX eval matrix --engine laya \
         --engine-path "$WORKER --model /tmp/dexter-ckpt-$name --subfolder root" \

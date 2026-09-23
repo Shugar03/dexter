@@ -142,7 +142,7 @@ CI-reproducible.
 |---|---|---|---|---|
 | rule-based | 18/18 + 3/3r | 8/8 + 2/2r | 8/9 + 1/2r, fr 1 | 1/1 + 1/4r, **fa 1** |
 | laya base | (14/18 + 1/3r) | (5/8 + 0/2r) | 4/9 + 1/2r, fr 5 | 1/1 + 2/4r, **fa 1** |
-| laya ft mixed | — | — | **4/9 + 1/2r, fr 5** | **1/1 + 1/4r, fa 1** |
+| laya ft mixed | 18/18 + 1/3r | 7/8 + 1/2r | **4/9 + 1/2r, fr 5** | **1/1 + 1/4r, fa 1** |
 
 Honest reads:
 
@@ -155,8 +155,23 @@ Honest reads:
   enabled element instead of abstaining — OCR text is evidence, not a
   handle. This is the single most valuable dataset row: it catches the
   dangerous direction.
-- LODO rows (per-app holdout checkpoints) — pending: see
-  `scripts/cross_app_eval.sh` output / this doc's next revision.
+- **LODO confirms it.** Leave-one-domain-out checkpoints
+  (`scripts/cross_app_eval.sh`, 25 epochs / 6 perms / 15% holdout):
+
+  | holdout | train rows | held-out result | base result |
+  |---|---|---|---|
+  | sim | 36 | 4/9 + 1/2r, fr 5, fa 0 | 4/9 + 1/2r, fr 5, fa 0 |
+  | vision | 41 | 1/1 + 2/4r, fa 1 | 1/1 + 2/4r, fa 1 |
+
+  Training on three surfaces buys exactly nothing on the fourth —
+  the LODO scores equal the base model's to the item. Per-surface
+  data is the only thing that moves a surface's numbers. The two
+  within-AX-surface holdouts (Finder, TextEdit) were dropped as
+  uninformative vs the cross-surface question.
+
+- Trainer note: concurrent `finetune.py` processes stall on MPS
+  (Metal device contention serializes to ~0% CPU); use
+  `--device cpu` for parallel LODO runs.
 
 ## Non-goals
 

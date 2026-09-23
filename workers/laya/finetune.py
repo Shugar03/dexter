@@ -162,7 +162,7 @@ def evaluate(model, examples, pad_id, device):
             batch["marker_mask"].to(device),
             batch["qtype"].to(device),
         )
-    probs = torch.softmax(logits, -1).numpy()
+    probs = torch.softmax(logits, -1).cpu().numpy()
     for i, e in enumerate(exs):
         k = len(e["markers"])
         p = probs[i, :k]
