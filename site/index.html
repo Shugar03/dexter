@@ -167,7 +167,7 @@ reason = "never touch system settings"</pre>
 
 <section class="tools" id="tools">
   <div class="section-head">
-    <h2>Seven tools, one stdio server.</h2>
+    <h2>Nine tools, one stdio server.</h2>
     <p class="section-sub">Register once in your harness config. The same engine backs the CLI and the MCP surface.</p>
   </div>
   <div class="tool-table mono reveal">
@@ -178,13 +178,15 @@ reason = "never touch system settings"</pre>
     <div class="tool-row"><span class="tool-name">dexter_verify</span><span class="tool-desc">check expected state against the world</span></div>
     <div class="tool-row"><span class="tool-name">dexter_task</span><span class="tool-desc">optional closed loop to a done condition</span></div>
     <div class="tool-row"><span class="tool-name">dexter_journal</span><span class="tool-desc">live audit trail, readable mid-run</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_cancel</span><span class="tool-desc">cooperative stop for the running task</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_status</span><span class="tool-desc">driver + engine health, live</span></div>
   </div>
 </section>
 
 <section class="proof">
   <div class="proof-grid">
     <div class="proof-cell reveal"><div class="proof-num">0</div><p>false acts on frozen eval datasets at tuned confidence</p></div>
-    <div class="proof-cell reveal"><div class="proof-num">31</div><p>frozen decision points replayed offline in CI</p></div>
+    <div class="proof-cell reveal"><div class="proof-num">47</div><p>frozen decision points across 4 eval surfaces</p></div>
     <div class="proof-cell reveal"><div class="proof-num mono">3</div><p>intrusiveness tiers enforced at the policy floor</p></div>
   </div>
 </section>
