@@ -721,9 +721,13 @@ dependencies = [
  "clap",
  "dexter-core",
  "dexter-driver",
+ "dexter-engine",
  "dexter-macos",
+ "dexter-policy",
  "dexter-world-model",
+ "serde",
  "serde_json",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
 ]
@@ -733,6 +737,20 @@ name = "dexter-driver"
 version = "0.0.1"
 dependencies = [
  "dexter-core",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "dexter-engine"
+version = "0.0.1"
+dependencies = [
+ "dexter-core",
+ "dexter-driver",
+ "dexter-policy",
+ "dexter-sim",
+ "dexter-verify",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 
@@ -763,6 +781,26 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "dexter-sim"
+version = "0.0.1"
+dependencies = [
+ "dexter-core",
+ "dexter-driver",
+ "dexter-world-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dexter-verify"
+version = "0.0.1"
+dependencies = [
+ "dexter-core",
+ "dexter-world-model",
+ "regex",
 ]
 
 [[package]]

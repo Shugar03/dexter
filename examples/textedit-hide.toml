@@ -1,0 +1,23 @@
+# Dexter scenario — hide TextEdit via its own menu.
+#
+# TextEdit must be running. Run:
+#   dexter run examples/textedit-hide.toml --approve-all
+#
+# `app` scopes every step. The embedded policy requires approval for
+# mutations: `--approve-all` means you approve this file's contents. Without
+# it, the mutating step reports `needs_approval` plus a fingerprint you can
+# add to `grants` below and re-run.
+#
+#   grants = ["<fingerprint>"]
+
+app = "Editor de Texto"
+max_attempts = 3
+verify_delay_ms = 300
+
+[[step]]
+note = "hide the app via its application menu"
+[step.action]
+type = "click"
+[step.action.target]
+role = "menu_item"
+name = "Ocultar Editor de Texto"

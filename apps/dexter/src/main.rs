@@ -1,15 +1,19 @@
-//! `dexter` CLI — thin shell over the runtime. Every command goes through
-//! the same driver path; there are no privileged shortcuts.
+//! `dexter` CLI — thin shell over the runtime. Every action goes through
+//! `Engine::run_step` — the same policy/act/verify path MCP and SDKs use.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use dexter_core::{
-    Action, AppSelector, ElementId, MouseButton, ObservationScope, ScrollDelta, SemanticTarget,
-    Target,
+    Action, AppSelector, ElementId, ExpectedState, MouseButton, ObservationScope, ScrollDelta,
+    SemanticTarget, Target,
 };
-use dexter_driver::{ActContext, ComputerDriver};
+use dexter_driver::ComputerDriver;
+use dexter_engine::{Engine, RunConfig, Step, StepStatus};
 use dexter_macos::{permissions, MacOsDriver};
+use dexter_policy::Policy;
+use serde::Deserialize;
 use std::process::ExitCode;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
@@ -19,7 +23,11 @@ use std::process::ExitCode;
     long_about = None
 )]
 struct Cli {
-    /// Emit machine-readable JSON (default for most commands).
+    /// Policy file (TOML). Default: embedded — reads allowed, every
+    /// mutation requires approval.
+    #[arg(long, global = true)]
+    policy: Option<String>,
+
     #[command(subcommand)]
     cmd: Command,
 }
@@ -56,74 +64,94 @@ enum Command {
         #[arg(long)]
         screenshot: Option<String>,
     },
-    /// Click an element: semantic target (AXPress), element id from a fresh
-    /// observation, `focused`, or `point:x,y` (requires --coords).
+    /// Click an element (AXPress; `point:x,y` needs --coords).
     Click {
-        #[arg(long)]
-        app: Option<String>,
-        /// Target: `{"role":"button","name":"Save"}` | `element:N` |
-        /// `focused` | `point:x,y`.
-        #[arg(long)]
-        target: String,
+        #[command(flatten)]
+        args: ActionArgs,
         /// Mouse button: left (default), right, middle.
         #[arg(long, default_value = "left")]
         button: String,
-        /// Permit coordinate-level input (moves the real cursor).
-        #[arg(long)]
-        coords: bool,
     },
     /// Type text into an element (AXValue first; keyboard fallback needs
     /// --coords and the app being frontmost).
     Type {
-        #[arg(long)]
-        app: Option<String>,
+        #[command(flatten)]
+        args: ActionArgs,
         #[arg(long)]
         text: String,
-        #[arg(long)]
-        target: Option<String>,
-        #[arg(long)]
-        coords: bool,
     },
     /// Post a key chord like "cmd+s" (requires --coords; goes to the
     /// frontmost app).
     Key {
-        #[arg(long)]
-        app: Option<String>,
+        #[command(flatten)]
+        args: ActionArgs,
         #[arg(long)]
         chord: String,
-        #[arg(long)]
-        coords: bool,
     },
     /// Scroll: a target scrolls it into view via AX; without a target it
     /// scrolls at the pointer (requires --coords).
     Scroll {
-        #[arg(long)]
-        app: Option<String>,
-        #[arg(long)]
-        target: Option<String>,
+        #[command(flatten)]
+        args: ActionArgs,
         #[arg(long, default_value = "0")]
         dx: f64,
         #[arg(long, default_value = "0")]
         dy: f64,
-        #[arg(long)]
-        coords: bool,
     },
     /// Focus an element (AXFocused).
     Focus {
-        #[arg(long)]
-        app: Option<String>,
-        #[arg(long)]
-        target: String,
+        #[command(flatten)]
+        args: ActionArgs,
     },
     /// Set an element's value directly (AXValue).
     SetValue {
-        #[arg(long)]
-        app: Option<String>,
-        #[arg(long)]
-        target: String,
+        #[command(flatten)]
+        args: ActionArgs,
         #[arg(long)]
         value: String,
     },
+    /// Run a scenario file (TOML): ordered steps through the full
+    /// policy/act/verify loop, stopping at the first failure.
+    Run {
+        /// Path to the scenario TOML.
+        path: String,
+        /// Permit coordinate-level input for the whole run.
+        #[arg(long)]
+        coords: bool,
+        /// Approve every policy-required action in the file (you are
+        /// approving the whole scenario up front).
+        #[arg(long)]
+        approve_all: bool,
+        /// Write the event journal (JSONL) to this path.
+        #[arg(long)]
+        events: Option<String>,
+    },
+}
+
+/// Shared flags for single-action commands.
+#[derive(clap::Args)]
+struct ActionArgs {
+    /// Scope to an application: name, `com.bundle.id` or pid.
+    #[arg(long)]
+    app: Option<String>,
+    /// Target: `{"role":"button","name":"Save"}` | `element:N` |
+    /// `focused` | `point:x,y`. Required except for `type`/`scroll`
+    /// (which default to focused/pointer).
+    #[arg(long)]
+    target: Option<String>,
+    /// Permit coordinate-level input (moves the real cursor).
+    #[arg(long)]
+    coords: bool,
+    /// Human approval for this exact action (when policy requires it).
+    #[arg(long)]
+    approve: bool,
+    /// Post-condition to verify (JSON ExpectedState), retried up to
+    /// --attempts.
+    #[arg(long)]
+    expect: Option<String>,
+    /// Attempt bound for verify loops.
+    #[arg(long, default_value = "3")]
+    attempts: u32,
 }
 
 fn main() -> ExitCode {
@@ -136,91 +164,108 @@ fn main() -> ExitCode {
     }
 }
 
+fn load_policy(path: &Option<String>) -> Result<Policy> {
+    match path {
+        Some(p) => Policy::load(std::path::Path::new(p))
+            .with_context(|| format!("loading policy '{p}'")),
+        None => Ok(Policy::embedded()),
+    }
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    let driver = MacOsDriver::new();
+    let policy = load_policy(&cli.policy)?;
+    let mut engine = Engine::new(MacOsDriver::new(), policy, Duration::from_secs(300));
 
     match cli.cmd {
-        Command::Doctor { request } => doctor(&driver, request),
-        Command::Windows { app } => windows(&driver, app),
+        Command::Doctor { request } => doctor(engine.driver(), request),
+        Command::Windows { app } => windows(engine.driver(), app),
         Command::Observe {
             app,
             max_depth,
             max_elements,
             digest,
             screenshot,
-        } => observe(&driver, app, max_depth, max_elements, digest, screenshot),
-        Command::Click {
+        } => observe(
+            engine.driver(),
             app,
-            target,
-            button,
-            coords,
-        } => {
+            max_depth,
+            max_elements,
+            digest,
+            screenshot,
+        ),
+        Command::Click { args, button } => {
             let button = match button.as_str() {
                 "left" => MouseButton::Left,
                 "right" => MouseButton::Right,
                 "middle" => MouseButton::Middle,
                 other => anyhow::bail!("unknown button '{other}' (left|right|middle)"),
             };
-            let target = resolve_target(&driver, &target, &app)?;
-            act(&driver, &Action::Click { target, button }, &app, coords)
+            let target = resolve_target(engine.driver(), &args)?;
+            run_action(
+                &mut engine,
+                &args,
+                Action::Click { target, button },
+            )
         }
-        Command::Type {
-            app,
-            text,
-            target,
-            coords,
-        } => {
-            let target = target
-                .map(|t| resolve_target(&driver, &t, &app))
+        Command::Type { args, text } => {
+            let target = args
+                .target
+                .as_deref()
+                .map(|_| resolve_target(engine.driver(), &args))
                 .transpose()?;
-            act(&driver, &Action::TypeText { text, target }, &app, coords)
+            run_action(&mut engine, &args, Action::TypeText { text, target })
         }
-        Command::Key { app, chord, coords } => {
+        Command::Key { args, chord } => {
             let chord = dexter_core::KeyChord::parse(&chord)?;
-            act(&driver, &Action::Key { chord }, &app, coords)
+            run_action(&mut engine, &args, Action::Key { chord })
         }
-        Command::Scroll {
-            app,
-            target,
-            dx,
-            dy,
-            coords,
-        } => {
-            let target = target
-                .map(|t| resolve_target(&driver, &t, &app))
+        Command::Scroll { args, dx, dy } => {
+            let target = args
+                .target
+                .as_deref()
+                .map(|_| resolve_target(engine.driver(), &args))
                 .transpose()?;
-            act(
-                &driver,
-                &Action::Scroll {
+            run_action(
+                &mut engine,
+                &args,
+                Action::Scroll {
                     delta: ScrollDelta { dx, dy },
                     target,
                 },
-                &app,
-                coords,
             )
         }
-        Command::Focus { app, target } => {
-            let target = resolve_target(&driver, &target, &app)?;
-            act(&driver, &Action::Focus { target }, &app, false)
+        Command::Focus { args } => {
+            let target = resolve_target(engine.driver(), &args)?;
+            run_action(&mut engine, &args, Action::Focus { target })
         }
-        Command::SetValue { app, target, value } => {
-            let target = resolve_target(&driver, &target, &app)?;
-            act(&driver, &Action::SetValue { target, value }, &app, false)
+        Command::SetValue { args, value } => {
+            let target = resolve_target(engine.driver(), &args)?;
+            run_action(&mut engine, &args, Action::SetValue { target, value })
         }
+        Command::Run {
+            path,
+            coords,
+            approve_all,
+            events,
+        } => run_scenario(&mut engine, &path, coords, approve_all, events),
     }
 }
 
 /// Parse a `--target` flag into a `Target`. `element:N` takes a fresh
 /// observation first — element ids are only meaningful against the
 /// observation that produced them, and only inside this process.
-fn resolve_target(driver: &MacOsDriver, raw: &str, app: &Option<String>) -> Result<Target> {
+fn resolve_target(driver: &MacOsDriver, args: &ActionArgs) -> Result<Target> {
+    let raw = args
+        .target
+        .as_deref()
+        .context("this command requires --target")?;
     if let Some(rest) = raw.strip_prefix("element:") {
         let n: u64 = rest
             .parse()
             .with_context(|| format!("invalid element id '{rest}'"))?;
         let scope = ObservationScope {
-            app: app.as_deref().map(AppSelector::parse),
+            app: args.app.as_deref().map(AppSelector::parse),
             ..Default::default()
         };
         let obs = driver
@@ -253,17 +298,161 @@ fn resolve_target(driver: &MacOsDriver, raw: &str, app: &Option<String>) -> Resu
     )
 }
 
-fn act(driver: &MacOsDriver, action: &Action, app: &Option<String>, coords: bool) -> Result<()> {
-    let ctx = ActContext {
-        app: app.as_deref().map(AppSelector::parse),
-        allow_coordinates: coords,
+fn run_action(engine: &mut Engine<MacOsDriver>, args: &ActionArgs, action: Action) -> Result<()> {
+    let app = args.app.as_deref().map(AppSelector::parse);
+    let expect = args
+        .expect
+        .as_deref()
+        .map(serde_json::from_str::<ExpectedState>)
+        .transpose()
+        .context("invalid --expect JSON")?;
+    let cfg = RunConfig {
+        app: app.clone(),
+        max_attempts: args.attempts,
+        allow_coordinates: args.coords,
+        approve_all: args.approve,
+        verify_delay: Duration::from_millis(250),
+        observe_max_elements: 4_000,
     };
-    let result = driver.act(action, &ctx).context("act failed")?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    if result.status.ok() {
+    let step = Step {
+        note: None,
+        action,
+        expect,
+        max_attempts: Some(args.attempts),
+        app: app.clone(),
+    };
+    let status = engine.run_step(&step, &cfg);
+    print_status(&status);
+    if status.done() {
         Ok(())
     } else {
-        anyhow::bail!("action returned {:?}", result.status)
+        anyhow::bail!("step did not complete")
+    }
+}
+
+fn print_status(status: &StepStatus) {
+    match status {
+        StepStatus::Done {
+            result,
+            verification,
+            attempts,
+        } => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "done",
+                    "attempts": attempts,
+                    "result": result,
+                    "verification": verification,
+                })
+            );
+        }
+        StepStatus::Denied { reason } => {
+            println!("{}", serde_json::json!({"status": "denied", "reason": reason}));
+        }
+        StepStatus::NeedsApproval { fingerprint, reason } => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "needs_approval",
+                    "reason": reason,
+                    "fingerprint": fingerprint,
+                    "hint": "re-run with --approve, or add the fingerprint to a scenario's grants",
+                })
+            );
+        }
+        StepStatus::Failed { reason, attempts } => {
+            println!(
+                "{}",
+                serde_json::json!({"status": "failed", "reason": reason, "attempts": attempts})
+            );
+        }
+        StepStatus::Errored { error } => {
+            println!("{}", serde_json::json!({"status": "error", "error": error.to_string()}));
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ScenarioFile {
+    #[serde(default)]
+    app: Option<String>,
+    #[serde(default)]
+    grants: Vec<String>,
+    #[serde(default)]
+    max_attempts: Option<u32>,
+    #[serde(default)]
+    verify_delay_ms: Option<u64>,
+    #[serde(rename = "step", default)]
+    steps: Vec<ScenarioStep>,
+}
+
+#[derive(Deserialize)]
+struct ScenarioStep {
+    #[serde(default)]
+    note: Option<String>,
+    action: Action,
+    #[serde(default)]
+    expect: Option<ExpectedState>,
+    #[serde(default)]
+    max_attempts: Option<u32>,
+    /// Per-step app override (name/bundle/pid syntax).
+    #[serde(default)]
+    app: Option<String>,
+}
+
+fn run_scenario(
+    engine: &mut Engine<MacOsDriver>,
+    path: &str,
+    coords: bool,
+    approve_all: bool,
+    events_path: Option<String>,
+) -> Result<()> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading scenario '{path}'"))?;
+    let file: ScenarioFile =
+        toml::from_str(&text).with_context(|| format!("parsing scenario '{path}'"))?;
+    for fp in &file.grants {
+        engine.grant_approval(fp);
+    }
+    let cfg = RunConfig {
+        app: file.app.as_deref().map(AppSelector::parse),
+        max_attempts: file.max_attempts.unwrap_or(3),
+        verify_delay: Duration::from_millis(file.verify_delay_ms.unwrap_or(250)),
+        allow_coordinates: coords,
+        approve_all,
+        observe_max_elements: 4_000,
+    };
+    let steps: Vec<Step> = file
+        .steps
+        .into_iter()
+        .map(|s| Step {
+            note: s.note,
+            action: s.action,
+            expect: s.expect,
+            max_attempts: s.max_attempts,
+            app: s.app.as_deref().map(AppSelector::parse),
+        })
+        .collect();
+    let report = engine.run_scenario(&steps, &cfg);
+
+    if let Some(path) = events_path {
+        let mut out = String::new();
+        for e in engine.events() {
+            out.push_str(&serde_json::to_string(e)?);
+            out.push('\n');
+        }
+        std::fs::write(&path, out).with_context(|| format!("writing events '{path}'"))?;
+    }
+
+    for (i, status) in &report.steps {
+        print!("step {i}: ");
+        print_status(status);
+    }
+    if report.ok() {
+        Ok(())
+    } else {
+        anyhow::bail!("scenario failed")
     }
 }
 
@@ -293,6 +482,12 @@ fn doctor(driver: &MacOsDriver, request: bool) -> Result<()> {
              Screen Recording. Without it, window titles and screenshots are unavailable."
         );
     }
+    println!(
+        "\nnote: `observe` reports `ax_limited` when the AX tree comes back \
+         degraded — that means the permission applies to the launching \
+         terminal, not this binary. Add the dexter binary to Accessibility \
+         in System Settings to get full trees."
+    );
     Ok(())
 }
 
@@ -354,6 +549,12 @@ fn observe(
             eprintln!(
                 "dexter: element list truncated at scope limits — \
                  `not found` results are not definitive"
+            );
+        }
+        if obs.ax_limited {
+            eprintln!(
+                "dexter: AX tree degraded (ax_limited) — the accessibility \
+                 grant likely applies to your terminal, not this binary"
             );
         }
         println!("{}", serde_json::to_string_pretty(&obs)?);

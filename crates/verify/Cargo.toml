@@ -1,0 +1,10 @@
+[package]
+name = "dexter-verify"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dexter-core.workspace = true
+dexter-world-model.workspace = true
+regex.workspace = true
