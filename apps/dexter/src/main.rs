@@ -248,7 +248,7 @@ fn build_driver(cli: &Cli) -> Result<Box<dyn ComputerDriver>> {
                     "browser"
                 };
                 Ok(Box::new(
-                    dexter_browser::BrowserDriver::connect(url, label)
+                    dexter_browser::BrowserDriver::connect_attach(url, label)
                         .map_err(|e| anyhow::anyhow!("browser driver at {url}: {e}"))?,
                 ))
             }

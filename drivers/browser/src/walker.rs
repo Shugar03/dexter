@@ -11,7 +11,7 @@ use serde::Deserialize;
 /// bounds,enabled,focused,actions}]` and stashes the live nodes in
 /// `window.__dexterNodes` for later action dispatch.
 pub const WALKER_JS: &str = r#"
-(() => {
+return (() => {
   const els = [];
   const nodes = [];
   const idx = new Map(); // Node -> flat index
@@ -62,7 +62,9 @@ pub const WALKER_JS: &str = r#"
     const title = el.getAttribute('title');
     if (title) return title;
     const tag = el.tagName.toLowerCase();
-    if (['button','a','summary','option'].includes(tag)) {
+    // For AX, the accessible name of a button/link IS its label; for
+    // static text it IS the text content.
+    if (['button','a','summary','option'].includes(tag) || TEXT_TAGS.has(tag)) {
       const t = (el.innerText || el.textContent || '').trim();
       return t.length > 120 ? t.slice(0, 120) : t;
     }

@@ -1,22 +1,32 @@
-//! Real Safari E2E — requires:
-//!   Safari Settings → Developer → Allow Remote Automation
-//! Run with: DEXTER_E2E_BROWSER=1 cargo test -p dexter-browser --test safari_e2e
+//! Real browser E2E — runs against whatever WebDriver endpoint is
+//! configured:
+//!   - `DEXTER_BROWSER_URL=http://localhost:9515` → chromedriver,
+//!     geckodriver, a remote grid, safaridriver started by hand.
+//!   - unset → spawns `safaridriver` (needs Safari "Allow Remote
+//!     Automation").
+//!
+//! Run with `DEXTER_E2E_BROWSER=1 cargo test -p dexter-browser --test safari_e2e`
 
 use dexter_browser::BrowserDriver;
 use dexter_core::{Action, MouseButton, ObservationScope, SemanticTarget, Target};
 use dexter_driver::{ActContext, ComputerDriver};
 
-fn safari() -> Option<BrowserDriver> {
+fn driver() -> Option<BrowserDriver> {
     if std::env::var("DEXTER_E2E_BROWSER").ok().as_deref() != Some("1") {
-        eprintln!("skipping: set DEXTER_E2E_BROWSER=1 (and enable Safari remote automation)");
+        eprintln!(
+            "skipping: set DEXTER_E2E_BROWSER=1 (+ DEXTER_BROWSER_URL for a running endpoint)"
+        );
         return None;
     }
-    BrowserDriver::safari().ok()
+    match std::env::var("DEXTER_BROWSER_URL") {
+        Ok(url) => BrowserDriver::connect(&url, "e2e").ok(),
+        Err(_) => BrowserDriver::safari().ok(),
+    }
 }
 
 #[test]
-fn safari_observe_and_click() {
-    let Some(driver) = safari() else { return };
+fn browser_observe_and_click() {
+    let Some(driver) = driver() else { return };
     driver
         .navigate("data:text/html,<title>Demo</title><main><h1>Demo</h1><input id=card aria-label='Card number'><button id=pay onclick=\"document.body.dataset.clicked='1'\">Pay now</button></main>")
         .expect("navigate");

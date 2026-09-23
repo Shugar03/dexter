@@ -12,6 +12,10 @@ pub struct WebDriverClient {
     base: String,
     agent: ureq::Agent,
     session: Option<String>,
+    /// We DELETE the session on Drop only if we created it — sessions
+    /// adopted via `GET /sessions` (attach to the user's live page)
+    /// belong to whoever opened them.
+    owns_session: bool,
     /// Owned driver process (safaridriver spawned by us) — killed on drop.
     proc: Option<Child>,
 }
@@ -46,6 +50,7 @@ impl WebDriverClient {
             base: format!("http://localhost:{port}"),
             agent: agent(),
             session: None,
+            owns_session: true,
             proc: Some(proc),
         };
         client.wait_ready()?;
@@ -53,14 +58,44 @@ impl WebDriverClient {
     }
 
     /// Attach to a driver already listening (chromedriver, remote grid).
+    /// Always opens a fresh session.
     pub fn connect(base: &str) -> Result<Self, DriverError> {
-        let client = Self {
+        Self::connect_mode(base, false)
+    }
+
+    /// Attach and adopt the endpoint's existing session if any — the
+    /// one-shot CLI can then see the user's actual page. The adopted
+    /// session is never deleted on Drop.
+    pub fn connect_attach(base: &str) -> Result<Self, DriverError> {
+        Self::connect_mode(base, true)
+    }
+
+    fn connect_mode(base: &str, adopt: bool) -> Result<Self, DriverError> {
+        let mut client = Self {
             base: base.trim_end_matches('/').to_string(),
             agent: agent(),
             session: None,
+            owns_session: true,
             proc: None,
         };
         client.wait_ready()?;
+        // Adopt a live session if the endpoint has one — `GET /sessions`
+        // is non-standard but implemented by chromedriver/geckodriver;
+        // it lets a one-shot CLI observe the user's actual page instead
+        // of a fresh about:blank. Endpoints without it just 404 and we
+        // create our own session lazily.
+        if adopt {
+            if let Ok(resp) = client.get("/sessions") {
+                if let Some(sid) = resp["value"]
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|s| s["id"].as_str().or_else(|| s["sessionId"].as_str()))
+                {
+                    client.session = Some(sid.to_string());
+                    client.owns_session = false;
+                }
+            }
+        }
         Ok(client)
     }
 
@@ -102,13 +137,14 @@ impl WebDriverClient {
             .and_then(|r| read_json(r, path))
     }
 
-    /// Lazily create the browser session.
+    /// Lazily create the browser session (skipped when a session was
+    /// adopted at connect). `alwaysMatch: {}` — the driver
+    /// picks its own browser (safaridriver→Safari, chromedriver→Chrome,
+    /// geckodriver→Firefox); naming a browser here would break
+    /// cross-driver attach.
     fn ensure_session(&mut self) -> Result<&str, DriverError> {
         if self.session.is_none() {
-            let resp = self.post(
-                "/session",
-                json!({"capabilities": {"alwaysMatch": {"browserName": "safari"}}}),
-            )?;
+            let resp = self.post("/session", json!({"capabilities": {"alwaysMatch": {}}}))?;
             let sid = resp["value"]["sessionId"]
                 .as_str()
                 .ok_or_else(|| {
@@ -117,6 +153,7 @@ impl WebDriverClient {
                 })?
                 .to_string();
             self.session = Some(sid);
+            self.owns_session = true;
         }
         Ok(self.session.as_deref().unwrap())
     }
@@ -143,6 +180,10 @@ fn read_json(mut r: ureq::http::Response<ureq::Body>, path: &str) -> Result<Valu
 
 impl WebDriverClient {
     pub fn close_session(&mut self) {
+        if !self.owns_session {
+            self.session = None;
+            return;
+        }
         if let Some(sid) = self.session.take() {
             let _ = self.delete(&format!("/session/{sid}"));
         }

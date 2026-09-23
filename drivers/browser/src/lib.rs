@@ -44,9 +44,16 @@ impl BrowserDriver {
     }
 
     /// Attach to an already-running WebDriver endpoint
-    /// (chromedriver:9515, remote grid, ...).
+    /// (chromedriver:9515, remote grid, ...). Opens a fresh session.
     pub fn connect(base_url: &str, label: &str) -> Result<Self, DriverError> {
         Self::from_client(WebDriverClient::connect(base_url)?, label)
+    }
+
+    /// Attach to an endpoint and adopt its live session if one exists —
+    /// lets one-shot CLI commands see the page the user already has
+    /// open. The adopted session is never closed on Drop.
+    pub fn connect_attach(base_url: &str, label: &str) -> Result<Self, DriverError> {
+        Self::from_client(WebDriverClient::connect_attach(base_url)?, label)
     }
 
     fn from_client(client: WebDriverClient, label: &str) -> Result<Self, DriverError> {
@@ -85,7 +92,7 @@ impl BrowserDriver {
     fn exec_on(&self, id: ElementId, script: &str) -> Result<serde_json::Value, DriverError> {
         self.client.lock().unwrap().execute(
             &format!(
-                "(() => {{ const el = window.__dexterNodes?.[{}]; \
+                "return (() => {{ const el = window.__dexterNodes?.[{}]; \
                  if (!el) return {{__dexter_err: 'stale node'}}; \
                  return (function(el) {{ {} }})(el); }})()",
                 id.0, script
@@ -283,7 +290,7 @@ impl ComputerDriver for BrowserDriver {
                 let id = self.resolve(target)?;
                 let resp = self.client.lock().unwrap().execute(
                     &format!(
-                        "(() => {{ const el = window.__dexterNodes?.[{}]; \
+                        "return (() => {{ const el = window.__dexterNodes?.[{}]; \
                          if (!el) return {{__dexter_err:'stale node'}}; \
                          el.focus(); el.value = arguments[0]; \
                          el.dispatchEvent(new Event('input',{{bubbles:true}})); \
@@ -306,7 +313,7 @@ impl ComputerDriver for BrowserDriver {
                 let id = self.resolve(&t)?;
                 self.client.lock().unwrap().execute(
                     &format!(
-                        "(() => {{ const el = window.__dexterNodes?.[{}]; \
+                        "return (() => {{ const el = window.__dexterNodes?.[{}]; \
                          if (!el) return {{__dexter_err:'stale node'}}; \
                          el.focus(); el.value = (el.value||'') + arguments[0]; \
                          el.dispatchEvent(new Event('input',{{bubbles:true}})); \
@@ -326,7 +333,7 @@ impl ComputerDriver for BrowserDriver {
                 // WebDriver /actions endpoint (that's a *different*
                 // mechanism ladder for later).
                 self.client.lock().unwrap().execute(
-                    "(() => { const el = document.activeElement || document.body; \
+                    "return (() => { const el = document.activeElement || document.body; \
                      const init = {key: arguments[0], bubbles:true, \
                         metaKey: arguments[1], ctrlKey: arguments[2], \
                         altKey: arguments[3], shiftKey: arguments[4]}; \
@@ -358,7 +365,7 @@ impl ComputerDriver for BrowserDriver {
                     ));
                 }
                 self.client.lock().unwrap().execute(
-                    "window.scrollBy(arguments[0], arguments[1]); 'scrolled'",
+                    "window.scrollBy(arguments[0], arguments[1]); return 'scrolled';",
                     vec![json!(delta.dx), json!(delta.dy)],
                 )?;
                 Ok(ActionResult::success(
