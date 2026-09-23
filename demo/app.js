@@ -82,6 +82,11 @@ function scan(scanEl, { fail = false, y = "40%" } = {}) {
     { top: y, opacity: 0, duration: 0.7, ease: "power1.in" });
 }
 
+function setTag(tagId, state) {
+  const el = document.getElementById(tagId);
+  if (el) el.innerHTML = `dexter <span class="st">· ${state}</span>`;
+}
+
 function moveCursorTo(cursorEl, targetEl, vp, pad = 0.5) {
   /* offsetLeft/Top are layout values — immune to the scale transforms
      ScrollTrigger applies to ancestor scene cards (getBoundingClientRect
@@ -115,14 +120,14 @@ function heroLoop() {
   const p1 = () => moveCursorTo(cursor, field, vp, 0.6);
   const p2 = () => moveCursorTo(cursor, btn, vp, 0.5);
 
-  tl.call(() => { hud.textContent = "observing…"; ret.style.opacity = 0; })
+  tl.call(() => { hud.textContent = "observing…"; ret.style.opacity = 0; setTag("heroTag", "observing"); })
     .to(cursor, { left: "18%", top: "72%", duration: 0.01 })
     .to(cursor, {
       duration: 0.9, ease: "power2.inOut",
       onStart: () => { const p = p1(); gsap.set(cursor, { left: p.x, top: p.y, xPercent: 0, yPercent: 0 }); },
       left: () => p1().x, top: () => p1().y,
     })
-    .call(() => { hud.textContent = "e_3 text_field — focus + set_value"; field.style.borderColor = "rgba(77,227,255,.6)"; })
+    .call(() => { hud.textContent = "e_3 text_field — focus + set_value"; field.style.borderColor = "rgba(77,227,255,.6)"; setTag("heroTag", "typing e_3"); })
     .to({}, { duration: 0.7 })
     .call(() => { hud.textContent = "ranking candidates…"; })
     .to(cursor, {
@@ -131,14 +136,15 @@ function heroLoop() {
     })
     .call(() => {
       hud.textContent = "lock → e_4 button “Pay $49.00” · 0.72";
+      setTag("heroTag", "locking e_4");
       gsap.set(ret, { ...rectAround(btn, 10, 8), opacity: 1 });
     })
     .fromTo(ret, { scale: 1.5, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.35, ease: "back.out(2)" })
     .add(pulseCursor(cursor))
-    .call(() => { hud.textContent = "policy → approved · act: dom.click"; })
+    .call(() => { hud.textContent = "policy → approved · act: dom.click"; setTag("heroTag", "clicking e_4"); })
     .add(() => scan(scanEl, { y: "80%" }))
     .to({}, { duration: 0.8 })
-    .call(() => { hud.textContent = "verified — “Payment confirmed”"; })
+    .call(() => { hud.textContent = "verified — “Payment confirmed”"; setTag("heroTag", "verified ✓"); })
     .to(ret, { opacity: 0, duration: 0.4 }, "+=0.7")
     .call(() => { field.style.borderColor = ""; });
   return tl;
@@ -171,6 +177,7 @@ function lockTimeline() {
 
   const tl = gsap.timeline({ repeat: -1, repeatDelay: 1.4 });
 
+  tl.call(() => setTag("lockTag", "observing"), null, 0.1);
   /* sweep: each candidate lights with its prior chip */
   els.forEach((el, i) => {
     tl.call(() => el.classList.add("cand"), null, 0.4 + i * 0.35);
@@ -189,12 +196,14 @@ function lockTimeline() {
     gsap.set(ret, rectAround(els[1], 12, 10));
   }, null, 2.4)
     .fromTo(ret, { scale: 1.9, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.45, ease: "back.out(2.2)" }, 2.45)
-    .call(() => els[1].classList.add("locked"), null, 2.9)
+    .call(() => { els[1].classList.add("locked"); setTag("lockTag", "locked e_40"); }, null, 2.9)
     .call(() => { els[0].classList.remove("cand"); els[2].classList.remove("cand"); }, null, 2.9)
 
     /* click pulse → verify scan */
     .add(pulseCursor(cursor), 3.1)
+    .call(() => setTag("lockTag", "clicking"), null, 3.1)
     .add(() => scan(scanEl, { y: "90%" }), 3.35)
+    .call(() => setTag("lockTag", "verified ✓"), null, 4.2)
     .to({}, { duration: 0.9 })
 
     /* reset for loop */
@@ -222,6 +231,7 @@ function flightTimeline() {
 
   const tl = gsap.timeline({ repeat: -1, repeatDelay: 1.5 });
 
+  tl.call(() => setTag("deskTag", "working"), null, 0.1);
   /* pipeline lights in journal order as the cursor travels */
   const stepAt = (i) => tl.call(() => {
     steps.forEach((s, j) => s.classList.toggle("on", j <= i));
@@ -267,45 +277,46 @@ function verifyTimeline() {
   const brRetry = document.getElementById("brRetry");
   const brAbstain = document.getElementById("brAbstain");
 
-  const setStatus = (cls, txt) => () => {
+  const setStatus = (cls, txt, tag) => () => {
     status.className = "ver-status mono " + cls;
     status.textContent = txt;
+    if (tag) setTag("verTag", tag);
   };
 
   const tl = gsap.timeline({ repeat: -1, repeatDelay: 1.6 });
 
   /* ACT 1 — click → verify FAILS → retry → verified */
-  tl.call(setStatus("proposed", "proposed — click e_4"), null, 0.2)
+  tl.call(setStatus("proposed", "proposed — click e_4", "acting"), null, 0.2)
     .to(cursor, {
       duration: 0.9, ease: "power3.inOut",
       left: () => moveCursorTo(cursor, target, vp, 0.5).x,
       top: () => moveCursorTo(cursor, target, vp, 0.5).y,
     }, 0.4)
-    .call(setStatus("executing", "executing · dom.click"), null, 1.4)
+    .call(setStatus("executing", "executing · dom.click", "clicking e_4"), null, 1.4)
     .add(pulseCursor(cursor), 1.45)
     .to(target, { borderColor: "rgba(77,227,255,0.6)", duration: 0.2 }, 1.45)
 
     /* verification sweep — FAILS */
-    .call(setStatus("executing", "verifying…"), null, 2.0)
+    .call(setStatus("executing", "verifying…", "verifying"), null, 2.0)
     .add(() => scan(scanEl, { fail: true, y: "55%" }), 2.1)
     .to(flash, { opacity: 1, duration: 0.25 }, 2.8)
     .to(flash, { opacity: 0, duration: 0.4 }, 3.1)
-    .call(setStatus("failed", "verify failed — expected state not met"), null, 2.9)
+    .call(setStatus("failed", "verify failed — expected state not met", "verify failed"), null, 2.9)
     .call(() => brRetry.classList.add("on"), null, 3.4)
 
     /* retry — second pulse, verify PASSES */
-    .call(setStatus("executing", "retry 1/2 · dom.click"), null, 4.0)
+    .call(setStatus("executing", "retry 1/2 · dom.click", "retrying 1/2"), null, 4.0)
     .add(pulseCursor(cursor), 4.05)
     .add(() => scan(scanEl, { fail: false, y: "55%" }), 4.6)
-    .call(setStatus("verified", "verified — “Payment confirmed”"), null, 5.4)
+    .call(setStatus("verified", "verified — “Payment confirmed”", "verified ✓"), null, 5.4)
     .to(target, { borderColor: "rgba(61,255,162,0.6)", duration: 0.3 }, 5.4)
     .call(() => brRetry.classList.remove("on"), null, 5.6)
 
     /* ACT 2 — the abstain branch: cursor retreats, no candidate fires */
     .to({}, { duration: 1.0 })
-    .call(setStatus("proposed", "goal: “comprar un vuelo”"), null, 7.0)
+    .call(setStatus("proposed", "goal: “comprar un vuelo”", "observing"), null, 7.0)
     .call(() => brAbstain.classList.add("on"), null, 7.6)
-    .call(setStatus("abstained", "abstain — no candidate ≥ 0.65"), null, 7.9)
+    .call(setStatus("abstained", "abstain — no candidate ≥ 0.65", "abstaining"), null, 7.9)
     .to(cursor, { left: "12%", top: "82%", duration: 1.0, ease: "power2.inOut" }, 7.9)
     .to(target, { borderColor: "", duration: 0.4 }, 8.4)
     .call(() => brAbstain.classList.remove("on"), null, 9.6);

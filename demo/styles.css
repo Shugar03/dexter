@@ -208,7 +208,7 @@ body::before {
 .fake-btn.sm { height: 34px; font-size: 0.78rem; }
 .fake-field.sm .fake-input { height: 32px; line-height: 32px; font-size: 0.72rem; }
 
-/* ghost cursor */
+/* ghost cursor — Figma-style presence: arrow + name tag */
 .gcursor {
   position: absolute; width: 22px; height: 22px;
   color: var(--cyan);
@@ -216,7 +216,16 @@ body::before {
   z-index: 20; pointer-events: none;
   left: 20%; top: 70%;
 }
-.gcursor svg { width: 100%; height: 100%; }
+.gcursor svg { width: 22px; height: 22px; }
+.gcursor-tag {
+  position: absolute; left: 16px; top: 16px;
+  white-space: nowrap;
+  background: var(--cyan); color: #06121a;
+  font-size: 0.6rem; font-weight: 700;
+  padding: 3px 8px; border-radius: 4px 10px 10px 10px;
+  box-shadow: 0 2px 12px rgba(77,227,255,0.35);
+}
+.gcursor-tag .st { font-weight: 400; opacity: 0.85; }
 
 /* lock-on reticle — 4 corner brackets */
 .reticle {
