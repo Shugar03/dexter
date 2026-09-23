@@ -89,6 +89,7 @@ jobs:
           esac
           gh release create "$GITHUB_REF_NAME" \
             "${ARGS[@]}" \
+            --repo "${{ github.repository }}" \
             --title "dexter $GITHUB_REF_NAME" \
             "${{ steps.pack.outputs.asset }}" SHA256SUMS
 
