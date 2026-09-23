@@ -15,6 +15,7 @@ dexter-core.workspace = true
 dexter-driver.workspace = true
 dexter-world-model.workspace = true
 dexter-engine.workspace = true
+dexter-decision.workspace = true
 dexter-policy.workspace = true
 dexter-macos.workspace = true
 clap.workspace = true

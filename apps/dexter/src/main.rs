@@ -110,6 +110,14 @@ enum Command {
         #[arg(long)]
         value: String,
     },
+    /// Run a goal in closed loop: observe → candidates → decision engine
+    /// → act → re-check, until `--done` verifies or bounds hit.
+    Task {
+        /// The goal, verbatim ("save the document").
+        goal: String,
+        #[command(flatten)]
+        args: TaskArgs,
+    },
     /// Run a scenario file (TOML): ordered steps through the full
     /// policy/act/verify loop, stopping at the first failure.
     Run {
@@ -126,6 +134,32 @@ enum Command {
         #[arg(long)]
         events: Option<String>,
     },
+}
+
+/// Flags for the closed-loop `task` command.
+#[derive(clap::Args)]
+struct TaskArgs {
+    /// Structural completion check (JSON ExpectedState).
+    #[arg(long)]
+    done: String,
+    /// Decision engine: `rule-based` (only one that ships offline).
+    #[arg(long, default_value = "rule-based")]
+    engine: String,
+    /// Scope to an application.
+    #[arg(long)]
+    app: Option<String>,
+    /// Max decide/act iterations.
+    #[arg(long, default_value = "10")]
+    max_steps: u32,
+    /// Permit coordinate-level input.
+    #[arg(long)]
+    coords: bool,
+    /// Approve every policy-required action (you approve the goal).
+    #[arg(long)]
+    approve_all: bool,
+    /// Write the event journal (JSONL) to this path.
+    #[arg(long)]
+    events: Option<String>,
 }
 
 /// Shared flags for single-action commands.
@@ -249,6 +283,7 @@ fn run() -> Result<()> {
             approve_all,
             events,
         } => run_scenario(&mut engine, &path, coords, approve_all, events),
+        Command::Task { goal, args } => run_task(&mut engine, &goal, args),
     }
 }
 
@@ -453,6 +488,75 @@ fn run_scenario(
         Ok(())
     } else {
         anyhow::bail!("scenario failed")
+    }
+}
+
+fn run_task(engine: &mut Engine<MacOsDriver>, goal: &str, args: TaskArgs) -> Result<()> {
+    let done_when: ExpectedState =
+        serde_json::from_str(&args.done).context("invalid --done ExpectedState JSON")?;
+    let decider: Box<dyn dexter_decision::DecisionEngine> = match args.engine.as_str() {
+        "rule-based" => Box::new(dexter_decision::RuleBased::default()),
+        other => anyhow::bail!(
+            "unknown decision engine '{other}' — available: rule-based \
+             (laya engine lands with the sidecar worker)"
+        ),
+    };
+    let generator = dexter_decision::HeuristicGenerator::default();
+    let outcome = engine.run_task(
+        goal,
+        &generator,
+        decider.as_ref(),
+        &dexter_engine::TaskConfig {
+            run: RunConfig {
+                app: args.app.as_deref().map(AppSelector::parse),
+                max_attempts: 1,
+                verify_delay: Duration::from_millis(250),
+                allow_coordinates: args.coords,
+                approve_all: args.approve_all,
+                observe_max_elements: 4_000,
+            },
+            max_steps: args.max_steps,
+            done_when,
+        },
+    );
+
+    if let Some(path) = args.events {
+        let mut out = String::new();
+        for e in engine.events() {
+            out.push_str(&serde_json::to_string(e)?);
+            out.push('\n');
+        }
+        std::fs::write(&path, out).with_context(|| format!("writing events '{path}'"))?;
+    }
+
+    use dexter_engine::TaskOutcome;
+    match outcome {
+        TaskOutcome::Completed { steps } => {
+            println!(
+                "{}",
+                serde_json::json!({"status": "completed", "steps": steps})
+            );
+            Ok(())
+        }
+        TaskOutcome::Abstained { reason } => {
+            println!("{}", serde_json::json!({"status": "abstained", "reason": reason}));
+            anyhow::bail!("task abstained")
+        }
+        TaskOutcome::Escalated { route, reason } => {
+            println!(
+                "{}",
+                serde_json::json!({"status": "escalated", "route": format!("{route:?}"), "reason": reason})
+            );
+            anyhow::bail!("task escalated")
+        }
+        TaskOutcome::Failed { reason } => {
+            println!("{}", serde_json::json!({"status": "failed", "reason": reason}));
+            anyhow::bail!("task failed")
+        }
+        TaskOutcome::MaxSteps => {
+            println!("{}", serde_json::json!({"status": "max_steps"}));
+            anyhow::bail!("task hit step bound without completing")
+        }
     }
 }
 

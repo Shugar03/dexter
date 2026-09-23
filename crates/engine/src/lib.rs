@@ -332,4 +332,175 @@ impl<D: ComputerDriver> Engine<D> {
         );
         report
     }
+
+    /// Closed-loop task runner: observe → done? → candidates → decide →
+    /// act → repeat, bounded by `max_steps`. `done_when` is checked
+    /// against every fresh observation — reaching VERIFIED completes the
+    /// task regardless of what any engine believed.
+    pub fn run_task(
+        &mut self,
+        goal: &str,
+        generator: &dyn dexter_decision::CandidateGenerator,
+        decider: &dyn dexter_decision::DecisionEngine,
+        cfg: &TaskConfig,
+    ) -> TaskOutcome {
+        use dexter_decision::{Decision, DecisionContext, Route};
+        let started = Instant::now();
+        let mut last_error: Option<String> = None;
+        let scope = ObservationScope {
+            app: cfg.run.app.clone(),
+            max_elements: cfg.run.observe_max_elements,
+            ..Default::default()
+        };
+
+        for step in 1..=cfg.max_steps {
+            let obs = match self.driver.observe(&scope) {
+                Ok(o) => o,
+                Err(e) => {
+                    self.journal(
+                        EventKind::TaskFailed,
+                        serde_json::json!({"error": e.to_string(), "step": step}),
+                    );
+                    return TaskOutcome::Failed {
+                        reason: format!("observe: {e}"),
+                    };
+                }
+            };
+            self.journal(
+                EventKind::ObservationCreated,
+                serde_json::json!({"observation": obs.id.0, "elements": obs.elements.len(), "step": step}),
+            );
+
+            // Done? Structural check — never the engine's word.
+            let check = dexter_verify::verify(&obs, &cfg.done_when);
+            if check.status == VerificationStatus::Verified {
+                self.journal(
+                    EventKind::TaskCompleted,
+                    serde_json::json!({"steps": step - 1, "elapsed_ms": started.elapsed().as_millis() as u64}),
+                );
+                return TaskOutcome::Completed { steps: step - 1 };
+            }
+
+            let candidates = generator.generate(&obs, goal);
+            self.journal(
+                EventKind::CandidatesGenerated,
+                serde_json::json!({
+                    "count": candidates.len(),
+                    "candidates": candidates.iter().map(|c| serde_json::json!({
+                        "rationale": c.rationale, "prior": c.prior,
+                    })).collect::<Vec<_>>(),
+                    "step": step,
+                }),
+            );
+
+            let ctx = DecisionContext {
+                goal: goal.to_string(),
+                state_digest: obs.digest.clone(),
+                candidates,
+                last_error: last_error.clone(),
+                step,
+            };
+            let decision = match decider.decide(&ctx) {
+                Ok(d) => d,
+                Err(e) => {
+                    self.journal(
+                        EventKind::TaskFailed,
+                        serde_json::json!({"error": e.to_string(), "step": step}),
+                    );
+                    return TaskOutcome::Failed {
+                        reason: e.to_string(),
+                    };
+                }
+            };
+            self.journal(
+                EventKind::DecisionMade,
+                serde_json::json!({
+                    "engine": decider.name(),
+                    "decision": &decision,
+                    "step": step,
+                }),
+            );
+
+            match decision {
+                Decision::Act {
+                    action,
+                    rationale,
+                    ..
+                } => {
+                    let status = self.run_step(
+                        &Step {
+                            note: Some(rationale),
+                            action,
+                            expect: None, // progress is judged by done_when
+                            max_attempts: Some(1),
+                            app: cfg.run.app.clone(),
+                        },
+                        &cfg.run,
+                    );
+                    match status {
+                        StepStatus::Done { .. } => last_error = None,
+                        other => {
+                            last_error = Some(format!("{other:?}"));
+                        }
+                    }
+                }
+                Decision::Route { route, rationale } => match route {
+                    Route::Wait { millis } => {
+                        std::thread::sleep(Duration::from_millis(millis.min(10_000)))
+                    }
+                    Route::Retry | Route::Reobserve => {}
+                    Route::Abstain => {
+                        self.journal(
+                            EventKind::TaskFailed,
+                            serde_json::json!({"outcome": "abstain", "reason": &rationale, "step": step}),
+                        );
+                        return TaskOutcome::Abstained { reason: rationale };
+                    }
+                    Route::EscalateLlm | Route::EscalateHuman => {
+                        self.journal(
+                            EventKind::TaskFailed,
+                            serde_json::json!({"outcome": "escalated", "reason": &rationale, "step": step}),
+                        );
+                        return TaskOutcome::Escalated {
+                            route,
+                            reason: rationale,
+                        };
+                    }
+                },
+            }
+        }
+
+        self.journal(
+            EventKind::TaskFailed,
+            serde_json::json!({"outcome": "max_steps", "max_steps": cfg.max_steps}),
+        );
+        TaskOutcome::MaxSteps
+    }
+}
+
+/// How a `run_task` call ended.
+#[derive(Debug)]
+pub enum TaskOutcome {
+    /// `done_when` verified after this many steps.
+    Completed { steps: u32 },
+    /// The decision engine declined to act.
+    Abstained { reason: String },
+    /// The decision engine escalated (LLM or human).
+    Escalated {
+        route: dexter_decision::Route,
+        reason: String,
+    },
+    /// Runtime/driver/decision failure.
+    Failed { reason: String },
+    /// Step bound reached without `done_when` verifying.
+    MaxSteps,
+}
+
+/// `run_task` parameters.
+pub struct TaskConfig {
+    pub run: RunConfig,
+    /// Hard bound on decide/act iterations.
+    pub max_steps: u32,
+    /// Structural goal check — verified against every observation.
+    pub done_when: ExpectedState,
 }

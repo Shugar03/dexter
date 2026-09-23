@@ -6,6 +6,8 @@ use std::time::SystemTime;
 #[serde(rename_all = "PascalCase")]
 pub enum EventKind {
     ObservationCreated,
+    CandidatesGenerated,
+    DecisionMade,
     ActionProposed,
     PolicyChecked,
     ActionExecuted,

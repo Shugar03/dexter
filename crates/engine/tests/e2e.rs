@@ -237,3 +237,80 @@ fn fingerprint_matches_policy_binding() {
     assert!(fp.contains("Guardar"));
     assert!(fp.contains("click"));
 }
+
+#[test]
+fn run_task_goal_to_verified_via_rule_based() {
+    // The full closed loop: goal → observe → candidates → rule-based
+    // decision → act → world mutates → done_when verifies.
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    let sim = SimDriver::new(vec![el(1, "button", "Guardar"), el(2, "button", "Cancelar")]);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "Guardado")),
+    );
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+
+    let outcome = engine.run_task(
+        "click guardar",
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 5,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("Guardado".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    match outcome {
+        TaskOutcome::Completed { steps } => assert_eq!(steps, 1),
+        other => panic!("expected Completed, got {other:?}"),
+    }
+    assert_eq!(engine.driver().pressed().len(), 1);
+    let kinds: Vec<_> = engine.events().iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&EventKind::CandidatesGenerated));
+    assert!(kinds.contains(&EventKind::DecisionMade));
+    assert!(kinds.contains(&EventKind::TaskCompleted));
+}
+
+#[test]
+fn run_task_escalates_when_nothing_matches() {
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    // World with no actionable elements for the goal.
+    let sim = SimDriver::new(vec![el(1, "static_text", "Solo lectura")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+
+    let outcome = engine.run_task(
+        "press the submit button",
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 5,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("Imposible".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    match outcome {
+        TaskOutcome::Escalated { route, .. } => {
+            assert_eq!(route, dexter_decision::Route::EscalateLlm)
+        }
+        other => panic!("expected Escalated, got {other:?}"),
+    }
+    // Nothing was pressed — the engine abstained rather than flailing.
+    assert!(engine.driver().pressed().is_empty());
+}

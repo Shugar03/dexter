@@ -10,6 +10,7 @@ dexter-core.workspace = true
 dexter-driver.workspace = true
 dexter-policy.workspace = true
 dexter-verify.workspace = true
+dexter-decision.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

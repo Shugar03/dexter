@@ -720,6 +720,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dexter-core",
+ "dexter-decision",
  "dexter-driver",
  "dexter-engine",
  "dexter-macos",
@@ -730,6 +731,16 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "dexter-decision"
+version = "0.0.1"
+dependencies = [
+ "dexter-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -745,6 +756,7 @@ name = "dexter-engine"
 version = "0.0.1"
 dependencies = [
  "dexter-core",
+ "dexter-decision",
  "dexter-driver",
  "dexter-policy",
  "dexter-sim",
