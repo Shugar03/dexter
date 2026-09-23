@@ -19,7 +19,13 @@ Providers (`--provider`, default `dev`):
 """
 import argparse
 import json
+import re
+import signal
 import sys
+
+# Die on SIGPIPE like a normal Unix filter instead of raising
+# BrokenPipeError at interpreter shutdown when dexter exits first.
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 
 def answer_dev(question: dict, state: str) -> dict:
@@ -47,49 +53,103 @@ def answer_dev(question: dict, state: str) -> dict:
     return {"type": "choice", "id": question["id"], "index": best}
 
 
-def predict_laya(state: str, questions: list) -> list:
-    """Real Laya provider — requires the laya SDK + checkpoint."""
-    try:
-        import laya  # noqa: F401  (SDK is not public yet)
-    except ImportError as e:
-        raise RuntimeError(
-            "laya SDK not installed — run with --provider dev for protocol "
-            "development, or install the laya package + checkpoint"
-        ) from e
-    raise RuntimeError("laya provider: SDK wiring not implemented yet")
+class LayaProvider:
+    """Real Laya provider — convaiinnovations/laya checkpoints.
+
+    The model evaluates every question in ONE forward pass, so we batch
+    the whole request's questions into a single predict() call.
+
+    Wire mapping (ours -> laya):
+      choice{id,prompt,options} -> choice{instructions,criteria:{i:opt}}
+      score{id,prompt}          -> score{instructions,criteria:[bins]}
+      bool{id,prompt}           -> noul{instructions}
+
+    Answer mapping (laya -> ours): choice returns the criteria key (we
+    emit "0","1",..), noul returns a probability we threshold at 0.5,
+    score returns a float we clamp to [0,1].
+    """
+
+    SCORE_BINS = ["0.0", "0.25", "0.5", "0.75", "1.0"]
+
+    def __init__(self, model: str, subfolder: str | None, device: str | None):
+        import laya
+
+        self.agent = laya.load(model, subfolder=subfolder, device=device)
+
+    def predict(self, state: str, questions: list) -> list:
+        laya_qs, order = {}, []
+        for q in questions:
+            qid = q["id"]
+            order.append((qid, q["type"]))
+            if q["type"] == "choice":
+                # Criteria keys are rendered to the model as "key: text"
+                # — terse opt{i} keys, and strip the redundant
+                # "candidate i: " prefix our engine prepends.
+                laya_qs[qid] = {
+                    "type": "choice",
+                    "instructions": q["prompt"],
+                    "criteria": {
+                        f"opt{i}": re.sub(r"^candidate \d+:\s*", "", opt)
+                        for i, opt in enumerate(q["options"])
+                    },
+                }
+            elif q["type"] == "score":
+                laya_qs[qid] = {
+                    "type": "score",
+                    "instructions": q["prompt"],
+                    "criteria": self.SCORE_BINS,
+                }
+            else:  # bool -> noul
+                laya_qs[qid] = {"type": "noul", "instructions": q["prompt"]}
+
+        res = self.agent.predict(state, laya_qs)
+        out = []
+        for qid, qtype in order:
+            a = res["answers"][qid]
+            if qtype == "choice":
+                # choice comes back as the criteria key ("opt3")
+                idx = int(str(a["choice"]).removeprefix("opt"))
+                out.append({"type": "choice", "id": qid, "index": idx})
+            elif qtype == "score":
+                out.append({"type": "score", "id": qid, "value": max(0.0, min(1.0, float(a["score"])))})
+            else:
+                out.append({"type": "bool", "id": qid, "value": bool(a["noul"] >= 0.5)})
+        return out
 
 
-def handle(req: dict, provider: str) -> dict:
+def handle(req: dict, provider) -> dict:
     params = req.get("params", {})
     state = params.get("state", "")
     questions = params.get("questions", [])
-    answers = []
-    for q in questions:
-        if provider == "laya":
-            answers.extend(predict_laya(state, [q]))
-        else:
-            answers.append(answer_dev(q, state))
-    return {
-        "id": req.get("id"),
-        "ok": True,
-        "provider": provider,
-        "answers": answers,
-    }
+    if provider == "dev":
+        answers = [answer_dev(q, state) for q in questions]
+        name = "dev"
+    else:
+        answers = provider.predict(state, questions)
+        name = "laya"
+    return {"id": req.get("id"), "ok": True, "provider": name, "answers": answers}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--provider", default="dev", choices=["dev", "laya"])
+    ap.add_argument("--model", default="convaiinnovations/laya",
+                    help="HF model id (default: laya family repo)")
+    ap.add_argument("--subfolder", default="multilingual",
+                    help="checkpoint subfolder: multilingual (localized UIs) | "
+                         "typed-decisions | '' for english root")
+    ap.add_argument("--device", default=None, help="cpu | cuda | mps (default: auto)")
     args = ap.parse_args()
 
+    provider = "dev"
     if args.provider == "laya":
-        # Fail fast at startup rather than mid-session.
+        # Load once, fail fast at startup rather than mid-session.
         try:
-            import laya  # noqa: F401
-        except ImportError:
+            provider = LayaProvider(args.model, args.subfolder or None, args.device)
+        except Exception as e:
             print(json.dumps({
                 "id": None, "ok": False,
-                "error": "laya SDK not installed",
+                "error": f"laya provider failed to load: {e}",
             }), flush=True)
             return 2
 
@@ -99,7 +159,7 @@ def main() -> int:
             continue
         try:
             req = json.loads(line)
-            resp = handle(req, args.provider)
+            resp = handle(req, provider)
         except Exception as e:  # never crash the protocol loop
             rid = None
             try:
@@ -108,7 +168,10 @@ def main() -> int:
                 pass
             resp = {"id": rid, "ok": False, "error": str(e)}
         sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
+        try:
+            sys.stdout.flush()
+        except BrokenPipeError:
+            return 0
     return 0
 
 

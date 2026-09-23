@@ -160,8 +160,26 @@ wait/reobserve/retry/abstain/escalate). Ships with:
 
 - `rule-based` — deterministic baseline, no dependencies.
 - `laya` — sidecar worker over NDJSON stdio
-  (`workers/laya/worker.py`; real SDK wiring pending — the `dev`
-  provider is labeled and deterministic, not a model).
+  (`workers/laya/worker.py`). Providers:
+  - `dev` — deterministic heuristic, labeled, not a model.
+  - `laya` — the real model: `pip install laya`, then
+    `--engine-path "python3 workers/laya/worker.py --provider laya"`.
+    Checkpoints: `--subfolder multilingual` (default; 100+ languages —
+    right for localized UIs), `typed-decisions`, or `--subfolder ''` for
+    the English root. Model loads once at worker startup; ~160ms/predict
+    on Apple-Silicon CPU.
+
+Current measured baseline (same frozen items, `eval run`):
+
+| engine | browser 21 | macOS AX 10 | false_acts |
+|---|---|---|---|
+| rule-based | 18/18 act + 3/3 routes | 8/8 act + 2/2 routes | 0 |
+| laya (multilingual) | 3/13 act + 1/3 routes | 1/8 act + 0/2 routes | 0 |
+
+The generalist model is far below the tuned heuristic today — expected
+on a domain it never saw. What matters: it never took a wrong action
+(0 false acts — it errs toward routes), and the harness now measures
+every prompt/state-rendering improvement against the same frozen truth.
 
 Decision engines only *propose*. Policy still gates every action.
 

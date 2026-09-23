@@ -631,7 +631,7 @@ fn run_task(
                 .clone()
                 .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
                 .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
-            let engine = dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(10))
+            let engine = dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(30))
                 .with_context(|| format!("spawning laya worker '{cmd}'"))?;
             Box::new(engine)
         }
@@ -878,7 +878,7 @@ fn eval_run(
                 .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
                 .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
             Box::new(
-                dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(10))
+                dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(30))
                     .with_context(|| format!("spawning laya worker '{cmd}'"))?,
             )
         }
