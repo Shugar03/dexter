@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dexter · the computer runtime your agent calls</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='%23e5484d' stroke-width='1.6'/%3E%3Ccircle cx='12' cy='12' r='3.4' fill='%23e5484d'/%3E%3Cpath d='M12 3v4M12 17v4M3 12h4M17 12h4' stroke='%23e5484d' stroke-width='1.6'/%3E%3C/svg%3E">
+<meta name="description" content="Dexter is an open-source, local-first agent computer runtime. Semantic observe, act, verify for real apps; policy-gated, auditable, and callable by any MCP harness.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#top">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/>
+        <circle cx="12" cy="12" r="3.4" fill="currentColor"/>
+        <path d="M12 3v4M12 17v4M3 12h4M17 12h4" stroke="currentColor" stroke-width="1.6"/>
+      </svg>
+      <span>dexter</span>
+    </a>
+    <div class="nav-links">
+      <a href="#loop">the loop</a>
+      <a href="#security">security</a>
+      <a href="#tools">tools</a>
+    </div>
+    <a class="btn btn-small" href="https://github.com/Shugar03/dexter">GitHub</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="hero-inner">
+    <div class="hero-copy">
+      <p class="eyebrow mono">open-source agent computer runtime</p>
+      <h1>The runtime<br>your agent calls.</h1>
+      <p class="hero-sub">Semantic observe, act, and verify for real apps. Local-first, policy-gated, auditable. Built to plug into the harness you already use.</p>
+      <div class="hero-ctas">
+        <a class="btn" href="https://github.com/Shugar03/dexter">View on GitHub</a>
+        <a class="btn btn-ghost" href="https://github.com/Shugar03/dexter/blob/main/docs/for-agents.md">For agents</a>
+      </div>
+    </div>
+
+    <!-- Live presence panel: the product's own idea, animated for real -->
+    <div class="hero-panel" aria-hidden="true">
+      <div class="win">
+        <div class="win-bar">
+          <span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span>
+          <span class="win-title mono">Safari · checkout</span>
+        </div>
+        <div class="win-body">
+          <div class="f-label">Email</div>
+          <div class="f-input" id="hp-email"><span class="f-caret"></span></div>
+          <div class="f-label">Card</div>
+          <div class="f-input" id="hp-card"><span class="f-caret"></span></div>
+          <div class="f-row">
+            <div class="f-btn f-btn-ghost" id="hp-back">Back</div>
+            <div class="f-btn f-btn-solid" id="hp-pay">Pay $49.00</div>
+          </div>
+        </div>
+        <!-- presence cursor -->
+        <div class="gcursor" id="hp-cursor">
+          <svg viewBox="0 0 16 16" class="gcursor-arrow"><path d="M2 1l11 5.4-4.8 1.2L6 12.5 2 1z" fill="currentColor"/></svg>
+          <span class="gcursor-tag mono" id="hp-tag">dexter · observing</span>
+        </div>
+        <div class="greticle" id="hp-reticle"></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section class="compat">
+  <p class="compat-label mono">works with the harnesses you already run</p>
+  <div class="compat-row mono">
+    <span>Codex</span><span>Claude Code</span><span>OpenCode</span><span>Hermes Agent</span><span>Pi Agent</span><span>Zed</span><span class="compat-any">any MCP client</span>
+  </div>
+</section>
+
+<section class="loop" id="loop">
+  <div class="section-head">
+    <h2>One loop, four verbs.</h2>
+    <p class="section-sub">Your agent keeps the reasoning. Dexter supplies the senses, the hands, and the receipts.</p>
+  </div>
+  <div class="loop-grid">
+    <div class="loop-step reveal">
+      <div class="step-num mono">01</div>
+      <h3>observe</h3>
+      <p>A semantic digest of the live window tree plus structured element ids. Reads are free; nothing is guessed.</p>
+      <pre class="step-code mono">dexter_observe(app="Safari")
+→ obs_14 · 38 elements</pre>
+    </div>
+    <div class="loop-step reveal">
+      <div class="step-num mono">02</div>
+      <h3>candidates</h3>
+      <p>A ranked menu of actions the current world affords. Advisory only; the agent still decides.</p>
+      <pre class="step-code mono">dexter_candidates(goal)
+→ c0 click e_7 "Pay"</pre>
+    </div>
+    <div class="loop-step reveal">
+      <div class="step-num mono">03</div>
+      <h3>act</h3>
+      <p>Every mutation passes the policy engine. Approvals are fingerprints a human grants, out of band.</p>
+      <pre class="step-code mono">dexter_act(action)
+→ needs_approval fp:a91c</pre>
+    </div>
+    <div class="loop-step reveal">
+      <div class="step-num mono">04</div>
+      <h3>verify</h3>
+      <p>Expected state is checked against a fresh observation. Misses trigger bounded recovery, not blind retries.</p>
+      <pre class="step-code mono">dexter_verify(expected)
+→ status: pass</pre>
+    </div>
+  </div>
+</section>
+
+<section class="security" id="security">
+  <div class="sec-split">
+    <div class="sec-copy reveal">
+      <h2>Policy is outside the model.</h2>
+      <p class="section-sub">Agents propose. Dexter disposes. Trust flags are set by the operator when the server starts; tool calls cannot raise their own privilege.</p>
+      <ul class="sec-list">
+        <li><strong>Fail closed.</strong> Unmatched mutations return <span class="mono">needs_approval</span>, never a guess.</li>
+        <li><strong>Human grants.</strong> Fingerprints are single-use and TTL-bound via <span class="mono">dexter_grant</span>.</li>
+        <li><strong>Physical floor.</strong> Coordinate and keyboard input is denied by default; <span class="mono">--coords</span> is an operator flag, and the mutating gate still applies after it.</li>
+        <li><strong>Stale targets rejected.</strong> Element references carry their observation id; a changed world invalidates them.</li>
+      </ul>
+    </div>
+    <pre class="sec-code mono reveal">[defaults]
+physical = "deny"
+
+[[rule]]
+action = "click"
+app = "bundle:com.apple.Terminal"
+decision = "allow"
+
+[[rule]]
+action = "*"
+app = "name:System Settings"
+decision = "deny"
+reason = "never touch system settings"</pre>
+  </div>
+</section>
+
+<section class="tiers">
+  <div class="section-head">
+    <h2>Non-invasive by default.</h2>
+    <p class="section-sub">Every action reports an intrusiveness tier derived from its target, never from the model.</p>
+  </div>
+  <div class="tier-grid">
+    <div class="tier reveal">
+      <div class="tier-swatch tier-bg"></div>
+      <h3>background</h3>
+      <p>Semantic DOM and accessibility mutations. Your cursor and focus never move; apps do not need to be in front.</p>
+    </div>
+    <div class="tier reveal">
+      <div class="tier-swatch tier-vis"></div>
+      <h3>visual</h3>
+      <p>Visible but non-capturing: navigation, window focus, scrolling. You see it happen; you keep the wheel.</p>
+    </div>
+    <div class="tier reveal">
+      <div class="tier-swatch tier-phys"></div>
+      <h3>physical</h3>
+      <p>Real pointer and keyboard. Denied unless the operator opted in, and always rendered red in the presence overlay.</p>
+    </div>
+  </div>
+</section>
+
+<section class="tools" id="tools">
+  <div class="section-head">
+    <h2>Seven tools, one stdio server.</h2>
+    <p class="section-sub">Register once in your harness config. The same engine backs the CLI and the MCP surface.</p>
+  </div>
+  <div class="tool-table mono reveal">
+    <div class="tool-row"><span class="tool-name">dexter_observe</span><span class="tool-desc">semantic digest + structured elements</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_candidates</span><span class="tool-desc">ranked advisory action menu for a goal</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_act</span><span class="tool-desc">policy-gated step: act, verify, recover</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_grant</span><span class="tool-desc">human approval for a fingerprint</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_verify</span><span class="tool-desc">check expected state against the world</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_task</span><span class="tool-desc">optional closed loop to a done condition</span></div>
+    <div class="tool-row"><span class="tool-name">dexter_journal</span><span class="tool-desc">live audit trail, readable mid-run</span></div>
+  </div>
+</section>
+
+<section class="proof">
+  <div class="proof-grid">
+    <div class="proof-cell reveal"><div class="proof-num">0</div><p>false acts on frozen eval datasets at tuned confidence</p></div>
+    <div class="proof-cell reveal"><div class="proof-num">31</div><p>frozen decision points replayed offline in CI</p></div>
+    <div class="proof-cell reveal"><div class="proof-num mono">3</div><p>intrusiveness tiers enforced at the policy floor</p></div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="foot-inner">
+    <h2>Give your agent a computer.</h2>
+    <a class="btn" href="https://github.com/Shugar03/dexter">View on GitHub</a>
+    <p class="foot-meta mono">MIT / Apache-2.0 · local-first · macOS and browser drivers today</p>
+  </div>
+</footer>
+
+<script src="vendor/gsap.min.js"></script>
+<script src="vendor/ScrollTrigger.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

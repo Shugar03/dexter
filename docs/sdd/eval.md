@@ -79,8 +79,38 @@ step) — live traces are replayable through the same eval path.
   kept routes 2/2 — at the cost of 3 correct acts. That's the honest
   trade-off knob.
 
+## Fine-tuned head (`workers/laya/finetune.py`)
+
+`eval export` emits training rows with gold labels (gold element →
+candidate index, gold route → `r{i}` key). The trainer freezes the
+encoder, caches hidden states, augments with option-order permutations,
+and trains the decision head with the calibration-aware proper-reward
+loss (`--device cpu|mps|cuda`, `--epochs`, `--perms`, `--holdout`).
+
+Measured on both frozen datasets (root/english base):
+
+| checkpoint | browser act | routes | macos act | routes | false_acts |
+|---|---|---|---|---|---|
+| laya root (base) | 14/18 | 1/3 | 5/8 | 0/2 | 1 |
+| **ft mixed** (train on all 31) | **18/18** | 1/3 | **7/8** | 1/2 | **0** |
+| **ft browser-only** → macOS | 17/18 | 1/3 | 5/8 | 0/2 | 1 |
+
+Honest reads:
+
+- **In-domain transfer works**: browser-only training held 17/18 on
+  browser and mixed training hit 18/18 + 7/8 with zero false acts.
+- **Cross-domain does not transfer**: browser-only → macOS scored
+  exactly the base model's 5/8 with the same false_act — the head
+  learned browser-page patterns, not AX-tree picking. No regression,
+  no gain. Claims of generalization need per-domain data.
+- The remaining misses are route-granularity (`Reobserve`/`Wait` vs
+  `Abstain`) and one wrong-element pick per dataset — safe failure
+  modes, not unsafe actions.
+- Confidence calibration after fine-tune is not yet re-measured — the
+  checkpoint warns its temperatures may sit outside the calibrated
+  range, so `--min-confidence` thresholds should be re-derived per
+  checkpoint, not inherited.
+
 ## Non-goals
 
 - No end-to-end task success here — that's the sim/scenario layer.
-- No model training — this measures decision quality, it doesn't change
-  weights.

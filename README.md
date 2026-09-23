@@ -231,12 +231,18 @@ Current measured baseline (same frozen items, `eval run`):
 | laya root (english) | 14/18 act + 1/3 routes | 5/8 act + 0/2 routes | 1 |
 | laya root, τ=0.25 | — | 2/8 act + 2/2 routes | 0 |
 | laya multilingual | 9/18 act + 1/3 routes | 0/8 act + 2/2 routes | 0 |
+| **laya ft (fine-tuned head)** | **18/18 act + 1/3 routes** | **7/8 act + 1/2 routes** | **0** |
 
 The generalist model still trails the tuned heuristic, but the gap is
 closing via rendering/protocol levers (digest budget, typed criteria
-keys, domain-aware prompt, warmup). `--min-confidence` converts shaky
-picks into honest abstains — at τ=0.25 it catches the only false act.
-Details: `docs/sdd/eval.md`.
+keys, domain-aware prompt, warmup) — and a **fine-tuned decision head**
+(`workers/laya/finetune.py`, data via `eval export`) matches the
+rule-based baseline on browser with zero false acts. Honest caveat:
+leave-one-domain-out shows no cross-domain transfer yet (browser-only
+training scores the base 5/8 on macOS), and fine-tune temperatures may
+need recalibration before `--min-confidence` thresholds apply.
+`--min-confidence` converts shaky picks into honest abstains — at
+τ=0.25 it catches the only false act. Details: `docs/sdd/eval.md`.
 
 Decision engines only *propose*. Policy still gates every action.
 
@@ -278,6 +284,8 @@ Invariants enforced by tests, not by docs:
   self-contained, GSAP vendored). Three scenes — semantic target lock,
   agent flight path, verify-or-recover — driven by a real journal
   captured from `dexter task` against live Chrome.
+- `site/` — product landing page (open `site/index.html`; static,
+  GSAP vendored). The hero replays the presence-cursor concept live.
 - `ROADMAP.md` — staged plan through Windows/Linux/enterprise.
 
 ## License

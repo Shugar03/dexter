@@ -83,6 +83,23 @@ No `[profile.release]`. Ship `lto = "thin"`, `codegen-units = 1`,
 **Implemented**: workspace `[profile.release]` (thin LTO, 1 CGU,
 stripped symbols).
 
+## Remaining gaps (known, not yet scheduled)
+
+- **No task cancellation** — `dexter_task` runs to its step budget; an
+  MCP client disconnect mid-task leaves the loop running to completion.
+  Needs a cancellation token threaded through `run_task`.
+- **Laya worker unsupervised** — a crashed sidecar surfaces as a
+  decision error, not a restart. Needs spawn supervision + bounded
+  retries, and bounded stdout reads.
+- **No request/response size limits** beyond `max_elements` — MCP
+  payloads (e.g. `action` JSON, `done` states) are deserialized
+  unbounded. Small for stdio today; matters for remote transports.
+- **No per-task wall-clock budget** — `max_steps` bounds steps, not
+  time. A `Wait`-heavy task can still run long.
+- **`observe` is whole-app** — no incremental/scoped re-observation
+  yet; large AX trees pay the full walk each call (digest budget caps
+  what the *model* sees, not what the driver walks).
+
 ## Non-goals
 
 - No new driver capabilities; no policy model changes beyond W1's
