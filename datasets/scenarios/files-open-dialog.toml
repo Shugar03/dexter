@@ -1,0 +1,45 @@
+# files-open-dialog — opening a file surfaces a confirmation dialog;
+# the task completes only after confirming it. Two-step depth: row →
+# dialog button.
+[scenario]
+id = "files-open-dialog"
+goal = "abrir el archivo notas_viaje.txt"
+optimal_steps = 2
+app = "Archivos"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "Abierto" } }
+max_steps = 8
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Archivos"
+
+[[world.element]]
+id = 9
+role = "table"
+
+[[world.element]]
+id = 10
+role = "row"
+name = "factura_marzo.pdf"
+actions = ["press"]
+parent = 9
+depth = 2
+
+[[world.element]]
+id = 11
+role = "row"
+name = "notas_viaje.txt"
+actions = ["press"]
+parent = 9
+depth = 2
+
+[[world.rule]]
+when = { name_contains = "notas_viaje" }
+effect = { type = "spawn", element = { id = 0, role = "button", name = "Abrir", actions = ["press"] } }
+
+[[world.rule]]
+when = { name = "Abrir" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Abierto: notas_viaje.txt" } }

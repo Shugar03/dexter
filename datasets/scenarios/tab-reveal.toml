@@ -1,0 +1,52 @@
+# tab-reveal — the goal element doesn't exist until a tab is opened.
+# Two-step depth through a reveal: tab → new button → done. Exercises
+# the delta signal (newly appeared elements carry a prior bonus).
+[scenario]
+id = "tab-reveal"
+goal = "conectar a la red"
+optimal_steps = 2
+app = "Preferencias"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "Conectado" } }
+max_steps = 8
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Preferencias"
+
+[[world.element]]
+id = 2
+role = "tab_group"
+name = "Secciones"
+
+[[world.element]]
+id = 3
+role = "tab"
+name = "General"
+actions = ["press"]
+parent = 2
+depth = 2
+
+[[world.element]]
+id = 4
+role = "tab"
+name = "Red"
+actions = ["press"]
+parent = 2
+depth = 2
+
+[[world.element]]
+id = 5
+role = "check_box"
+name = "Mostrar icono en la barra"
+actions = ["press"]
+
+[[world.rule]]
+when = { name = "Red" }
+effect = { type = "spawn", element = { id = 0, role = "button", name = "Conectar", actions = ["press"] } }
+
+[[world.rule]]
+when = { name = "Conectar" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Conectado a la red" } }

@@ -254,6 +254,35 @@ enum EvalCommand {
         #[arg(short, long)]
         out: String,
     },
+    /// Task scenarios: run goal-driven tasks end-to-end on programmable
+    /// sim worlds and report utility metrics — success rate, steps over
+    /// optimal, per-phase latency, recoveries — optionally gated against
+    /// a committed baseline (the MLOps layer).
+    Scenario {
+        /// Directory of scenario TOML files, or a single file.
+        path: String,
+        /// Decision engine under test: rule-based | laya.
+        #[arg(long, default_value = "rule-based")]
+        engine: String,
+        /// Worker command for --engine laya.
+        #[arg(long)]
+        engine_path: Option<String>,
+        /// Abstain below this calibrated confidence (laya). 0 = never.
+        #[arg(long, default_value = "0")]
+        min_confidence: f32,
+        /// Repetitions per scenario — the flakiness/variance signal.
+        #[arg(long, default_value = "1")]
+        reps: u32,
+        /// Write the metrics report (JSON) to this path.
+        #[arg(long)]
+        out: Option<String>,
+        /// Append a timestamped run record to this JSONL history file.
+        #[arg(long)]
+        history: Option<String>,
+        /// Baseline TOML to check against — nonzero exit on regression.
+        #[arg(long)]
+        check: Option<String>,
+    },
 }
 
 /// Flags for the closed-loop `task` command.
@@ -504,6 +533,25 @@ fn run() -> Result<()> {
             EvalCommand::Harvest { manifest, out } => {
                 eval_harvest(engine.driver(), &manifest, &out)
             }
+            EvalCommand::Scenario {
+                path,
+                engine: eng,
+                engine_path,
+                min_confidence,
+                reps,
+                out,
+                history,
+                check,
+            } => eval_scenario(
+                &path,
+                &eng,
+                engine_path,
+                min_confidence,
+                reps,
+                out,
+                history,
+                check,
+            ),
         },
         Command::Mcp {
             engine: ref eng,
@@ -1290,5 +1338,138 @@ fn eval_harvest(driver: &dyn ComputerDriver, manifest_path: &str, out: &str) -> 
     }
     std::fs::write(out, buf).with_context(|| format!("writing '{out}'"))?;
     println!("wrote {} items to {out}", manifest.page.len());
+    Ok(())
+}
+
+/// `eval scenario` — task-level utility metrics over the sim suite.
+/// Loads every `*.toml` in `path` (or a single file), runs each spec
+/// `reps` times through `run_task`, aggregates journal-derived metrics,
+/// and — with `--check` — gates the suite against a committed baseline.
+#[allow(clippy::too_many_arguments)]
+fn eval_scenario(
+    path: &str,
+    engine_name: &str,
+    engine_path: Option<String>,
+    min_confidence: f32,
+    reps: u32,
+    out: Option<String>,
+    history: Option<String>,
+    check: Option<String>,
+) -> Result<()> {
+    use dexter_eval::scenario::*;
+
+    // Load specs: a directory of TOML files or one file.
+    let root = std::path::Path::new(path);
+    let mut files: Vec<std::path::PathBuf> = if root.is_dir() {
+        std::fs::read_dir(root)
+            .with_context(|| format!("reading '{path}'"))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+            // Baseline is a config file, not a scenario.
+            .filter(|p| p.file_name().is_some_and(|n| n != "baseline.toml"))
+            .collect()
+    } else {
+        vec![root.to_path_buf()]
+    };
+    files.sort();
+    if files.is_empty() {
+        anyhow::bail!("no scenario TOML files in '{path}'");
+    }
+
+    let decider = build_decider(engine_name, &engine_path, min_confidence)?;
+    let generator = dexter_decision::HeuristicGenerator::default();
+
+    let mut all: Vec<ScenarioMetrics> = Vec::new();
+    for file in &files {
+        let text =
+            std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+        let spec: ScenarioSpec =
+            toml::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
+        let runs: Vec<ScenarioRun> = (0..reps.max(1))
+            .map(|_| run_scenario(&spec, &generator, decider.as_ref()))
+            .collect();
+        let m = aggregate(&spec.scenario.id, spec.scenario.optimal_steps, runs);
+        println!(
+            "{:<24} ok {}/{}  steps {:>4.1} (opt {})  decide p50/p95 {:>3}/{}ms  rec {}  fails {}  appr {}  phys {}  {}",
+            m.id,
+            m.succeeded,
+            m.reps,
+            m.mean_steps,
+            spec.scenario
+                .optimal_steps
+                .map(|o| o.to_string())
+                .unwrap_or_else(|| "-".into()),
+            m.decide_p50_ms,
+            m.decide_p95_ms,
+            m.recoveries,
+            m.verify_fails + m.action_failures,
+            m.approvals,
+            m.physical_acts,
+            m.outcomes
+                .iter()
+                .map(|(k, n)| format!("{k}×{n}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        all.push(m);
+    }
+    let roll = suite_rollup(&all);
+    println!(
+        "\n{} scenarios | {} reps | success {:.0}% | decide p95 {}ms | physical acts {}",
+        roll.scenarios,
+        roll.reps,
+        roll.success_rate * 100.0,
+        roll.decide_p95_ms,
+        roll.physical_acts,
+    );
+
+    if let Some(p) = &out {
+        let doc = serde_json::json!({
+            "engine": engine_name,
+            "scenarios": &all,
+            "suite": &roll,
+        });
+        std::fs::write(p, serde_json::to_string_pretty(&doc)?)
+            .with_context(|| format!("writing '{p}'"))?;
+    }
+    if let Some(p) = &history {
+        let sha = std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string());
+        let rec = serde_json::json!({
+            "ts": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            "git_sha": sha,
+            "engine": engine_name,
+            "reps": reps,
+            "suite": &roll,
+            "scenarios": &all,
+        });
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .with_context(|| format!("opening history '{p}'"))?;
+        writeln!(f, "{}", serde_json::to_string(&rec)?)?;
+    }
+    if let Some(p) = &check {
+        let text = std::fs::read_to_string(p).with_context(|| format!("reading baseline '{p}'"))?;
+        let base: Baseline =
+            toml::from_str(&text).with_context(|| format!("parsing baseline '{p}'"))?;
+        let violations = check_baseline(&all, &base);
+        if !violations.is_empty() {
+            for v in &violations {
+                eprintln!("REGRESSION {}: {}", v.scenario, v.message);
+            }
+            anyhow::bail!("{} baseline violation(s)", violations.len());
+        }
+        println!("baseline check: ok");
+    }
     Ok(())
 }

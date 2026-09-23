@@ -22,6 +22,8 @@ use dexter_decision::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod scenario;
+
 /// The labeled correct answer for one decision point.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

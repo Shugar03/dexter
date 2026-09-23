@@ -99,6 +99,9 @@ dexter mcp
 
 # Offline eval: replay labeled decision points against a decision engine
 dexter eval run datasets/browser/items.jsonl --engine rule-based
+# Task-level utility: goal-driven tasks end-to-end on sim worlds —
+# success rate, steps-over-optimal, phase latency, recoveries
+dexter eval scenario datasets/scenarios --check datasets/scenarios/baseline.toml
 # Harvest new labeled items by observing real pages (browser) or apps (macOS)
 dexter --driver browser --browser-url http://localhost:9515 \
   eval harvest datasets/browser/manifest.toml -o items.jsonl

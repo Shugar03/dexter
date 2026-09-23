@@ -1,0 +1,35 @@
+# admin-absent — the goal is unsatisfiable: there is no admin panel in
+# this world. Success here means the engine ABSTAINS, not that it
+# completes. The negative space of utility: knowing when not to act.
+[scenario]
+id = "admin-absent"
+goal = "abrir el panel de administración"
+optimal_steps = 0
+app = "Bloc"
+
+[task]
+done_when = { type = "element_exists", target = { role = "window", name_contains = "Admin" } }
+expected = "abstained"
+max_steps = 4
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Bloc"
+
+[[world.element]]
+id = 3
+role = "button"
+name = "Nueva nota"
+actions = ["press"]
+
+[[world.element]]
+id = 4
+role = "text_field"
+name = "Buscar"
+actions = ["set_value", "focus"]
+
+[[world.element]]
+id = 5
+role = "text_area"
+value = "lista del super"

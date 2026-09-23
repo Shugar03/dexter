@@ -1,0 +1,29 @@
+# Committed expectations for `dexter eval scenario --check`.
+# Bounds are against the rule-based engine (the CI gate): deterministic
+# decisions, so steps are exact and latency bounds carry CI headroom.
+# Laya runs compare via --history/--out, not this file.
+
+[suite]
+min_success_rate = 1.0
+max_physical_acts = 0
+
+[scenario.wizard-install]
+min_success = 1.0
+max_mean_steps = 3.0
+
+[scenario.files-open-dialog]
+min_success = 1.0
+max_mean_steps = 3.0
+
+[scenario.tab-reveal]
+min_success = 1.0
+max_mean_steps = 3.0
+
+[scenario.download-wait]
+min_success = 1.0
+max_mean_steps = 3.0
+max_physical_acts = 0
+
+[scenario.admin-absent]
+min_success = 1.0
+max_mean_steps = 1.0

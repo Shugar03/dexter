@@ -175,4 +175,7 @@ Honest reads:
 
 ## Non-goals
 
-- No end-to-end task success here — that's the sim/scenario layer.
+- No end-to-end task success in this layer — that's
+  `docs/sdd/scenario-eval.md` (`dexter eval scenario`), which replays
+  whole tasks through `run_task` and reports success, steps-over-
+  optimal, phase latencies, and recovery counts.

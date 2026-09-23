@@ -19,7 +19,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-/// A world mutation applied after a successful press on a matching element.
+/// A world mutation applied after a successful press on a matching element,
+/// or on every observe via [`SimDriver::on_tick`].
 #[derive(Debug, Clone)]
 pub enum Effect {
     /// Spawn a new element into the world (id assigned automatically).
@@ -30,11 +31,22 @@ pub enum Effect {
     RemoveSelf,
     /// Set the value of the first element matching the target.
     SetValueOf(SemanticTarget, String),
+    /// Set `enabled` on the first element matching the target — models
+    /// "the checkbox enables the Continue button".
+    SetEnabledOf(SemanticTarget, bool),
+    /// Remove the first element matching the target — models the world
+    /// changing under the agent between observations.
+    Remove(SemanticTarget),
+    /// Advance through `values` one step per application, then hold the
+    /// last value — models progress completing while the agent waits.
+    CycleValueOf(SemanticTarget, Vec<String>),
 }
 
 struct Rule {
     when: SemanticTarget,
     effect: Effect,
+    /// Consumed position for `CycleValueOf` (also counts applications).
+    cursor: usize,
 }
 
 struct SimState {
@@ -45,6 +57,9 @@ struct SimState {
     pressed: Vec<ElementId>,
     obs_cache: VecDeque<(ObservationId, Vec<Element>)>,
     rules: Vec<Rule>,
+    /// Effects applied on every `observe()` — worlds that evolve while
+    /// the agent looks (downloads finishing, elements vanishing).
+    ticks: Vec<Rule>,
 }
 
 /// A deterministic in-memory computer.
@@ -79,6 +94,7 @@ impl SimDriver {
                 pressed: Vec::new(),
                 obs_cache: VecDeque::new(),
                 rules: Vec::new(),
+                ticks: Vec::new(),
             }),
             next_observation: AtomicU64::new(1),
         }
@@ -86,7 +102,23 @@ impl SimDriver {
 
     /// When an element matching `when` is pressed, apply `effect`.
     pub fn on_press(&self, when: SemanticTarget, effect: Effect) {
-        self.state.lock().unwrap().rules.push(Rule { when, effect });
+        self.state.lock().unwrap().rules.push(Rule {
+            when,
+            effect,
+            cursor: 0,
+        });
+    }
+
+    /// Apply `effect` on every `observe()` — a world that evolves while
+    /// the agent re-observes (progress bars finishing, elements
+    /// vanishing). The effect's own target selects what mutates;
+    /// press-bound effects (`SetValue`, `RemoveSelf`) are meaningless here.
+    pub fn on_tick(&self, effect: Effect) {
+        self.state.lock().unwrap().ticks.push(Rule {
+            when: SemanticTarget::default(),
+            effect,
+            cursor: 0,
+        });
     }
 
     /// Add a window to the simulated world — tests window scoping.
@@ -174,6 +206,74 @@ impl SimDriver {
         }
     }
 
+    /// Mutate the first element matching `target` with `f`.
+    fn mutate_first(
+        elements: &mut [Element],
+        target: &SemanticTarget,
+        f: impl FnOnce(&mut Element),
+    ) {
+        let obs = Observation {
+            elements: elements.to_vec(),
+            ..Default::default()
+        };
+        if let Some(found) = dexter_world_model::find_elements(&obs, target).first() {
+            let fid = found.id;
+            if let Some(e) = elements.iter_mut().find(|e| e.id == fid) {
+                f(e);
+            }
+        }
+    }
+
+    /// First element matching `target` — for effects that remove rather
+    /// than mutate.
+    fn first_match(elements: &[Element], target: &SemanticTarget) -> Option<ElementId> {
+        let obs = Observation {
+            elements: elements.to_vec(),
+            ..Default::default()
+        };
+        dexter_world_model::find_elements(&obs, target)
+            .first()
+            .map(|e| e.id)
+    }
+
+    /// Apply one effect against the world. `pressed` is the element the
+    /// rule fired on — `SetValue`/`RemoveSelf` act on it; `*Of` effects
+    /// resolve their own target.
+    fn apply_effect(s: &mut SimState, effect: &Effect, pressed: ElementId, cursor: usize) {
+        match effect {
+            Effect::Spawn(el) => {
+                let mut el = el.clone();
+                el.id = ElementId(s.next_element_id);
+                s.next_element_id += 1;
+                s.elements.push(el);
+            }
+            Effect::SetValue(v) => {
+                if let Some(e) = s.elements.iter_mut().find(|e| e.id == pressed) {
+                    e.value = Some(v.clone());
+                }
+            }
+            Effect::RemoveSelf => {
+                s.elements.retain(|e| e.id != pressed);
+            }
+            Effect::SetValueOf(target, v) => {
+                Self::mutate_first(&mut s.elements, target, |e| e.value = Some(v.clone()));
+            }
+            Effect::SetEnabledOf(target, enabled) => {
+                Self::mutate_first(&mut s.elements, target, |e| e.enabled = Some(*enabled));
+            }
+            Effect::Remove(target) => {
+                if let Some(id) = Self::first_match(&s.elements, target) {
+                    s.elements.retain(|e| e.id != id);
+                }
+            }
+            Effect::CycleValueOf(target, values) => {
+                if let Some(v) = values.get(cursor.min(values.len().saturating_sub(1))) {
+                    Self::mutate_first(&mut s.elements, target, |e| e.value = Some(v.clone()));
+                }
+            }
+        }
+    }
+
     fn apply_effects(&self, pressed_id: ElementId) {
         let mut s = self.state.lock().unwrap();
         let pressed_el = match s.elements.iter().find(|e| e.id == pressed_id) {
@@ -181,44 +281,31 @@ impl SimDriver {
             None => return,
         };
         // First matching rule wins.
-        let effect = s
-            .rules
-            .iter()
-            .find(|r| {
-                let one = Observation {
-                    elements: vec![pressed_el.clone()],
-                    ..Default::default()
-                };
-                !dexter_world_model::find_elements(&one, &r.when).is_empty()
-            })
-            .map(|r| r.effect.clone());
-        let Some(effect) = effect else { return };
-        match effect {
-            Effect::Spawn(mut el) => {
-                el.id = ElementId(s.next_element_id);
-                s.next_element_id += 1;
-                s.elements.push(el);
-            }
-            Effect::SetValue(v) => {
-                if let Some(e) = s.elements.iter_mut().find(|e| e.id == pressed_id) {
-                    e.value = Some(v);
-                }
-            }
-            Effect::RemoveSelf => {
-                s.elements.retain(|e| e.id != pressed_id);
-            }
-            Effect::SetValueOf(target, v) => {
-                let obs = Observation {
-                    elements: s.elements.clone(),
-                    ..Default::default()
-                };
-                if let Some(found) = dexter_world_model::find_elements(&obs, &target).first() {
-                    let fid = found.id;
-                    if let Some(e) = s.elements.iter_mut().find(|e| e.id == fid) {
-                        e.value = Some(v);
-                    }
-                }
-            }
+        let idx = s.rules.iter().position(|r| {
+            let one = Observation {
+                elements: vec![pressed_el.clone()],
+                ..Default::default()
+            };
+            !dexter_world_model::find_elements(&one, &r.when).is_empty()
+        });
+        let Some(idx) = idx else { return };
+        let cursor = s.rules[idx].cursor;
+        let effect = s.rules[idx].effect.clone();
+        s.rules[idx].cursor += 1;
+        Self::apply_effect(&mut s, &effect, pressed_id, cursor);
+    }
+
+    /// Tick rules fire on every observe — before the snapshot is taken,
+    /// so the agent sees the evolved world immediately.
+    fn apply_ticks(&self) {
+        let mut s = self.state.lock().unwrap();
+        for i in 0..s.ticks.len() {
+            let cursor = s.ticks[i].cursor;
+            let effect = s.ticks[i].effect.clone();
+            s.ticks[i].cursor += 1;
+            // Tick effects resolve their own targets; `pressed` is unused
+            // by the `*Of`/`Remove`/`CycleValueOf` variants.
+            Self::apply_effect(&mut s, &effect, ElementId(0), cursor);
         }
     }
 }
@@ -238,6 +325,7 @@ impl ComputerDriver for SimDriver {
     }
 
     fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
+        self.apply_ticks();
         let mut obs = self.snapshot();
         if let Some(win) = scope.window {
             obs = dexter_world_model::within_window(&obs, win)

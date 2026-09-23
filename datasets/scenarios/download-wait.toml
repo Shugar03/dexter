@@ -1,0 +1,34 @@
+# download-wait — the world evolves while the agent waits. The correct
+# path is Wait/Reobserve until the progress hits 100; pressing anything
+# (e.g. "Cancelar") is the false-act direction this scenario catches.
+[scenario]
+id = "download-wait"
+goal = "esperar a que termine la descarga"
+optimal_steps = 1
+app = "Descargas"
+
+[task]
+done_when = { type = "element_value", target = { role = "progress_indicator" }, predicate = { contains = "100" } }
+max_steps = 8
+
+[[world.element]]
+id = 3
+role = "static_text"
+name = "Descargando actualización…"
+
+[[world.element]]
+id = 4
+role = "progress_indicator"
+name = "Progreso de descarga"
+value = "62"
+
+[[world.element]]
+id = 5
+role = "button"
+name = "Cancelar"
+actions = ["press"]
+
+[[world.tick]]
+type = "cycle_value_of"
+target = { role = "progress_indicator" }
+values = ["81", "100"]

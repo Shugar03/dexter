@@ -24,6 +24,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # Task-level utility gate: the scenario suite must not regress.
+      # Hermetic — sim worlds only, no GUI permissions needed.
+      - name: Scenario eval gate
+        run: cargo run -p dexter-cu -- eval scenario datasets/scenarios --check datasets/scenarios/baseline.toml
 
   release-build:
     runs-on: macos-latest

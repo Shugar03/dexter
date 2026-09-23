@@ -1,0 +1,45 @@
+# wizard-install — an enable chain: "Continuar" is disabled until the
+# license checkbox is pressed. Measures multi-step task success and
+# that the engine finds the enabling action, not just the final one.
+[scenario]
+id = "wizard-install"
+goal = "aceptar los términos y continuar"
+optimal_steps = 2
+app = "Instalador"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "completada" } }
+max_steps = 8
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Asistente de instalación"
+
+[[world.element]]
+id = 6
+role = "check_box"
+name = "Acepto los términos"
+actions = ["press"]
+enabled = true
+
+[[world.element]]
+id = 8
+role = "button"
+name = "Continuar"
+actions = ["press"]
+enabled = false
+
+[[world.element]]
+id = 9
+role = "button"
+name = "Cancelar"
+actions = ["press"]
+
+[[world.rule]]
+when = { name_contains = "términos" }
+effect = { type = "set_enabled_of", target = { name = "Continuar" }, enabled = true }
+
+[[world.rule]]
+when = { name = "Continuar" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Instalación completada" } }
