@@ -14,7 +14,8 @@ cargo fmt --all
 
 `crates/` — runtime libraries (core types, driver seam, world-model,
 policy, verify, decision, laya, engine, mcp). `drivers/` — platform
-drivers (macos real, sim synthetic). `apps/dexter` — CLI + MCP entry.
+drivers (macos AX, browser WebDriver, sim synthetic). `apps/dexter` —
+CLI + MCP entry.
 `workers/laya` — Python NDJSON sidecar. `docs/` — specs; `docs/sdd/` —
 per-slice design contracts. `examples/` — scenario TOMLs.
 

@@ -1,0 +1,16 @@
+[package]
+name = "dexter-browser"
+description = "Dexter browser driver — WebDriver REST backend (safaridriver/chromedriver)"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+dexter-core.workspace = true
+dexter-driver.workspace = true
+dexter-world-model.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+ureq = "3"
+base64 = "0.22"

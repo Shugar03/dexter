@@ -12,6 +12,7 @@ members = [
     "crates/mcp",
     "drivers/macos",
     "drivers/sim",
+    "drivers/browser",
     "apps/dexter",
 ]
 
@@ -32,6 +33,7 @@ dexter-laya = { path = "crates/laya" }
 dexter-mcp = { path = "crates/mcp" }
 dexter-macos = { path = "drivers/macos" }
 dexter-sim = { path = "drivers/sim" }
+dexter-browser = { path = "drivers/browser" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

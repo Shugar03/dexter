@@ -68,10 +68,14 @@ tarea real en una app macOS nativa, con aprobación humana en acciones sensibles
 
 **Objetivo:** DOM antes que píxeles — la superficie de mayor fidelidad.
 
-- Worker Playwright (sidecar Node, mismo patrón que Laya)
-- Observación DOM normalizada al mismo `Element` del World Model
-- Action Router con prioridad real: API → DOM/Playwright → AX → nativo → visión → coords
-- Sesiones de browser protegidas (sin persistir cookies/credenciales)
+- ~~Worker Playwright (sidecar Node)~~ → **hecho mejor**: `drivers/browser`
+  habla W3C WebDriver REST directo (safaridriver built-in, chromedriver/
+  geckodriver por `--browser-url`) — sin dependencia de Node
+- ✅ Observación DOM normalizada al mismo `Element` (walker in-page:
+  rol ARIA/tag, accessible name, bounds, acciones)
+- ✅ DOM actions como `Mechanism::Dom` — background-safe real
+- Pendiente: multi-tab/iframe flatten, `/actions` endpoint para casos
+  que DOM-dispatch no cubre, sesiones protegidas (cookies/credenciales)
 
 **Criterio de salida:** una tarea web completa sin usar coordenadas salvo fallback.
 

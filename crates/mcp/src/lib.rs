@@ -10,7 +10,6 @@ use dexter_core::{Action, AppSelector, ExpectedState, ObservationScope};
 use dexter_decision::{DecisionEngine, HeuristicGenerator};
 use dexter_driver::ComputerDriver;
 use dexter_engine::{Engine, RunConfig, Step, StepStatus, TaskConfig, TaskOutcome};
-use dexter_macos::MacOsDriver;
 use dexter_policy::Policy;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -23,18 +22,14 @@ use std::time::Duration;
 
 /// Shared runtime behind the MCP surface.
 pub struct DexterRuntime {
-    engine: Mutex<Engine<MacOsDriver>>,
+    engine: Mutex<Engine<Box<dyn ComputerDriver>>>,
     generator: HeuristicGenerator,
 }
 
 impl DexterRuntime {
-    pub fn new(policy: Policy) -> Self {
+    pub fn new(policy: Policy, driver: Box<dyn ComputerDriver>) -> Self {
         Self {
-            engine: Mutex::new(Engine::new(
-                MacOsDriver::new(),
-                policy,
-                Duration::from_secs(300),
-            )),
+            engine: Mutex::new(Engine::new(driver, policy, Duration::from_secs(300))),
             generator: HeuristicGenerator::default(),
         }
     }
@@ -118,9 +113,9 @@ fn err(e: impl std::fmt::Display) -> McpError {
 
 #[tool_router]
 impl DexterMcp {
-    pub fn new(policy: Policy) -> Self {
+    pub fn new(policy: Policy, driver: Box<dyn ComputerDriver>) -> Self {
         Self {
-            runtime: Arc::new(DexterRuntime::new(policy)),
+            runtime: Arc::new(DexterRuntime::new(policy, driver)),
             tool_router: Self::tool_router(),
         }
     }
@@ -355,9 +350,9 @@ impl ServerHandler for DexterMcp {
 }
 
 /// Serve over stdio until the client disconnects.
-pub async fn serve_stdio(policy: Policy) -> anyhow::Result<()> {
+pub async fn serve_stdio(policy: Policy, driver: Box<dyn ComputerDriver>) -> anyhow::Result<()> {
     use rmcp::service::ServiceExt;
-    let server = DexterMcp::new(policy);
+    let server = DexterMcp::new(policy, driver);
     let running = server.serve(rmcp::transport::stdio()).await?;
     running.waiting().await?;
     Ok(())

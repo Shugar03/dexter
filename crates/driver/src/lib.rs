@@ -73,3 +73,18 @@ pub trait ComputerDriver: Send + Sync {
     /// and never claims success it can't substantiate.
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError>;
 }
+
+impl ComputerDriver for Box<dyn ComputerDriver> {
+    fn capabilities(&self) -> DriverCapabilities {
+        (**self).capabilities()
+    }
+    fn windows(&self) -> Result<Vec<Window>, DriverError> {
+        (**self).windows()
+    }
+    fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
+        (**self).observe(scope)
+    }
+    fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
+        (**self).act(action, ctx)
+    }
+}

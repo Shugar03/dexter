@@ -5,13 +5,17 @@
 
 use dexter_mcp::DexterMcp;
 use dexter_policy::Policy;
+use dexter_sim::SimDriver;
 use rmcp::model::CallToolRequestParam;
 use rmcp::service::{RunningService, ServiceExt};
 use serde_json::json;
 
 async fn client_server(policy_toml: &str) -> RunningService<rmcp::service::RoleClient, ()> {
     let (client_io, server_io) = tokio::io::duplex(1 << 16);
-    let server = DexterMcp::new(Policy::from_toml(policy_toml).unwrap());
+    let server = DexterMcp::new(
+        Policy::from_toml(policy_toml).unwrap(),
+        Box::new(SimDriver::new(vec![])),
+    );
     tokio::spawn(async move {
         if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
             let _ = running.waiting().await;

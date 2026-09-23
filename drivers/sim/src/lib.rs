@@ -251,6 +251,10 @@ impl ComputerDriver for SimDriver {
             Action::Observe => Err(DriverError::Unsupported(
                 "Action::Observe is an engine directive".into(),
             )),
+            Action::Navigate { url } => Ok(ActionResult::success(
+                Mechanism::Api,
+                Some(format!("navigated to {url}")),
+            )),
             Action::Click { target, .. } => {
                 if let Target::Point { x, y } = target {
                     if !ctx.allow_coordinates {

@@ -176,6 +176,7 @@ fn action_kind(action: &Action) -> Option<&'static str> {
         Action::Scroll { .. } => Some("scroll"),
         Action::Focus { .. } => Some("focus"),
         Action::SetValue { .. } => Some("set_value"),
+        Action::Navigate { .. } => Some("navigate"),
         Action::Observe | Action::Wait { .. } => None,
     }
 }
@@ -185,7 +186,7 @@ fn action_kind(action: &Action) -> Option<&'static str> {
 fn action_kind_of(s: &str) -> Option<()> {
     match s {
         "*" | "click" | "type_text" | "key" | "scroll" | "focus" | "set_value" | "observe"
-        | "wait" => Some(()),
+        | "wait" | "navigate" => Some(()),
         _ => None,
     }
 }

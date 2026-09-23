@@ -28,6 +28,16 @@ struct Cli {
     #[arg(long, global = true)]
     policy: Option<String>,
 
+    /// Driver backend: `macos` (Accessibility API) or `browser`
+    /// (W3C WebDriver — Safari via safaridriver, or any endpoint).
+    #[arg(long, global = true, default_value = "macos")]
+    driver: String,
+
+    /// WebDriver endpoint for --driver browser (e.g.
+    /// http://localhost:9515). Default: spawn `safaridriver`.
+    #[arg(long, global = true)]
+    browser_url: Option<String>,
+
     #[command(subcommand)]
     cmd: Command,
 }
@@ -121,6 +131,14 @@ enum Command {
     /// Serve MCP over stdio — exposes observe/act/verify/task/journal to
     /// agent clients (Claude Desktop, MCP SDKs). Same engine path as CLI.
     Mcp,
+    /// Open a URL — browser driver navigates its session; macOS hands it
+    /// to LaunchServices. Policy-gated like any mutation.
+    Navigate {
+        /// Absolute URL to open.
+        url: String,
+        #[command(flatten)]
+        args: ActionArgs,
+    },
     /// Run a scenario file (TOML): ordered steps through the full
     /// policy/act/verify loop, stopping at the first failure.
     Run {
@@ -215,13 +233,43 @@ fn load_policy(path: &Option<String>) -> Result<Policy> {
     }
 }
 
+/// Build the selected driver. `browser` spawns `safaridriver` unless
+/// `--browser-url` points at an already-running endpoint.
+fn build_driver(cli: &Cli) -> Result<Box<dyn ComputerDriver>> {
+    match cli.driver.as_str() {
+        "macos" => Ok(Box::new(MacOsDriver::new())),
+        "browser" => match &cli.browser_url {
+            Some(url) => {
+                let label = if url.contains("4444") {
+                    "firefox"
+                } else if url.contains("9515") {
+                    "chrome"
+                } else {
+                    "browser"
+                };
+                Ok(Box::new(
+                    dexter_browser::BrowserDriver::connect(url, label)
+                        .map_err(|e| anyhow::anyhow!("browser driver at {url}: {e}"))?,
+                ))
+            }
+            None => Ok(Box::new(
+                dexter_browser::BrowserDriver::safari()
+                    .map_err(|e| anyhow::anyhow!("safaridriver: {e}"))?,
+            )),
+        },
+        other => anyhow::bail!("unknown driver '{other}' — available: macos, browser"),
+    }
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let policy = load_policy(&cli.policy)?;
-    let mut engine = Engine::new(MacOsDriver::new(), policy, Duration::from_secs(300));
+    let is_browser = cli.driver == "browser";
+    let mut engine = Engine::new(build_driver(&cli)?, policy, Duration::from_secs(300));
 
     match cli.cmd {
-        Command::Doctor { request } => doctor(engine.driver(), request),
+        Command::Doctor { request } => doctor(engine.driver(), request, is_browser),
+        Command::Navigate { url, args } => run_action(&mut engine, &args, Action::Navigate { url }),
         Command::Windows { app } => windows(engine.driver(), app),
         Command::Observe {
             app,
@@ -289,25 +337,26 @@ fn run() -> Result<()> {
             events,
         } => run_scenario(&mut engine, &path, coords, approve_all, events),
         Command::Task { goal, args } => run_task(&mut engine, &goal, args),
-        Command::Mcp => run_mcp(&cli.policy),
+        Command::Mcp => run_mcp(&cli),
     }
 }
 
-fn run_mcp(policy_path: &Option<String>) -> Result<()> {
+fn run_mcp(cli: &Cli) -> Result<()> {
     // MCP owns its own engine (persistent session) — the CLI's engine is
-    // dropped. Policy comes from the global --policy flag.
-    let policy = load_policy(policy_path)?;
+    // dropped. Policy and driver come from the global flags.
+    let policy = load_policy(&cli.policy)?;
+    let driver = build_driver(cli)?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("tokio runtime")?
-        .block_on(dexter_mcp::serve_stdio(policy))
+        .block_on(dexter_mcp::serve_stdio(policy, driver))
 }
 
 /// Parse a `--target` flag into a `Target`. `element:N` takes a fresh
 /// observation first — element ids are only meaningful against the
 /// observation that produced them, and only inside this process.
-fn resolve_target(driver: &MacOsDriver, args: &ActionArgs) -> Result<Target> {
+fn resolve_target(driver: &dyn ComputerDriver, args: &ActionArgs) -> Result<Target> {
     let raw = args
         .target
         .as_deref()
@@ -350,7 +399,11 @@ fn resolve_target(driver: &MacOsDriver, args: &ActionArgs) -> Result<Target> {
     )
 }
 
-fn run_action(engine: &mut Engine<MacOsDriver>, args: &ActionArgs, action: Action) -> Result<()> {
+fn run_action(
+    engine: &mut Engine<Box<dyn ComputerDriver>>,
+    args: &ActionArgs,
+    action: Action,
+) -> Result<()> {
     let app = args.app.as_deref().map(AppSelector::parse);
     let expect = args
         .expect
@@ -463,7 +516,7 @@ struct ScenarioStep {
 }
 
 fn run_scenario(
-    engine: &mut Engine<MacOsDriver>,
+    engine: &mut Engine<Box<dyn ComputerDriver>>,
     path: &str,
     coords: bool,
     approve_all: bool,
@@ -517,7 +570,11 @@ fn run_scenario(
     }
 }
 
-fn run_task(engine: &mut Engine<MacOsDriver>, goal: &str, args: TaskArgs) -> Result<()> {
+fn run_task(
+    engine: &mut Engine<Box<dyn ComputerDriver>>,
+    goal: &str,
+    args: TaskArgs,
+) -> Result<()> {
     let done_when: ExpectedState =
         serde_json::from_str(&args.done).context("invalid --done ExpectedState JSON")?;
     let decider: Box<dyn dexter_decision::DecisionEngine> = match args.engine.as_str() {
@@ -599,15 +656,25 @@ fn run_task(engine: &mut Engine<MacOsDriver>, goal: &str, args: TaskArgs) -> Res
     }
 }
 
-fn doctor(driver: &MacOsDriver, request: bool) -> Result<()> {
+fn doctor(driver: &dyn ComputerDriver, request: bool, is_browser: bool) -> Result<()> {
+    let caps = driver.capabilities();
+    println!("driver: {}", caps.name);
+    if is_browser {
+        println!("element tree: {}", onoff(caps.element_tree));
+        println!("screenshots: {}", onoff(caps.screenshots));
+        println!("background input: {}", onoff(caps.background_input));
+        println!(
+            "\nnote: browser driver needs a WebDriver endpoint — `safaridriver`\
+             requires Safari Settings > Developer > 'Allow Remote Automation'."
+        );
+        return Ok(());
+    }
     if request {
         permissions::request_accessibility();
         permissions::request_screen_capture();
     }
-    let caps = driver.capabilities();
     let ax = permissions::accessibility_trusted();
     let sc = permissions::screen_capture_allowed();
-    println!("driver: {}", caps.name);
     println!("accessibility permission: {}", onoff(ax));
     println!("screen recording permission: {}", onoff(sc));
     println!("element tree: {}", onoff(caps.element_tree));
@@ -642,7 +709,7 @@ fn onoff(v: bool) -> &'static str {
     }
 }
 
-fn windows(driver: &MacOsDriver, app: Option<String>) -> Result<()> {
+fn windows(driver: &dyn ComputerDriver, app: Option<String>) -> Result<()> {
     let mut windows = driver.windows().context("listing windows")?;
     if let Some(filter) = app {
         let sel = AppSelector::parse(&filter);
@@ -662,7 +729,7 @@ fn windows(driver: &MacOsDriver, app: Option<String>) -> Result<()> {
 }
 
 fn observe(
-    driver: &MacOsDriver,
+    driver: &dyn ComputerDriver,
     app: Option<String>,
     max_depth: Option<u32>,
     max_elements: Option<usize>,

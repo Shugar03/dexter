@@ -88,4 +88,8 @@ pub enum Action {
     Observe,
     /// Wait a fixed amount of time.
     Wait { millis: u64 },
+    /// Open a URL. Browser drivers navigate the session; the macOS
+    /// driver hands it to LaunchServices (`open`). A mutation — policy
+    /// applies like any other action.
+    Navigate { url: String },
 }

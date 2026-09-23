@@ -1,0 +1,44 @@
+# Dexter scenario — fill a form in Safari via WebDriver DOM actions.
+#
+# Requires Safari "Allow Remote Automation" (Safari Settings → Developer).
+# Run:
+#   dexter --driver browser run examples/browser-form.toml --approve-all
+#
+# The whole scenario runs in one process → one Safari session stays
+# alive across steps. Actions are DOM dispatches (Mechanism::Dom) —
+# no coordinates, no focus stealing, works on occluded windows.
+
+max_attempts = 3
+verify_delay_ms = 400
+
+[[step]]
+note = "open a self-contained demo form"
+[step.action]
+type = "navigate"
+url = "data:text/html,<title>Demo</title><main><h1>Checkout</h1><input id=card aria-label='Card number' placeholder='Card number'><button id=pay>Pay now</button><p id=msg></p><script>document.getElementById('pay').onclick=()=>document.getElementById('msg').textContent='paid '+document.getElementById('card').value</script></main>"
+
+[[step]]
+note = "fill the card field via DOM set_value (fires input+change)"
+[step.action]
+type = "set_value"
+value = "4242"
+[step.action.target]
+role = "text_field"
+name = "Card number"
+[step.expect]
+type = "element_value"
+[step.expect.target]
+name = "Card number"
+[step.expect.predicate]
+equals = "4242"
+
+[[step]]
+note = "press Pay and verify the page reacted"
+[step.action]
+type = "click"
+[step.action.target]
+role = "button"
+name = "Pay now"
+[step.expect]
+type = "text_present"
+text = "paid 4242"

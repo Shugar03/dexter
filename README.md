@@ -85,6 +85,29 @@ dexter task "hide textedit" \
 dexter mcp
 ```
 
+### Browser (Safari / any WebDriver)
+
+```sh
+# one-time: Safari Settings → Developer → "Allow Remote Automation"
+# (or `sudo safaridriver --enable`)
+
+# a full scenario in one session — navigate, fill, click, verify
+dexter --driver browser run examples/browser-form.toml --approve-all
+
+# persistent session for agents — browser stays open across tool calls
+dexter --driver browser mcp
+
+# attach to a running WebDriver endpoint instead of spawning safaridriver
+dexter --driver browser --browser-url http://localhost:9515 observe
+```
+
+Browser actions dispatch inside the page (`el.click()`, `el.value=`)
+as `Mechanism::Dom` — no coordinates, no cursor, works on occluded or
+background windows. `Target::Point` reports `unsupported` honestly.
+
+Each CLI invocation is a fresh session; use `run`/`task`/`mcp` for
+multi-step flows (see `docs/sdd/browser.md`).
+
 Targets: `{"role":"button","name":"Save"}` semantic JSON (also
 `name_contains`, `identifier`, `index`), `element:N` (from a fresh
 observation), `focused`, or `point:x,y` (requires `--coords`).
@@ -150,6 +173,7 @@ crates/laya        LayaEngine — NDJSON sidecar protocol
 crates/engine      the loop: policy -> act -> re-observe -> verify -> retry
 crates/mcp         rmcp-based stdio server
 drivers/macos      AX + CGEvent + CGWindowList + xcap implementation
+drivers/browser    W3C WebDriver REST — safaridriver/chromedriver, DOM actions
 drivers/sim        deterministic synthetic driver (test/dev/simulation)
 workers/laya       Python NDJSON worker (laya + dev providers)
 ```
@@ -168,7 +192,8 @@ Invariants enforced by tests, not by docs:
 - `docs/ml-architecture-v3.md` — decision-model architecture (Laya
   lessons, candidate scoring, data flywheel) — informs `crates/decision`.
 - `docs/sdd/` — per-slice design contracts.
-- `ROADMAP.md` — staged plan through browser/Windows/Linux/enterprise.
+- `docs/sdd/browser.md` — WebDriver driver design + Safari setup.
+- `ROADMAP.md` — staged plan through Windows/Linux/enterprise.
 
 ## License
 

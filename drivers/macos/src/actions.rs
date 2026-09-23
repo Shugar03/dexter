@@ -402,6 +402,24 @@ pub fn act(
         Action::Observe => Err(DriverError::Unsupported(
             "Action::Observe is an engine directive, not a driver action".into(),
         )),
+        Action::Navigate { url } => {
+            let status = std::process::Command::new("open")
+                .arg(url)
+                .status()
+                .map_err(|e| DriverError::Platform(format!("open: {e}")))?;
+            if status.success() {
+                Ok(ActionResult::success(
+                    Mechanism::NativeAutomation,
+                    Some(format!("opened {url}")),
+                ))
+            } else {
+                Ok(ActionResult::failure(
+                    ActionStatus::Failed,
+                    Mechanism::NativeAutomation,
+                    format!("open {url} exited {status}"),
+                ))
+            }
+        }
         Action::Click { target, button } => match target {
             Target::Point { x, y } => {
                 if !ctx.allow_coordinates {

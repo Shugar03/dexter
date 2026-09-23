@@ -13,7 +13,6 @@ dexter-engine.workspace = true
 dexter-decision.workspace = true
 dexter-policy.workspace = true
 dexter-verify.workspace = true
-dexter-macos.workspace = true
 rmcp = { version = "0.8.5", features = ["server", "client", "transport-io"] }
 tokio = { version = "1", features = ["rt", "macros", "io-std", "sync"] }
 serde = { workspace = true, features = ["derive"] }
@@ -24,3 +23,4 @@ anyhow.workspace = true
 
 [dev-dependencies]
 dexter-policy.workspace = true
+dexter-sim.workspace = true
