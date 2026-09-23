@@ -1,0 +1,13 @@
+[package]
+name = "dexter-policy"
+description = "Fail-closed action policy: TOML rules, deny-by-default, bound single-use approvals"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+dexter-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/driver",
     "crates/world-model",
+    "crates/policy",
     "drivers/macos",
     "apps/dexter",
 ]
@@ -17,10 +18,12 @@ license = "MIT OR Apache-2.0"
 dexter-core = { path = "crates/core" }
 dexter-driver = { path = "crates/driver" }
 dexter-world-model = { path = "crates/world-model" }
+dexter-policy = { path = "crates/policy" }
 dexter-macos = { path = "drivers/macos" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 thiserror = "2"
 
 # macOS FFI
