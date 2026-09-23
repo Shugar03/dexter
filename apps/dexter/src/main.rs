@@ -84,6 +84,11 @@ enum Command {
         /// Capture a screenshot to this path.
         #[arg(long)]
         screenshot: Option<String>,
+        /// Opt-in OCR fallback: when the AX tree is thin/empty (or a window
+        /// is scoped), recognize text in the window capture and append it as
+        /// inert `[ocr]` elements.
+        #[arg(long)]
+        vision: bool,
     },
     /// Click an element (AXPress; `point:x,y` needs --coords).
     Click {
@@ -399,15 +404,19 @@ fn run() -> Result<()> {
             window,
             digest,
             screenshot,
-        } => observe(
-            engine.driver(),
-            app,
-            max_depth,
-            max_elements,
-            window,
-            digest,
-            screenshot,
-        ),
+            vision,
+        } => {
+            let scope = ObservationScope {
+                app: app.as_deref().map(AppSelector::parse),
+                window,
+                max_depth: max_depth.unwrap_or(40),
+                max_elements: max_elements.unwrap_or(4_000),
+                screenshot: screenshot.is_some(),
+                vision,
+                screenshot_path: screenshot,
+            };
+            observe(engine.driver(), &scope, digest)
+        }
         Command::Click { args, button } => {
             let button = match button.as_str() {
                 "left" => MouseButton::Left,
@@ -920,33 +929,9 @@ fn windows(driver: &dyn ComputerDriver, app: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn observe(
-    driver: &dyn ComputerDriver,
-    app: Option<String>,
-    max_depth: Option<u32>,
-    max_elements: Option<usize>,
-    window: Option<u32>,
-    digest: bool,
-    screenshot: Option<String>,
-) -> Result<()> {
-    let mut scope = ObservationScope::default();
-    if let Some(a) = app {
-        scope.app = Some(AppSelector::parse(&a));
-    }
-    if let Some(d) = max_depth {
-        scope.max_depth = d;
-    }
-    if let Some(m) = max_elements {
-        scope.max_elements = m;
-    }
-    if let Some(path) = screenshot {
-        scope.screenshot = true;
-        scope.screenshot_path = Some(path);
-    }
-
-    scope.window = window;
-    let obs = driver.observe(&scope).context("observe failed")?;
-    let obs = match window {
+fn observe(driver: &dyn ComputerDriver, scope: &ObservationScope, digest: bool) -> Result<()> {
+    let obs = driver.observe(scope).context("observe failed")?;
+    let obs = match scope.window {
         Some(id) => dexter_world_model::scope_to_window(obs, id).map_err(anyhow::Error::msg)?,
         None => obs,
     };

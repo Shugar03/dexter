@@ -10,6 +10,7 @@ license.workspace = true
 dexter-core.workspace = true
 dexter-driver.workspace = true
 dexter-world-model.workspace = true
+dexter-vision.workspace = true
 accessibility.workspace = true
 core-foundation.workspace = true
 core-graphics.workspace = true

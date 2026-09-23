@@ -12,8 +12,8 @@ use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
 use core_foundation::string::CFString;
 use dexter_core::{
-    Action, ActionResult, ActionStatus, Element, Mechanism, MouseButton, Observation,
-    ObservationId, Rect, Target,
+    Action, ActionResult, ActionStatus, Element, ElementSource, Mechanism, MouseButton,
+    Observation, ObservationId, Rect, Target,
 };
 use dexter_driver::{ActContext, DriverError};
 use std::collections::VecDeque;
@@ -143,6 +143,15 @@ fn resolve_element(
                     ))
                 })?
                 .clone();
+            // OCR elements are evidence, not live handles — there is no AX
+            // node to re-resolve. The actionable target is the bounds center.
+            if stored.source == ElementSource::Ocr {
+                return Err(DriverError::StaleReference(format!(
+                    "element {} is OCR-derived — target its bounds center \
+                     as a Point instead",
+                    element.0
+                )));
+            }
             let pid = pid.ok_or_else(|| {
                 DriverError::NotFound(
                     "observation was not app-scoped — cannot re-resolve element".into(),

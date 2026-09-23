@@ -89,6 +89,13 @@ pub struct ObserveParams {
     /// Elements are filtered by bounds intersection; menubar-style
     /// unpositioned elements don't belong to a window and are dropped.
     pub window: Option<u32>,
+    /// Opt-in OCR fallback. When the accessibility tree is limited/empty
+    /// (or `window` is set), text in the window capture is recognized
+    /// on-device and appended as inert `source: "ocr"` elements — marked
+    /// `[ocr]` in the digest. They have no live handle: acting on them
+    /// means targeting their bounds center as a point, which stays
+    /// approval/policy-gated.
+    pub vision: Option<bool>,
 }
 
 /// Server-level trust configuration — set by the operator at startup,
@@ -204,6 +211,7 @@ impl DexterMcp {
             app: params.app.as_deref().map(AppSelector::parse),
             max_elements,
             window,
+            vision: params.vision.unwrap_or(false),
             ..Default::default()
         };
         let max_out = max_elements.min(500);
@@ -235,6 +243,7 @@ impl DexterMcp {
                 serde_json::json!({
                     "id": e.id.to_string(),
                     "role": e.role,
+                    "source": e.source,
                     "name": e.name,
                     "value": e.value,
                     "enabled": e.enabled,

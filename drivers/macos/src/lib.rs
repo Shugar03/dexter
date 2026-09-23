@@ -15,6 +15,7 @@ mod ax;
 mod ffi;
 mod keymap;
 mod screenshot;
+mod vision;
 mod windows;
 
 pub mod permissions;
@@ -113,8 +114,7 @@ impl ComputerDriver for MacOsDriver {
             };
             obs.elements_truncated = tree.truncated;
             obs.collection_errors = tree.errors;
-            obs.elements = tree.elements.clone();
-            self.obs_cache.store(id, Some(pid), tree.elements);
+            obs.elements = tree.elements;
             // Degraded-grant signature: the window server reports real
             // app windows but AX shows none — only the application shell
             // and menu machinery.
@@ -130,6 +130,15 @@ impl ComputerDriver for MacOsDriver {
                 )
             });
             obs.ax_limited = cg_has_windows && !ax_has_window_content;
+
+            // Opt-in OCR: warranted when AX gave us nothing usable
+            // (limited/empty tree) or the caller narrowed to one window —
+            // e.g. a canvas region inside an otherwise healthy AX app.
+            if scope.vision && (obs.ax_limited || obs.elements.is_empty() || scope.window.is_some())
+            {
+                vision::augment(&mut obs, scope);
+            }
+            self.obs_cache.store(id, Some(pid), obs.elements.clone());
 
             if scope.screenshot {
                 let path = scope

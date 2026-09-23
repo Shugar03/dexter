@@ -4,7 +4,9 @@
 //! hand off normalized elements and where decision engines (including Laya)
 //! get their `state`.
 
-use dexter_core::{DexterError, Element, Observation, SemanticTarget, Target, Window};
+use dexter_core::{
+    DexterError, Element, ElementSource, Observation, SemanticTarget, Target, Window,
+};
 
 /// Normalize a platform role (`AXButton`, `AXTextField`, ...) to a canonical
 /// lowercase role (`button`, `text_field`). Unknown roles are lowercased and
@@ -289,6 +291,13 @@ fn header_lines(obs: &Observation) -> Vec<String> {
 
 fn element_line(e: &Element) -> String {
     let indent = "  ".repeat((e.depth as usize).min(8));
+    // OCR-derived elements are marked: no live handle, lower confidence —
+    // the agent must not treat them like AX-resolvable nodes.
+    let source = match e.source {
+        ElementSource::Ocr => "[ocr] ",
+        ElementSource::Vision => "[vision] ",
+        _ => "",
+    };
     let role = e.role.as_deref().unwrap_or("element");
     let name = e
         .name
@@ -318,7 +327,10 @@ fn element_line(e: &Element) -> String {
     } else {
         format!(" {flags}")
     };
-    format!("{indent}{}{role}{name}{flags}{actions}{bounds}", e.id)
+    format!(
+        "{indent}{}{source}{role}{name}{flags}{actions}{bounds}",
+        e.id
+    )
 }
 
 fn truncate(s: &str, max: usize) -> String {

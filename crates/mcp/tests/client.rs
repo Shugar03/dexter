@@ -297,6 +297,37 @@ async fn observe_returns_structured_elements() {
     client.cancel().await.ok();
 }
 
+/// The `vision` opt-in is part of the wire contract: the param must be
+/// accepted, and on a driver without a vision provider (sim) the
+/// observation is simply unchanged — no invented elements, no errors.
+#[tokio::test]
+async fn observe_accepts_vision_flag() {
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::new(
+        Policy::from_toml("").unwrap(),
+        Box::new(SimDriver::new(vec![save_button()])),
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_observe".into(),
+            arguments: Some(json!({"vision": true}).as_object().unwrap().clone()),
+        })
+        .await
+        .expect("observe");
+    let text = res.content[0].raw.as_text().expect("text");
+    let v: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(v["element_count"], 1);
+    assert_eq!(v["elements"][0]["source"], "accessibility");
+    client.cancel().await.ok();
+}
+
 #[tokio::test]
 async fn candidates_returns_ranked_menu_for_the_goal() {
     let (client_io, server_io) = tokio::io::duplex(1 << 16);

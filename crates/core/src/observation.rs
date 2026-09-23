@@ -51,6 +51,12 @@ pub struct ObservationScope {
     pub max_elements: usize,
     /// Whether to capture a screenshot alongside the structured data.
     pub screenshot: bool,
+    /// Opt-in OCR fallback: when the AX tree is limited/empty or the
+    /// observation is window-scoped, capture the target window and append
+    /// recognized text as inert `source: ocr` elements. Costs a screen
+    /// capture plus an on-device recognition pass — never implicit.
+    #[serde(default)]
+    pub vision: bool,
     /// Optional output path for the screenshot (driver picks a temp file
     /// when absent).
     #[serde(default)]
@@ -65,6 +71,7 @@ impl Default for ObservationScope {
             max_depth: 40,
             max_elements: 4_000,
             screenshot: false,
+            vision: false,
             screenshot_path: None,
         }
     }

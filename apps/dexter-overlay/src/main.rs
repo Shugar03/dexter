@@ -1,3 +1,9 @@
+// `cocoa`/`objc` are deprecated in favor of `objc2`; migrating the overlay
+// shell is tracked separately from the driver migration.
+#![allow(deprecated)]
+// objc's `class!`/`msg_send!` macros probe a `cargo-clippy` cfg.
+#![allow(unexpected_cfgs)]
+
 //! `dexter-overlay` — draw the agent's presence on screen.
 //!
 //! Usage: `dexter-overlay --events <journal.jsonl> [--agent NAME] [--replay]`

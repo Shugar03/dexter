@@ -11,6 +11,7 @@ members = [
     "crates/eval",
     "crates/laya",
     "crates/mcp",
+    "crates/vision",
     "drivers/macos",
     "drivers/sim",
     "drivers/browser",
@@ -34,6 +35,7 @@ dexter-decision = { path = "crates/decision" }
 dexter-eval = { path = "crates/eval" }
 dexter-laya = { path = "crates/laya" }
 dexter-mcp = { path = "crates/mcp" }
+dexter-vision = { path = "crates/vision" }
 dexter-macos = { path = "drivers/macos" }
 dexter-sim = { path = "drivers/sim" }
 dexter-browser = { path = "drivers/browser" }

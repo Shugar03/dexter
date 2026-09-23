@@ -60,14 +60,13 @@ fn try_direct_window(pid: i32, path: &Path) -> Result<Option<String>, DriverErro
     Ok(Some(title))
 }
 
-/// Fallback: capture the primary monitor and crop to the app's main
-/// layer-0 window (bounds come from CGWindowList, in points — the image is
-/// in physical pixels, so multiply by the scale factor). On-screen flags
-/// can be absent for windows in other Spaces, so we prefer but don't
-/// require them.
-fn crop_from_monitor(windows: &[Window], path: &Path) -> Result<String, DriverError> {
+/// Pick the app's most capturable window: largest layer-0 on-screen window,
+/// falling back to off-screen layer-0 windows (other Spaces). This is the
+/// same region `crop_from_monitor` captures, so callers can map image pixels
+/// back to `window.bounds` deterministically.
+pub fn pick_capture_window(windows: &[Window]) -> Option<&Window> {
     let area = |w: &Window| w.bounds.w * w.bounds.h;
-    let target = windows
+    windows
         .iter()
         .filter(|w| w.layer == 0 && w.on_screen && area(w) > 1.0)
         .max_by(|a, b| {
@@ -85,8 +84,24 @@ fn crop_from_monitor(windows: &[Window], path: &Path) -> Result<String, DriverEr
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
         })
-        .ok_or_else(|| DriverError::NotFound("no capturable window bounds".into()))?;
+}
 
+/// Capture exactly `window.bounds` — deterministic coverage, unlike
+/// `capture_app_window` which lets xcap pick the focused window. Vision OCR
+/// uses this so the token→element mapping knows which rect the image covers.
+pub fn capture_window_region(window: &Window, path: &Path) -> Result<(), DriverError> {
+    if !permissions::screen_capture_allowed() {
+        return Err(DriverError::PermissionDenied(
+            "screen recording not granted — enable it in System Settings > Privacy & Security"
+                .into(),
+        ));
+    }
+    crop_monitor_to(&window.bounds, path)
+}
+
+/// Capture the primary monitor and crop to `bounds` (points — the image is
+/// in physical pixels, so multiply by the scale factor).
+fn crop_monitor_to(bounds: &dexter_core::Rect, path: &Path) -> Result<(), DriverError> {
     let monitor = xcap::Monitor::all()
         .map_err(|e| DriverError::Platform(format!("monitor enumeration: {e}")))?
         .into_iter()
@@ -99,10 +114,10 @@ fn crop_from_monitor(windows: &[Window], path: &Path) -> Result<String, DriverEr
         .map_err(|e| DriverError::Platform(format!("capture: {e}")))?;
     let scale = monitor.scale_factor().unwrap_or(1.0) as f64;
 
-    let x = (target.bounds.x * scale).max(0.0) as u32;
-    let y = (target.bounds.y * scale).max(0.0) as u32;
-    let w = (target.bounds.w * scale) as u32;
-    let h = (target.bounds.h * scale) as u32;
+    let x = (bounds.x * scale).max(0.0) as u32;
+    let y = (bounds.y * scale).max(0.0) as u32;
+    let w = (bounds.w * scale) as u32;
+    let h = (bounds.h * scale) as u32;
     let w = w.min(img.width().saturating_sub(x));
     let h = h.min(img.height().saturating_sub(y));
     if w == 0 || h == 0 {
@@ -113,6 +128,17 @@ fn crop_from_monitor(windows: &[Window], path: &Path) -> Result<String, DriverEr
     image::imageops::crop_imm(&img, x, y, w, h)
         .to_image()
         .save(path)
-        .map_err(|e| DriverError::Platform(format!("save {}: {e}", path.display())))?;
+        .map_err(|e| DriverError::Platform(format!("save {}: {e}", path.display())))
+}
+
+/// Fallback: capture the primary monitor and crop to the app's main
+/// layer-0 window (bounds come from CGWindowList, in points — the image is
+/// in physical pixels, so multiply by the scale factor). On-screen flags
+/// can be absent for windows in other Spaces, so we prefer but don't
+/// require them.
+fn crop_from_monitor(windows: &[Window], path: &Path) -> Result<String, DriverError> {
+    let target = pick_capture_window(windows)
+        .ok_or_else(|| DriverError::NotFound("no capturable window bounds".into()))?;
+    crop_monitor_to(&target.bounds, path)?;
     Ok(target.title.clone().unwrap_or_default())
 }

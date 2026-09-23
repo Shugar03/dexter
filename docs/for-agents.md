@@ -30,14 +30,19 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
 
 ## The loop you should run
 
-1. **`dexter_observe {app?, window?}`** — returns `observation` id, a
-   text `digest`, a `windows` array (`{id, app, title, bounds,
+1. **`dexter_observe {app?, window?, vision?}`** — returns `observation`
+   id, a text `digest`, a `windows` array (`{id, app, title, bounds,
    on_screen}`) and a structured `elements` array (`{id:"e_4", role,
-   name, value, enabled, focused, actions, bounds}`). Element ids are
-   scoped to the observation that produced them — a stale id is
+   source, name, value, enabled, focused, actions, bounds}`). Element
+   ids are scoped to the observation that produced them — a stale id is
    rejected, so re-observe after the world changes. Pass
    `window: <id>` to scope to one window — smaller digest, fewer
    candidates; elements without bounds (menubar items) are dropped.
+   Pass `vision: true` when the digest is thin or empty (`ax_limited`)
+   — on-device OCR of the target window appends `[ocr]` elements.
+   They are *evidence only*: no actions, no live handle — clicking one
+   means `Target::Point` at its bounds center, which stays
+   approval/policy-gated.
 2. **`dexter_candidates {goal}`** — ranked plausible actions for your
    goal: `[{action, rationale, prior}]`. Priors are heuristic hints, not
    truth — *you* decide. Each `action` is ready-to-pass JSON for

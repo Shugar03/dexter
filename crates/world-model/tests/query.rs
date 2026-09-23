@@ -304,3 +304,14 @@ fn scope_to_window_filters_when_driver_didnt() {
     assert_eq!(scoped.elements.len(), 1);
     assert!(scope_to_window(obs(vec![]), 99).is_err());
 }
+
+#[test]
+fn digest_marks_ocr_elements() {
+    let mut e = el(1, "text", Some("Save document"), 1);
+    e.source = ElementSource::Ocr;
+    let ax = el(2, "button", Some("OK"), 0);
+    let o = obs(vec![e, ax]);
+    let d = digest(&o, 50);
+    assert!(d.contains("[ocr] text \"Save document\""), "{d}");
+    assert!(!d.contains("[ocr] button"), "{d}");
+}
