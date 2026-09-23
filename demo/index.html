@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dexter — the agent you can watch think</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="oxh">
+
+  <!-- ============ NAV — floating glass pill ============ -->
+  <nav class="nav">
+    <div class="nav-inner">
+      <a class="brand" href="#top">
+        <svg class="brand-mark" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/>
+          <circle cx="12" cy="12" r="3.4" fill="currentColor"/>
+          <path d="M12 3v4M12 17v4M3 12h4M17 12h4" stroke="currentColor" stroke-width="1.6"/>
+        </svg>
+        <span>dexter</span>
+      </a>
+      <div class="nav-links">
+        <a href="#scenes">scenes</a>
+        <a href="#signal">signal</a>
+        <a href="#laws">laws</a>
+      </div>
+      <div class="nav-status">
+        <span class="status-dot" id="navDot"></span>
+        <span class="mono" id="navStatus">runtime · idle</span>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ============ ATTENTION — artistic asymmetry hero ============ -->
+  <header class="hero" id="top">
+    <div class="hero-grid-bg" aria-hidden="true"></div>
+    <div class="hero-copy">
+      <p class="eyebrow mono">agent computer runtime · observe → decide → act → verify</p>
+      <h1>The agent you can
+        <span class="h1-pill" aria-hidden="true">
+          <span class="h1-pill-vp">
+            <span class="h1-pill-cursor"></span>
+            <span class="h1-pill-ring"></span>
+          </span>
+        </span>
+        watch think.</h1>
+      <p class="hero-sub">Every candidate ranked. Every target locked semantically.
+        Every action verified — or recovered. Dexter shows its work on the real
+        machine, not in a log file.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-solid" href="#scenes">watch it work</a>
+        <a class="btn btn-ghost" href="#signal">read the signal</a>
+      </div>
+    </div>
+
+    <!-- mini live viewport overlapping bottom-right -->
+    <div class="hero-vp" aria-hidden="true">
+      <div class="vp-chrome">
+        <span class="vp-dot"></span><span class="vp-dot"></span><span class="vp-dot"></span>
+        <span class="vp-title mono">checkout — chrome</span>
+      </div>
+      <div class="vp-body" id="heroVp">
+        <div class="fake-field" id="heroField"><span class="fake-label">CARD NUMBER</span><span class="fake-input"></span></div>
+        <div class="fake-btn" id="heroBtn">Pay $49.00</div>
+        <div class="reticle" id="heroReticle"><i></i><i></i><i></i><i></i></div>
+        <div class="gcursor" id="heroCursor"><svg viewBox="0 0 24 24"><path d="M4 2l14 11.2-6.4 1.2 3.4 6.4-2.8 1.4-3.4-6.4L4 20z" fill="currentColor"/></svg></div>
+        <div class="scanline" id="heroScan"></div>
+      </div>
+      <div class="vp-hud mono"><span id="heroHud">observing…</span></div>
+    </div>
+  </header>
+
+  <!-- ============ INTEREST — gapless bento of real telemetry ============ -->
+  <section class="bento" id="signal">
+    <div class="bento-grid">
+
+      <div class="cell cell-journal span2x2">
+        <div class="cell-head"><h3>journal</h3><span class="mono cell-tag">real events · task "pay the order"</span></div>
+        <ol class="journal" id="journalFeed"></ol>
+      </div>
+
+      <div class="cell cell-tree span1x1">
+        <div class="cell-head"><h3>element tree</h3></div>
+        <pre class="mono tree" id="treeFeed"></pre>
+      </div>
+
+      <div class="cell cell-cands span1x1">
+        <div class="cell-head"><h3>candidates</h3></div>
+        <div class="cand" data-p="0.72"><div class="cand-bar"></div><div class="cand-row"><span class="mono">e_4</span><span class="cand-name">button “Pay $49.00”</span><span class="mono cand-p">0.72</span></div></div>
+        <div class="cand dim" data-p="0.21"><div class="cand-bar"></div><div class="cand-row"><span class="mono">e_3</span><span class="cand-name">text_field “Card number”</span><span class="mono cand-p">0.21</span></div></div>
+        <div class="cand dim" data-p="0.08"><div class="cand-bar"></div><div class="cand-row"><span class="mono">e_2</span><span class="cand-name">static_text “CARD NUMBER”</span><span class="mono cand-p">0.08</span></div></div>
+        <p class="cell-note">ranked by goal-term coverage — the engine picks one, policy gates it</p>
+      </div>
+
+      <div class="cell cell-policy span2x1">
+        <div class="cell-head"><h3>policy gate</h3><span class="mono cell-tag">outside the model</span></div>
+        <div class="policy-row">
+          <span class="policy-chip approved mono">click “Pay $49.00” → approved</span>
+          <span class="policy-chip denied mono">type password → requires human</span>
+          <span class="policy-chip abstained mono">no candidate ≥ 0.65 → abstain</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ DESIRE — three stacked scene-cards ============ -->
+  <section class="scenes" id="scenes">
+    <div class="scenes-pin" id="scenesPin">
+
+      <!-- SCENE 1 — semantic target lock -->
+      <article class="scene" id="sceneLock">
+        <div class="scene-side">
+          <p class="scene-kicker mono">target lock</p>
+          <h2>The cursor has an opinion.</h2>
+          <p class="scene-sub">Candidates light up, the reticle contracts on the
+            strongest semantic match, and the click only fires after policy says yes.</p>
+          <ul class="scene-hud mono" id="lockHud"></ul>
+        </div>
+        <div class="scene-vp">
+          <div class="vp-chrome"><span class="vp-dot"></span><span class="vp-dot"></span><span class="vp-dot"></span><span class="vp-title mono">editor de texto</span></div>
+          <div class="vp-body" id="lockVp">
+            <div class="fake-menubar"><span>Archivo</span><span>Edición</span><span>Formato</span><span>Vista</span></div>
+            <div class="fake-doc">
+              <p class="fake-line w80"></p><p class="fake-line w60"></p><p class="fake-line w70"></p>
+            </div>
+            <div class="lock-el" id="lockElA" data-id="e_31" data-label="menu_item “Guardar como…”"><span>Guardar como…</span></div>
+            <div class="lock-el" id="lockElB" data-id="e_40" data-label="menu_item “Exportar como PDF”"><span>Exportar como PDF…</span></div>
+            <div class="lock-el" id="lockElC" data-id="e_44" data-label="menu_item “Cerrar todo”"><span>Cerrar todo</span></div>
+            <div class="reticle big" id="lockReticle"><i></i><i></i><i></i><i></i><b class="ret-tag mono" id="retTag"></b></div>
+            <div class="gcursor" id="lockCursor"><svg viewBox="0 0 24 24"><path d="M4 2l14 11.2-6.4 1.2 3.4 6.4-2.8 1.4-3.4-6.4L4 20z" fill="currentColor"/></svg></div>
+            <div class="scanline" id="lockScan"></div>
+          </div>
+        </div>
+      </article>
+
+      <!-- SCENE 2 — flight path / activity canvas -->
+      <article class="scene" id="sceneFlight">
+        <div class="scene-side">
+          <p class="scene-kicker mono">flight path</p>
+          <h2>You see the desktop it sees.</h2>
+          <p class="scene-sub">The agent’s working window stays lit; everything else
+            falls back. The trail is the plan, and the pipeline underneath is the truth.</p>
+        </div>
+        <div class="scene-vp wide">
+          <div class="desk" id="deskVp">
+            <div class="desk-win win-back"><div class="vp-chrome dim"><span class="vp-title mono">finder</span></div><div class="desk-fill"></div></div>
+            <div class="desk-win win-front" id="deskFront">
+              <div class="vp-chrome"><span class="vp-dot"></span><span class="vp-dot"></span><span class="vp-dot"></span><span class="vp-title mono">checkout — chrome</span></div>
+              <div class="desk-fill">
+                <div class="fake-field sm"><span class="fake-label">CARD NUMBER</span><span class="fake-input filled">4242 4242 4242 4242</span></div>
+                <div class="fake-btn sm" id="deskBtn">Pay $49.00</div>
+              </div>
+            </div>
+            <svg class="trail" id="trailSvg" viewBox="0 0 1000 560" preserveAspectRatio="none">
+              <path id="trailPath" d="M120,480 C220,420 300,430 420,330 S640,300 700,330" fill="none"/>
+              <circle class="waypoint" id="wp1" cx="420" cy="330" r="5"/>
+              <circle class="waypoint" id="wp2" cx="700" cy="330" r="5"/>
+            </svg>
+            <div class="gcursor" id="deskCursor"><svg viewBox="0 0 24 24"><path d="M4 2l14 11.2-6.4 1.2 3.4 6.4-2.8 1.4-3.4-6.4L4 20z" fill="currentColor"/></svg></div>
+          </div>
+          <ol class="pipeline mono" id="pipeline">
+            <li data-k="ObservationCreated"><b>observe</b><span>5 elements</span></li>
+            <li data-k="CandidatesGenerated"><b>candidates</b><span>1 ranked</span></li>
+            <li data-k="DecisionMade"><b>decide</b><span>click e_4</span></li>
+            <li data-k="PolicyChecked"><b>policy</b><span>approved</span></li>
+            <li data-k="ActionExecuted"><b>act</b><span>dom</span></li>
+            <li data-k="VerificationPassed"><b>verify</b><span>✓</span></li>
+          </ol>
+        </div>
+      </article>
+
+      <!-- SCENE 3 — verify or recover -->
+      <article class="scene" id="sceneVerify">
+        <div class="scene-side">
+          <p class="scene-kicker mono">verify or recover</p>
+          <h2>Proposed is not proven.</h2>
+          <p class="scene-sub">An action pulse is a claim, not a result. Dexter
+            re-observes the world, and when the check fails it retries — bounded —
+            or refuses to guess.</p>
+        </div>
+        <div class="scene-vp">
+          <div class="vp-chrome"><span class="vp-dot"></span><span class="vp-dot"></span><span class="vp-dot"></span><span class="vp-title mono">verify loop</span></div>
+          <div class="vp-body" id="verifyVp">
+            <div class="ver-target" id="verTarget"><span class="mono">e_4</span> Pay $49.00</div>
+            <div class="ver-status mono" id="verStatus">idle</div>
+            <div class="scanline" id="verScan"></div>
+            <div class="ver-flash" id="verFlash"></div>
+            <div class="gcursor" id="verCursor"><svg viewBox="0 0 24 24"><path d="M4 2l14 11.2-6.4 1.2 3.4 6.4-2.8 1.4-3.4-6.4L4 20z" fill="currentColor"/></svg></div>
+            <div class="ver-branches">
+              <div class="branch" id="brRetry"><span class="mono">retry 1/2</span><i></i></div>
+              <div class="branch" id="brAbstain"><span class="mono">abstain</span><i></i></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ LAWS — horizontal accordion ============ -->
+  <section class="laws" id="laws">
+    <h2 class="laws-title">Built on laws, not vibes.</h2>
+    <div class="accord" id="accord">
+      <div class="slice"><span class="slice-name">Fitts</span><div class="slice-body"><h4>the target is huge</h4><p>The reticle inflates the effective target — your eye lands before the cursor does.</p></div></div>
+      <div class="slice"><span class="slice-name">Hick</span><div class="slice-body"><h4>one choice, ranked</h4><p>Candidates are ranked and dimmed. You audit a decision, not a pile.</p></div></div>
+      <div class="slice"><span class="slice-name">Nielsen</span><div class="slice-body"><h4>status always visible</h4><p>observe → decide → act → verify is a live strip, never a buried log.</p></div></div>
+      <div class="slice"><span class="slice-name">Doherty</span><div class="slice-body"><h4>feedback under 100ms</h4><p>Targeting lights up instantly; verification is honest about being async.</p></div></div>
+      <div class="slice"><span class="slice-name">Jakob</span><div class="slice-body"><h4>familiar metaphors</h4><p>Cursor, focus ring, timeline — known shapes carrying a new machine.</p></div></div>
+    </div>
+  </section>
+
+  <!-- ============ PRINCIPLES — quotes carousel ============ -->
+  <section class="quotes">
+    <div class="quote-stage">
+      <blockquote class="quote active">“If the user can’t see it, the agent didn’t do it.”</blockquote>
+      <blockquote class="quote">“A confident wrong action is worse than an honest abstain.”</blockquote>
+      <blockquote class="quote">“Verification lives outside the model — trust is structural.”</blockquote>
+    </div>
+    <div class="quote-nav">
+      <button class="qbtn" id="qPrev" aria-label="previous">←</button>
+      <button class="qbtn" id="qNext" aria-label="next">→</button>
+    </div>
+  </section>
+
+  <!-- ============ ACTION — footer ============ -->
+  <footer class="foot">
+    <h2 class="foot-h">Run it on your machine.</h2>
+    <p class="foot-sub mono">cargo install dexter-cu · macOS AX + WebDriver · MIT/Apache-2.0</p>
+    <a class="btn btn-solid big" href="https://github.com/Shugar03/dexter">github.com/Shugar03/dexter</a>
+    <div class="foot-meta mono"><span>dexter</span><span>observe · decide · act · verify</span><span>© 2025</span></div>
+  </footer>
+
+</main>
+
+<script src="vendor/gsap.min.js"></script>
+<script src="vendor/ScrollTrigger.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

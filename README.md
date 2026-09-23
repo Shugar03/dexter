@@ -199,6 +199,10 @@ Invariants enforced by tests, not by docs:
   lessons, candidate scoring, data flywheel) — informs `crates/decision`.
 - `docs/sdd/` — per-slice design contracts.
 - `docs/sdd/browser.md` — WebDriver driver design + Safari setup.
+- `demo/` — animated observability mockups (open `demo/index.html`;
+  self-contained, GSAP vendored). Three scenes — semantic target lock,
+  agent flight path, verify-or-recover — driven by a real journal
+  captured from `dexter task` against live Chrome.
 - `ROADMAP.md` — staged plan through Windows/Linux/enterprise.
 
 ## License
