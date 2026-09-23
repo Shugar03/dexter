@@ -175,7 +175,9 @@ pub fn replay_item(
     let candidates = generator.generate(obs, &item.goal, &GenHistory::default());
     let ctx = DecisionContext {
         goal: item.goal.clone(),
-        state_digest: obs.digest.clone(),
+        // Same budget the engine applies in production — eval must feed
+        // engines the digest they'd actually see.
+        state_digest: dexter_world_model::digest_budget(obs, 14_000),
         candidates,
         last_error: None,
         step,

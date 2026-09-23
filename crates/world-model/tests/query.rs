@@ -2,7 +2,9 @@
 //! rejection, and the digest that feeds decision engines.
 
 use dexter_core::*;
-use dexter_world_model::{digest, find_elements, normalize_ax_role, resolve_element};
+use dexter_world_model::{
+    digest, digest_budget, find_elements, normalize_ax_role, resolve_element,
+};
 
 fn el(id: u64, role: &str, name: Option<&str>, depth: u32) -> Element {
     Element {
@@ -146,4 +148,17 @@ fn digest_prioritizes_actionable_elements_and_marks_truncation() {
 
     let d2 = digest(&o, 1);
     assert!(d2.contains("truncated"), "must report truncation");
+}
+
+#[test]
+fn digest_budget_respects_char_cap() {
+    let els: Vec<Element> = (0..300)
+        .map(|i| el(i + 1, "AXButton", Some(&format!("Item {i}")), 1))
+        .collect();
+    let o = obs(els);
+    let d = digest_budget(&o, 2_000);
+    assert!(d.len() <= 2_100, "budget holds: {}", d.len());
+    assert!(d.contains("context budget"), "truncation is declared");
+    // The header is always present — engines see the app + counts.
+    assert!(d.contains("elements"));
 }

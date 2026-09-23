@@ -28,9 +28,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 /// Extra options appended after the real candidates, in order.
-const ROUTE_OPTIONS: [(&str, Route); 3] = [
+const ROUTE_OPTIONS: [(&str, Route); 4] = [
     ("wait and re-observe", Route::Wait { millis: 500 }),
     ("re-observe without acting", Route::Reobserve),
+    ("abstain — no candidate fits the goal", Route::Abstain),
     ("escalate to a larger model", Route::EscalateLlm),
 ];
 
@@ -66,6 +67,9 @@ pub struct LayaEngine {
     responses: Mutex<Receiver<String>>,
     next_id: Mutex<u64>,
     timeout: Duration,
+    /// Below this calibrated confidence the engine abstains instead of
+    /// acting. `0.0` = never gate (report only).
+    min_confidence: f32,
     /// Last provider string reported by the worker (audit).
     provider: Mutex<String>,
 }
@@ -109,8 +113,15 @@ impl LayaEngine {
             responses: Mutex::new(rx),
             next_id: Mutex::new(0),
             timeout,
+            min_confidence: 0.0,
             provider: Mutex::new("unknown".into()),
         })
+    }
+
+    /// Gate acting on the model's calibrated confidence.
+    pub fn with_min_confidence(mut self, min: f32) -> Self {
+        self.min_confidence = min;
+        self
     }
 
     /// Which provider answered last (`laya`, `dev`, …) — audit metadata.
@@ -159,7 +170,20 @@ impl LayaEngine {
 }
 
 fn describe_candidate(i: usize, c: &CandidateAction) -> String {
-    format!("candidate {i}: {}", c.rationale)
+    let verb = match &c.action {
+        Action::Click { .. } => "click",
+        Action::TypeText { .. } => "type text",
+        Action::Key { .. } => "press key",
+        Action::Scroll { .. } => "scroll",
+        Action::Focus { .. } => "focus",
+        Action::SetValue { .. } => "set value",
+        Action::Navigate { .. } => "navigate",
+        Action::Observe => "observe",
+        Action::Wait { .. } => "wait",
+    };
+    // Keep the generator's rationale (it carries role + label + priors)
+    // but lead with the verb — the model reads options as actions.
+    format!("candidate {i}: {verb} — {}", c.rationale)
 }
 
 impl DecisionEngine for LayaEngine {
@@ -186,7 +210,13 @@ impl DecisionEngine for LayaEngine {
         );
         let questions = [Question::Choice {
             id: "pick".into(),
-            prompt: "Pick the best next step for the goal, or a route option.".into(),
+            prompt: "You are choosing the next action for a computer-use agent. \
+                     Pick the UI element whose action best advances the goal in [GOAL]. \
+                     If no element fits, pick a route: 'wait' for busy/loading states, \
+                     're-observe' when the view may be stale, 'abstain' when nothing \
+                     applies, or 'escalate' for genuinely hard steps. Priors in the \
+                     option text are heuristic hints, not truth."
+                .into(),
             options,
         }];
 
@@ -207,8 +237,10 @@ impl DecisionEngine for LayaEngine {
                 engine: self.name().into(),
                 message: "worker returned ok but no answers".into(),
             })?;
-        let idx = match answer {
-            Answer::Choice { index, .. } => index,
+        let (idx, confidence) = match answer {
+            Answer::Choice {
+                index, confidence, ..
+            } => (index, confidence),
             other => {
                 return Err(DecisionError::Engine {
                     engine: self.name().into(),
@@ -217,12 +249,29 @@ impl DecisionEngine for LayaEngine {
             }
         };
 
+        // Calibrated abstention: when the model says its pick is unlikely
+        // to be right, prefer the honest route over a shot in the dark.
+        if let Some(c) = confidence {
+            if c < self.min_confidence {
+                return Ok(Decision::Route {
+                    route: Route::Abstain,
+                    rationale: format!(
+                        "laya confidence {c:.2} < min {} — abstaining",
+                        self.min_confidence
+                    ),
+                });
+            }
+        }
+
         if idx < ctx.candidates.len() {
             let c = &ctx.candidates[idx];
+            let conf = confidence
+                .map(|c| format!(" (confidence {c:.2})"))
+                .unwrap_or_default();
             return Ok(Decision::Act {
                 action: c.action.clone(),
                 candidate_index: Some(idx),
-                rationale: format!("laya picked candidate {idx}: {}", c.rationale),
+                rationale: format!("laya picked candidate {idx}{conf}: {}", c.rationale),
             });
         }
         let route_idx = idx - ctx.candidates.len();

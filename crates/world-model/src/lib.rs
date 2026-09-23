@@ -180,6 +180,57 @@ fn digest_worthy(e: &Element) -> bool {
 /// (e.g. Laya) consumes. Interactive/named elements come first, truncation is
 /// explicit, and no values are included beyond short labels.
 pub fn digest(obs: &Observation, max_lines: usize) -> String {
+    let mut lines = header_lines(obs);
+    let mut shown = 0usize;
+    let mut skipped = 0usize;
+    for e in &obs.elements {
+        if !digest_worthy(e) {
+            continue;
+        }
+        if shown >= max_lines {
+            skipped += 1;
+            continue;
+        }
+        shown += 1;
+        lines.push(element_line(e));
+    }
+    if skipped > 0 {
+        lines.push(format!("... truncated: {skipped} elements not shown"));
+    }
+    lines.join("\n")
+}
+
+/// Render with a character budget — for engines with a fixed context
+/// window (Laya's encoder tops out at 8192 tokens; ~14k chars of this
+/// mostly-ASCII digest stays under it). Elements are emitted in tree
+/// order until the budget runs out; the tail is summarized honestly.
+pub fn digest_budget(obs: &Observation, max_chars: usize) -> String {
+    let mut lines = header_lines(obs);
+    let mut used: usize = lines.iter().map(|l| l.len() + 1).sum();
+    let mut shown = 0usize;
+    let mut skipped = 0usize;
+    for e in &obs.elements {
+        if !digest_worthy(e) {
+            continue;
+        }
+        let line = element_line(e);
+        if used + line.len() + 1 > max_chars {
+            skipped += 1;
+            continue;
+        }
+        used += line.len() + 1;
+        shown += 1;
+        lines.push(line);
+    }
+    if skipped > 0 {
+        lines.push(format!(
+            "... truncated: {skipped} elements not shown (context budget)"
+        ));
+    }
+    lines.join("\n")
+}
+
+fn header_lines(obs: &Observation) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let app = obs
         .app
@@ -199,57 +250,41 @@ pub fn digest(obs: &Observation, max_lines: usize) -> String {
     for w in &obs.windows {
         lines.push(window_line(w));
     }
+    lines
+}
 
-    let mut shown = 0usize;
-    let mut skipped = 0usize;
-    for e in &obs.elements {
-        if !digest_worthy(e) {
-            continue;
-        }
-        if shown >= max_lines {
-            skipped += 1;
-            continue;
-        }
-        shown += 1;
-        let indent = "  ".repeat((e.depth as usize).min(8));
-        let role = e.role.as_deref().unwrap_or("element");
-        let name = e
-            .name
-            .as_deref()
-            .filter(|n| !n.is_empty())
-            .map(|n| format!(" \"{}\"", truncate(n, 80)))
-            .unwrap_or_default();
-        let flags = [
-            e.enabled.map(|v| if v { "enabled" } else { "disabled" }),
-            e.focused.then_some("focused"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(",");
-        let actions = if e.actions.is_empty() {
-            String::new()
-        } else {
-            format!(" actions=[{}]", e.actions.join(","))
-        };
-        let bounds = e
-            .bounds
-            .map(|b| format!(" [{},{},{}x{}]", b.x, b.y, b.w, b.h))
-            .unwrap_or_default();
-        let flags = if flags.is_empty() {
-            String::new()
-        } else {
-            format!(" {flags}")
-        };
-        lines.push(format!(
-            "{indent}{}{role}{name}{flags}{actions}{bounds}",
-            e.id
-        ));
-    }
-    if skipped > 0 {
-        lines.push(format!("... truncated: {skipped} elements not shown"));
-    }
-    lines.join("\n")
+fn element_line(e: &Element) -> String {
+    let indent = "  ".repeat((e.depth as usize).min(8));
+    let role = e.role.as_deref().unwrap_or("element");
+    let name = e
+        .name
+        .as_deref()
+        .filter(|n| !n.is_empty())
+        .map(|n| format!(" \"{}\"", truncate(n, 80)))
+        .unwrap_or_default();
+    let flags = [
+        e.enabled.map(|v| if v { "enabled" } else { "disabled" }),
+        e.focused.then_some("focused"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(",");
+    let actions = if e.actions.is_empty() {
+        String::new()
+    } else {
+        format!(" actions=[{}]", e.actions.join(","))
+    };
+    let bounds = e
+        .bounds
+        .map(|b| format!(" [{},{},{}x{}]", b.x, b.y, b.w, b.h))
+        .unwrap_or_default();
+    let flags = if flags.is_empty() {
+        String::new()
+    } else {
+        format!(" {flags}")
+    };
+    format!("{indent}{}{role}{name}{flags}{actions}{bounds}", e.id)
 }
 
 fn truncate(s: &str, max: usize) -> String {

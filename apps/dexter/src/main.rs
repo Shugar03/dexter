@@ -176,6 +176,9 @@ enum EvalCommand {
         /// Worker command for --engine laya.
         #[arg(long)]
         engine_path: Option<String>,
+        /// Abstain below this calibrated confidence (laya). 0 = never.
+        #[arg(long, default_value = "0")]
+        min_confidence: f32,
         /// Emit per-item verdicts as JSONL to this path.
         #[arg(long)]
         out: Option<String>,
@@ -206,6 +209,10 @@ struct TaskArgs {
     /// $DEXTER_LAYA_WORKER or the repo's dev worker.
     #[arg(long)]
     engine_path: Option<String>,
+    /// For engines reporting calibrated confidence (laya): abstain
+    /// instead of acting below this threshold. 0 = never gate.
+    #[arg(long, default_value = "0")]
+    min_confidence: f32,
     /// Scope to an application.
     #[arg(long)]
     app: Option<String>,
@@ -377,8 +384,9 @@ fn run() -> Result<()> {
                 dataset,
                 engine: eng,
                 engine_path,
+                min_confidence,
                 out,
-            } => eval_run(&dataset, &eng, engine_path, out),
+            } => eval_run(&dataset, &eng, engine_path, min_confidence, out),
             EvalCommand::Harvest { manifest, out } => {
                 eval_harvest(engine.driver(), &manifest, &out)
             }
@@ -637,7 +645,8 @@ fn run_task(
                 .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
                 .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
             let engine = dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(30))
-                .with_context(|| format!("spawning laya worker '{cmd}'"))?;
+                .with_context(|| format!("spawning laya worker '{cmd}'"))?
+                .with_min_confidence(args.min_confidence);
             Box::new(engine)
         }
         other => anyhow::bail!("unknown decision engine '{other}' — available: rule-based, laya"),
@@ -868,6 +877,7 @@ fn eval_run(
     dataset: &str,
     engine_name: &str,
     engine_path: Option<String>,
+    min_confidence: f32,
     out: Option<String>,
 ) -> Result<()> {
     let text =
@@ -883,7 +893,8 @@ fn eval_run(
                 .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
             Box::new(
                 dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(30))
-                    .with_context(|| format!("spawning laya worker '{cmd}'"))?,
+                    .with_context(|| format!("spawning laya worker '{cmd}'"))?
+                    .with_min_confidence(min_confidence),
             )
         }
         other => anyhow::bail!("unknown engine '{other}' — rule-based, laya"),

@@ -122,9 +122,22 @@ pub enum Question {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Answer {
-    Choice { id: String, index: usize },
-    Score { id: String, value: f32 },
-    Bool { id: String, value: bool },
+    Choice {
+        id: String,
+        index: usize,
+        /// Model's calibrated confidence in its pick, when the engine
+        /// reports one (Laya does). Engines may gate acting on it.
+        #[serde(default)]
+        confidence: Option<f32>,
+    },
+    Score {
+        id: String,
+        value: f32,
+    },
+    Bool {
+        id: String,
+        value: bool,
+    },
 }
 
 /// Task history available to the generator: what was already tried and

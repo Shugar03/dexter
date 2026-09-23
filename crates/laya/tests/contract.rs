@@ -76,6 +76,77 @@ fn laya_route_when_no_candidates() {
 }
 
 #[test]
+fn low_confidence_pick_abstains() {
+    let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stub_worker.py");
+    let engine = LayaEngine::spawn(
+        &format!("python3 {} 0.05", stub.display()),
+        Duration::from_secs(10),
+    )
+    .expect("stub spawns")
+    .with_min_confidence(0.3);
+    let ctx = DecisionContext {
+        goal: "click save".into(),
+        state_digest: "button Save".into(),
+        candidates: vec![candidate("Save")],
+        last_error: None,
+        step: 1,
+    };
+    match engine.decide(&ctx).expect("decision") {
+        Decision::Route { route, rationale } => {
+            assert_eq!(route, Route::Abstain);
+            assert!(rationale.contains("0.05"), "rationale: {rationale}");
+        }
+        other => panic!("confidence 0.05 < 0.3 must abstain, got {other:?}"),
+    }
+}
+
+#[test]
+fn confident_pick_acts() {
+    let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stub_worker.py");
+    let engine = LayaEngine::spawn(
+        &format!("python3 {} 0.9", stub.display()),
+        Duration::from_secs(10),
+    )
+    .expect("stub spawns")
+    .with_min_confidence(0.3);
+    let ctx = DecisionContext {
+        goal: "click save".into(),
+        state_digest: "button Save".into(),
+        candidates: vec![candidate("Save")],
+        last_error: None,
+        step: 1,
+    };
+    match engine.decide(&ctx).expect("decision") {
+        Decision::Act {
+            candidate_index, ..
+        } => assert_eq!(candidate_index, Some(0)),
+        other => panic!("confidence 0.9 >= 0.3 must act, got {other:?}"),
+    }
+}
+
+#[test]
+fn missing_confidence_is_not_gated() {
+    // The dev worker emits no confidence field — engines must still
+    // act on its picks (absence ≠ low confidence).
+    let engine = LayaEngine::spawn(&worker_cmd(), Duration::from_secs(10))
+        .expect("worker spawns")
+        .with_min_confidence(0.9);
+    let ctx = DecisionContext {
+        goal: "click the save button".into(),
+        state_digest: "button Save".into(),
+        candidates: vec![candidate("Delete"), candidate("Save")],
+        last_error: None,
+        step: 1,
+    };
+    match engine.decide(&ctx).expect("decision") {
+        Decision::Act {
+            candidate_index, ..
+        } => assert_eq!(candidate_index, Some(1)),
+        other => panic!("missing confidence must not trigger the gate, got {other:?}"),
+    }
+}
+
+#[test]
 fn missing_worker_is_an_honest_error() {
     let res = LayaEngine::spawn("/nonexistent/dexter-laya-worker", Duration::from_secs(1));
     assert!(res.is_err(), "missing worker must fail at spawn");

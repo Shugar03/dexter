@@ -437,7 +437,9 @@ impl<D: ComputerDriver> Engine<D> {
             let candidates = generator.generate(&obs, goal, &hist);
             let ctx = DecisionContext {
                 goal: goal.to_string(),
-                state_digest: obs.digest.clone(),
+                // Engines get a context-window-safe digest; the full one
+                // stays on the observation for the audit trail.
+                state_digest: dexter_world_model::digest_budget(&obs, STATE_BUDGET),
                 candidates,
                 last_error: last_error.clone(),
                 step,
@@ -531,6 +533,10 @@ impl<D: ComputerDriver> Engine<D> {
         TaskOutcome::MaxSteps
     }
 }
+
+/// Char budget for the digest handed to decision engines — sized so
+/// Laya-class encoders (8192 tokens) never overflow on big AX trees.
+const STATE_BUDGET: usize = 14_000;
 
 /// The on-screen rect an action will land on — the presence contract an
 /// overlay renders from. Resolved against the live observation for

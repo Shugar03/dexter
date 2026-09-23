@@ -75,6 +75,12 @@ class LayaProvider:
         import laya
 
         self.agent = laya.load(model, subfolder=subfolder, device=device)
+        # Warm the tokenizer + first forward pass — the first real
+        # predict otherwise pays seconds of lazy init.
+        self.agent.predict("warmup", {
+            "w": {"type": "choice", "instructions": "pick one",
+                  "criteria": {"opt0": "a", "opt1": "b"}},
+        })
 
     def predict(self, state: str, questions: list) -> list:
         laya_qs, order = {}, []
@@ -109,7 +115,12 @@ class LayaProvider:
             if qtype == "choice":
                 # choice comes back as the criteria key ("opt3")
                 idx = int(str(a["choice"]).removeprefix("opt"))
-                out.append({"type": "choice", "id": qid, "index": idx})
+                out.append({
+                    "type": "choice", "id": qid, "index": idx,
+                    # calibrated P(this pick is correct) — engines may
+                    # gate acting on it
+                    "confidence": a.get("confidence"),
+                })
             elif qtype == "score":
                 out.append({"type": "score", "id": qid, "value": max(0.0, min(1.0, float(a["score"])))})
             else:
@@ -137,7 +148,7 @@ def main() -> int:
                     help="HF model id (default: laya family repo)")
     ap.add_argument("--subfolder", default="multilingual",
                     help="checkpoint subfolder: multilingual (localized UIs) | "
-                         "typed-decisions | '' for english root")
+                         "typed-decisions | root for the english checkpoint")
     ap.add_argument("--device", default=None, help="cpu | cuda | mps (default: auto)")
     args = ap.parse_args()
 
@@ -145,7 +156,8 @@ def main() -> int:
     if args.provider == "laya":
         # Load once, fail fast at startup rather than mid-session.
         try:
-            provider = LayaProvider(args.model, args.subfolder or None, args.device)
+            subfolder = None if args.subfolder in ("", "root") else args.subfolder
+            provider = LayaProvider(args.model, subfolder, args.device)
         except Exception as e:
             print(json.dumps({
                 "id": None, "ok": False,

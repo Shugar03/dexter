@@ -49,6 +49,32 @@ same frozen worlds.
 `DecisionContext` (goal, digest, candidate actions+priors, last_error,
 step) — live traces are replayable through the same eval path.
 
+## Laya provider notes
+
+- **Digest budget** — `digest_budget(obs, 14_000)` caps the state the
+  engine sees (~Laya's 8k-token encoder window) with an explicit
+  `... truncated` footer. Runtime and eval share the same budget, so
+  frozen items measure what production sends.
+- **Calibrated abstention** — the worker forwards Laya's per-pick
+  `confidence`; `LayaEngine::with_min_confidence(τ)` turns picks below
+  τ into `Route::Abstain`. `--min-confidence` on `task`/`eval run`.
+  Measured confidences on the frozen datasets (0.00–0.71) don't cleanly
+  separate correct from wrong yet, so the default stays 0 — the gate is
+  wired and reported, not enabled blindly.
+- **Checkpoints** — `--subfolder multilingual` (mmBERT, localized UIs)
+  vs `root` (english). Measured on both frozen datasets:
+
+  | checkpoint | browser act | routes | macos act | routes | false_acts |
+  |---|---|---|---|---|---|
+  | rule-based | 18/18 | 3/3 | 8/8 | 2/2 | 0 |
+  | laya root | 13/18 | 1/3 | 5/8 | 0/2 | 1 |
+  | laya multilingual | 4/18 | 2/3 | 0/8 | 2/2 | 0 |
+
+  English checkpoint acts decisively (mostly right); multilingual
+  routes almost everything — safe failure mode, near-zero usefulness.
+  The single false_act: a legitimately-enabled element the model
+  preferred over the gold (candidate filter already drops disabled).
+
 ## Non-goals
 
 - No end-to-end task success here — that's the sim/scenario layer.
