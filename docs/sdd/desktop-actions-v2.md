@@ -87,8 +87,8 @@ Action::WriteClipboardText { text: String }
 ```
 
 - Text/UTF-8 only with a bounded payload.
-- Read is `SensitiveRead`; write is `SensitiveWrite`. Embedded policy requires
-  approval for both.
+- Read and write both plan at `Sensitivity::Secrets` — clipboard content is
+  user data. Embedded policy requires approval for both.
 - Read content is returned only as immediate authorized `ActionResult` output.
   It is never journaled, fingerprinted in plaintext, exported for training or
   shown in the overlay.

@@ -311,7 +311,7 @@ fn set_value_sends_text_via_args() {
     let scripts = server.scripts.lock().unwrap();
     let set = scripts
         .iter()
-        .find(|s| s.contains("el.value = arguments[0]"))
+        .find(|s| s.contains("el.value = a[0]"))
         .unwrap();
     assert!(set.contains("__dexterNodes?.[2]"));
 }
@@ -877,4 +877,112 @@ fn invoke_checks_advertised_actions_of_its_own_observation() {
             .any(|s| s.contains("el.click()")),
         "the press dispatch must run"
     );
+}
+
+#[test]
+fn invoke_scroll_into_view_is_reachable() {
+    // The walker advertises `scroll_into_view` — the invoke executor
+    // must map the same name or the capability is dead both ways.
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+    driver.observe(&ObservationScope::default()).unwrap();
+
+    let r = driver
+        .act(
+            &Action::Invoke {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("heading".into()),
+                    name: Some("Checkout".into()),
+                    ..Default::default()
+                }),
+                action: "scroll_into_view".into(),
+            },
+            &ActContext::default(),
+        )
+        .expect("invoke scroll_into_view");
+    assert!(r.status.ok(), "advertised scroll must dispatch: {r:?}");
+    assert!(
+        server
+            .scripts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.contains("scrollIntoView")),
+        "the scrollIntoView dispatch must run"
+    );
+
+    // The old unmatched name stays refused — one vocabulary.
+    let r = driver
+        .act(
+            &Action::Invoke {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("heading".into()),
+                    name: Some("Checkout".into()),
+                    ..Default::default()
+                }),
+                action: "scroll_to_visible".into(),
+            },
+            &ActContext::default(),
+        )
+        .expect("invoke scroll_to_visible");
+    assert_eq!(r.status, dexter_core::ActionStatus::Unsupported);
+}
+
+#[test]
+fn targeted_scroll_reports_stale_sentinel() {
+    // A node gone between resolve and dispatch must surface
+    // `StaleReference`, never a fabricated "scrolled into view".
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+    *server.stale.lock().unwrap() = true;
+
+    let err = driver
+        .act(
+            &Action::Scroll {
+                delta: dexter_core::ScrollDelta { dx: 0.0, dy: 120.0 },
+                target: Some(Target::Semantic(SemanticTarget {
+                    role: Some("button".into()),
+                    name: Some("Pay now".into()),
+                    ..Default::default()
+                })),
+            },
+            &ActContext::default(),
+        )
+        .expect_err("stale node must not report success");
+
+    assert!(
+        matches!(err, DriverError::StaleReference(_)),
+        "expected StaleReference, got {err:?}"
+    );
+}
+
+#[test]
+fn click_enforces_the_shared_count_contract() {
+    // The same refusals macOS and sim make: count is 1..=3 and
+    // multi-click is a left-button gesture.
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+    driver.observe(&ObservationScope::default()).unwrap();
+
+    let click = |button, count| Action::Click {
+        target: Target::Semantic(SemanticTarget {
+            role: Some("button".into()),
+            name: Some("Pay now".into()),
+            ..Default::default()
+        }),
+        button,
+        count,
+    };
+    let r = driver
+        .act(&click(MouseButton::Left, 0), &ActContext::default())
+        .unwrap();
+    assert_eq!(r.status, dexter_core::ActionStatus::Failed);
+    let r = driver
+        .act(&click(MouseButton::Left, 4), &ActContext::default())
+        .unwrap();
+    assert_eq!(r.status, dexter_core::ActionStatus::Failed);
+    let r = driver
+        .act(&click(MouseButton::Right, 2), &ActContext::default())
+        .unwrap();
+    assert_eq!(r.status, dexter_core::ActionStatus::Unsupported);
 }

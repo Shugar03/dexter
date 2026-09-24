@@ -140,6 +140,24 @@
   `approve_all` when declared, so a scenario can assert the
   `needs_approval` outcome.
 
+### Fixed (runtime-reliability-v2 review, round 4)
+
+- Browser `invoke` scroll vocabulary is one name: the walker advertises
+  `scroll_into_view` and the executor now maps it — the capability is
+  reachable instead of dead in both directions.
+- The `__dexter_err` stale sentinel converts to `StaleReference`
+  inside `exec_on_args`, not at each call site — targeted `Scroll` (and
+  `SetValue`/`TypeText`, now routed through the same helper) can never
+  report success on a node that vanished between resolve and dispatch.
+- Sim `Click` enforces the contract macOS and browser share: `count`
+  is 1..=3 and multi-click is a left-button gesture — the test double
+  no longer accepts what production refuses.
+- The routing/recovery/desktop-actions SDDs describe shipped types —
+  `Sensitivity::{Standard,Secrets,Destructive}`, the real
+  `TargetDescriptor`/`ExecutionRoute`/`RunConfig`/`TaskOutcome` shapes
+  and wake derived from `needs_stage` — instead of pre-implementation
+  sketches (`SensitiveRead`, `verify_attempts`, `WakeMode`).
+
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:

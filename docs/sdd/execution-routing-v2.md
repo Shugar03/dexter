@@ -13,25 +13,34 @@ introduced.
 
 ```rust
 pub enum Sensitivity {
-    Normal,
-    SensitiveRead,
-    SensitiveWrite,
+    Standard,
+    Secrets,      // secure/password fields, clipboard — never journaled
+    Destructive,  // irreversible operations (delete, purchase, send)
 }
 
 pub struct TargetDescriptor {
-    pub source: Option<ElementSource>,
     pub role: Option<String>,
     pub name: Option<String>,
     pub identifier: Option<String>,
+    // Element id within `observation`, when resolved to a live element.
+    pub element: Option<ElementId>,
+    // Observation the element id belongs to — staleness is checkable.
+    pub observation: Option<ObservationId>,
     pub window_id: Option<u32>,
-    pub stable_path: Vec<String>,
-    pub bounds: Option<Rect>,
+    // Raw coordinate target, when the route is a point.
+    pub point: Option<Point>,
+    // The route targets whatever element holds focus.
+    pub focused: bool,
 }
 
 pub struct ExecutionRoute {
     pub action: Action,
-    pub target: Option<TargetDescriptor>,
-    pub mechanism: Mechanism,
+    // Resolved target identity — what policy matches and fingerprints bind.
+    pub target: TargetDescriptor,
+    // `Some` is enforced against `ActionResult.mechanism`; `None` is the
+    // legacy escape for unmigrated drivers (policy still gates on
+    // intrusiveness and the mechanism is whatever `act` reports).
+    pub mechanism: Option<Mechanism>,
     pub intrusiveness: Intrusiveness,
     pub sensitivity: Sensitivity,
     pub requires_foreground: bool,
@@ -110,7 +119,9 @@ role = "button"
 name = "Save"
 ```
 
-The approval key canonically binds action kind, app, mechanism,
+The approval key canonically binds action kind, every non-secret action
+parameter (chord, url digest, app selector, window op, button, count, invoke
+name, scroll delta, drag destination/duration, wait), app, mechanism,
 intrusiveness, sensitivity, stable target identity and a hash of sensitive
 payload. Observation ids and screen coordinates derived from semantic targets
 are excluded because they are ephemeral; explicit point coordinates remain.

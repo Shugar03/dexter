@@ -679,8 +679,8 @@ impl<D: ComputerDriver> Engine<D> {
     }
 
     /// VERIFY-POLL — the world may need time to reach the expected
-    /// state; re-observe, never re-execute. `max_attempts` is the v1
-    /// alias for the poll bound (renamed `verify_attempts` upstream).
+    /// state; re-observe, never re-execute. `max_attempts` bounds the
+    /// polls after one execute (polling, not action replay).
     /// The first poll runs immediately — most effects land
     /// synchronously (AX updates are not async); the settle delay only
     /// pays between failed polls. Returns the last verdict with its

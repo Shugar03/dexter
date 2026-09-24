@@ -11,8 +11,8 @@
 
 use dexter_core::{
     Action, ActionResult, ActionStatus, Element, ElementId, ExecutionPlan, ExecutionRoute,
-    Intrusiveness, Mechanism, Observation, ObservationId, ObservationScope, SemanticTarget,
-    Sensitivity, Target, TargetDescriptor, Window,
+    Intrusiveness, Mechanism, MouseButton, Observation, ObservationId, ObservationScope,
+    SemanticTarget, Sensitivity, Target, TargetDescriptor, Window,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError, WakeHandle};
 use std::collections::VecDeque;
@@ -373,7 +373,22 @@ impl ComputerDriver for SimDriver {
                 Mechanism::Api,
                 Some(format!("navigated to {url}")),
             )),
-            Action::Click { target, count, .. } => {
+            Action::Click {
+                target,
+                button,
+                count,
+            } => {
+                // The same contract macOS and browser enforce: count is
+                // bounded and multi-click is a left-button gesture. The
+                // double must refuse what the real drivers refuse or
+                // scenarios pass against sim that fail in production.
+                if *count == 0 || *count > 3 {
+                    return Ok(ActionResult::failure(
+                        ActionStatus::Failed,
+                        Mechanism::Api,
+                        format!("click count {count} out of range 1..=3"),
+                    ));
+                }
                 if let Target::Point { x, y } = target {
                     if !ctx.allow_coordinates {
                         return Ok(ActionResult::failure(
@@ -385,6 +400,13 @@ impl ComputerDriver for SimDriver {
                     return Ok(ActionResult::success(
                         Mechanism::Coordinates,
                         Some(format!("clicked x{count} at ({x},{y})")),
+                    ));
+                }
+                if !matches!(button, MouseButton::Left) && *count > 1 {
+                    return Ok(ActionResult::failure(
+                        ActionStatus::Unsupported,
+                        Mechanism::Api,
+                        format!("multi-click count {count} only applies to the left button"),
                     ));
                 }
                 let id = self.resolve(target, ctx)?;

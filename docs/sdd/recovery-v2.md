@@ -25,11 +25,10 @@ OBSERVE
 ## Act-once invariant
 
 One call to `Engine::run_step` executes at most one mutating route. After a
-successful execute, `verify_attempts` controls fresh observation and
-verification polls only. It never calls execute again.
+successful execute, `max_attempts` bounds fresh observation and verification
+polls only. It never calls execute again.
 
-`max_attempts` is accepted as a v1 alias for `verify_attempts` for one release.
-Its v2 meaning is polling, not action replay.
+`max_attempts`'s v2 meaning is polling, not action replay.
 
 A second mutation is legal only when:
 
@@ -43,15 +42,17 @@ Both cases re-plan, re-run policy and consume a new approval.
 
 ```rust
 pub struct RunConfig {
-    pub verify_attempts: u32,
+    // Per-step bound on act + verify cycles.
+    pub max_attempts: u32,
+    // Settle time before re-observing for verification.
     pub verify_delay: Duration,
+    // Settle after a completed act before the next observe.
     pub post_act_settle: Duration,
-    pub wake_mode: WakeMode,
-    // existing app/coords/approval/scope fields
+    // existing app/coords/approval/observe/scope fields
 }
 ```
 
-- `verify_attempts >= 1`.
+- `max_attempts >= 1`.
 - Polls honor cancellation and task wall-clock budget.
 - `FAILED` and `UNCERTAIN` remain distinct in events, but neither is success.
 - If execute times out or returns an unknown-effect failure and an expectation
@@ -83,7 +84,10 @@ until a second implementation exists.
 ```rust
 NeedsApproval {
     fingerprint: String,
-    summary: ActionSummary,
+    reason: String,
+    // The redacted action summary the operator approves — payloads stay
+    // digest tokens.
+    action: serde_json::Value,
 }
 Denied {
     reason: String,
@@ -99,9 +103,10 @@ not.
 
 ## Wake/restore
 
-`WakeMode` is `Never | IfWindowless | Required`. Engine owns wake/restore for
-all callers. Read-only observe defaults to `Never`; map and actions may choose
-`IfWindowless`.
+Engine owns wake/restore for all callers — there is no mode flag. Wake fires
+only for acts that stage a pre-action observation (`needs_stage`: the
+element-targeted acts) and only when the target app currently has no windows;
+read-only observes never wake.
 
 Wake is a visual operation and goes through policy before activation. Restore
 runs after success, error, denial, approval request, cancellation and timeout.

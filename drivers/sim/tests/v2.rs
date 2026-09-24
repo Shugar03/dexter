@@ -364,3 +364,30 @@ fn pointer_scroll_requires_coordinates_optin() {
         .unwrap();
     assert_eq!(r.status, ActionStatus::Success);
 }
+
+#[test]
+fn click_enforces_the_shared_count_contract() {
+    // The same refusals macOS and browser make: count is 1..=3 and
+    // multi-click is a left-button gesture. The double diverging is
+    // how scenarios pass here and fail in production.
+    let d = SimDriver::new(vec![el(1, "button", "Save", &["press"])]);
+    let click = |button, count| Action::Click {
+        target: semantic("Save"),
+        button,
+        count,
+    };
+
+    let r = d.act(&click(MouseButton::Left, 0), &ctx()).unwrap();
+    assert_eq!(r.status, ActionStatus::Failed);
+    let r = d.act(&click(MouseButton::Left, 4), &ctx()).unwrap();
+    assert_eq!(r.status, ActionStatus::Failed);
+    let r = d.act(&click(MouseButton::Right, 2), &ctx()).unwrap();
+    assert_eq!(r.status, ActionStatus::Unsupported);
+
+    // The legal shapes still land: a single right-click context menu
+    // and a left multi-click.
+    let r = d.act(&click(MouseButton::Right, 1), &ctx()).unwrap();
+    assert_eq!(r.status, ActionStatus::Success);
+    let r = d.act(&click(MouseButton::Left, 2), &ctx()).unwrap();
+    assert_eq!(r.status, ActionStatus::Success);
+}

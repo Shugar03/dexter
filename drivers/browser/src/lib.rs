@@ -146,13 +146,17 @@ impl BrowserDriver {
     /// outer function; the inner call receives them after the bound
     /// element — scripts must use `a[i]`, never `arguments[i]` (inside
     /// a *regular* function `arguments` is that function's own list).
+    ///
+    /// The `__dexter_err` sentinel is converted to `StaleReference`
+    /// here, not at call sites — a node gone between resolve and
+    /// dispatch can never simulate success.
     fn exec_on_args(
         &self,
         id: ElementId,
         script: &str,
         args: Vec<serde_json::Value>,
     ) -> Result<serde_json::Value, DriverError> {
-        self.client.lock().unwrap().execute(
+        let resp = self.client.lock().unwrap().execute(
             &format!(
                 "return (() => {{ const el = window.__dexterNodes?.[{}]; \
                  if (!el) return {{__dexter_err: 'stale node'}}; \
@@ -160,7 +164,11 @@ impl BrowserDriver {
                 id.0, script
             ),
             args,
-        )
+        )?;
+        if resp["__dexter_err"].is_string() {
+            return Err(DriverError::StaleReference("stale node".into()));
+        }
+        Ok(resp)
     }
 
     /// The actions the live element advertises — looked up in the
@@ -498,10 +506,7 @@ impl ComputerDriver for BrowserDriver {
                     }
                     _ => "el.click(); 'clicked'",
                 };
-                let resp = self.exec_on_args(id, js, vec![json!(count)])?;
-                if resp["__dexter_err"].is_string() {
-                    return Err(DriverError::StaleReference("stale node".into()));
-                }
+                self.exec_on_args(id, js, vec![json!(count)])?;
                 Ok(ActionResult::success(
                     Mechanism::Dom,
                     Some(format!("clicked element {id} x{count}")),
@@ -517,7 +522,7 @@ impl ComputerDriver for BrowserDriver {
                         "el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true})); 'menu'"
                     }
                     "focus" => "el.focus(); 'focused'",
-                    "scroll_to_visible" => "el.scrollIntoView({block:'center'}); 'scrolled'",
+                    "scroll_into_view" => "el.scrollIntoView({block:'center'}); 'scrolled'",
                     _ => {
                         return Ok(ActionResult::failure(
                             ActionStatus::Unsupported,
@@ -537,10 +542,7 @@ impl ComputerDriver for BrowserDriver {
                         format!("element {id} does not advertise '{action}'"),
                     ));
                 }
-                let resp = self.exec_on(id, js)?;
-                if resp["__dexter_err"].is_string() {
-                    return Err(DriverError::StaleReference("stale node".into()));
-                }
+                self.exec_on(id, js)?;
                 Ok(ActionResult::success(
                     Mechanism::Dom,
                     Some(format!("invoked '{action}' on element {id}")),
@@ -613,7 +615,7 @@ impl ComputerDriver for BrowserDriver {
                 // DOM event synthesis — never moves the OS cursor.
                 let (a, _) = self.resolve(from)?;
                 let (b, _) = self.resolve(to)?;
-                let resp = self.exec_on_args(
+                self.exec_on_args(
                     a,
                     "const to = window.__dexterNodes?.[a[0]]; \
                      if (!to) return {__dexter_err: 'stale node'}; \
@@ -639,9 +641,6 @@ impl ComputerDriver for BrowserDriver {
                     // paces real-pointer drags — DOM dispatch is instant.
                     vec![json!(b.0)],
                 )?;
-                if resp["__dexter_err"].is_string() {
-                    return Err(DriverError::StaleReference("stale node".into()));
-                }
                 Ok(ActionResult::success(
                     Mechanism::Dom,
                     Some(format!("dragged element {a} onto {b}")),
@@ -664,10 +663,7 @@ impl ComputerDriver for BrowserDriver {
                     ));
                 }
                 let (id, _) = self.resolve(target)?;
-                let resp = self.exec_on(id, "el.focus(); 'focused'")?;
-                if resp["__dexter_err"].is_string() {
-                    return Err(DriverError::StaleReference("stale node".into()));
-                }
+                self.exec_on(id, "el.focus(); 'focused'")?;
                 Ok(
                     ActionResult::success(Mechanism::Dom, Some(format!("focused element {id}")))
                         .with_element(Some(id)),
@@ -675,21 +671,13 @@ impl ComputerDriver for BrowserDriver {
             }
             Action::SetValue { target, value } => {
                 let (id, _) = self.resolve(target)?;
-                let resp = self.client.lock().unwrap().execute(
-                    &format!(
-                        "return (() => {{ const el = window.__dexterNodes?.[{}]; \
-                         if (!el) return {{__dexter_err:'stale node'}}; \
-                         el.focus(); el.value = arguments[0]; \
-                         el.dispatchEvent(new Event('input',{{bubbles:true}})); \
-                         el.dispatchEvent(new Event('change',{{bubbles:true}})); \
-                         return 'set'; }})()",
-                        id.0
-                    ),
+                self.exec_on_args(
+                    id,
+                    "el.focus(); el.value = a[0]; \
+                     el.dispatchEvent(new Event('input',{bubbles:true})); \
+                     el.dispatchEvent(new Event('change',{bubbles:true})); 'set'",
                     vec![json!(value)],
                 )?;
-                if resp["__dexter_err"].is_string() {
-                    return Err(DriverError::StaleReference("stale node".into()));
-                }
                 Ok(ActionResult::success(
                     Mechanism::Dom,
                     Some(format!("set value on element {id}")),
@@ -699,20 +687,12 @@ impl ComputerDriver for BrowserDriver {
             Action::TypeText { text, target } => {
                 let t = target.clone().unwrap_or(Target::Focused);
                 let (id, _) = self.resolve(&t)?;
-                let resp = self.client.lock().unwrap().execute(
-                    &format!(
-                        "return (() => {{ const el = window.__dexterNodes?.[{}]; \
-                         if (!el) return {{__dexter_err:'stale node'}}; \
-                         el.focus(); el.value = (el.value||'') + arguments[0]; \
-                         el.dispatchEvent(new Event('input',{{bubbles:true}})); \
-                         return 'typed'; }})()",
-                        id.0
-                    ),
+                self.exec_on_args(
+                    id,
+                    "el.focus(); el.value = (el.value||'') + a[0]; \
+                     el.dispatchEvent(new Event('input',{bubbles:true})); 'typed'",
                     vec![json!(text)],
                 )?;
-                if resp["__dexter_err"].is_string() {
-                    return Err(DriverError::StaleReference("stale node".into()));
-                }
                 Ok(
                     ActionResult::success(Mechanism::Dom, Some(format!("typed into element {id}")))
                         .with_element(Some(id)),
