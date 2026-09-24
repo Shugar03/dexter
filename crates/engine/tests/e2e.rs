@@ -1035,7 +1035,7 @@ fn clipboard_write_then_read_via_engine() {
     };
     match engine.run_step(&read, &cfg()) {
         StepStatus::Done { result, .. } => {
-            assert_eq!(result.detail.as_deref(), Some(sentinel));
+            assert_eq!(result.and_then(|r| r.detail).as_deref(), Some(sentinel));
         }
         other => panic!("clipboard read should succeed, got {other:?}"),
     }
@@ -1470,5 +1470,307 @@ fn typing_into_sensitive_field_is_unverified_and_types_once() {
             .iter()
             .any(|e| e.kind == EventKind::VerificationFailed),
         "no verification may run on a redacted value"
+    );
+}
+
+// ---------- review round 2 ----------
+
+/// `execute` reports failure *after* the side effect landed — the
+/// classic timed-out reply to a successful click. With an expectation
+/// in hand the engine must verify before declaring the act dead:
+/// VERIFIED means the step did its job despite the broken report.
+struct EffectThenErrorDriver(SimDriver);
+
+impl ComputerDriver for EffectThenErrorDriver {
+    fn capabilities(&self) -> DriverCapabilities {
+        self.0.capabilities()
+    }
+
+    fn windows(&self) -> Result<Vec<Window>, DriverError> {
+        self.0.windows()
+    }
+
+    fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
+        self.0.observe(scope)
+    }
+
+    fn plan(&self, action: &Action, ctx: &ActContext) -> Result<ExecutionPlan, DriverError> {
+        self.0.plan(action, ctx)
+    }
+
+    fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
+        self.0.act(action, ctx)
+    }
+
+    fn execute(
+        &self,
+        route: &ExecutionRoute,
+        ctx: &ActContext,
+    ) -> Result<ActionResult, DriverError> {
+        // The act runs (and mutates the world) — only the report is lost.
+        self.0.act(&route.action, ctx)?;
+        Err(DriverError::Timeout("delivery report lost".into()))
+    }
+}
+
+#[test]
+fn execute_error_verifies_landed_effect_before_failing() {
+    let sim = SimDriver::new(vec![el(1, "button", "Guardar")]);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "Guardado")),
+    );
+    let mut engine = Engine::new(
+        EffectThenErrorDriver(sim),
+        allow_all(),
+        Duration::from_secs(60),
+    );
+    let step = Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                role: Some("button".into()),
+                name: Some("Guardar".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+            count: 1,
+        },
+        expect: Some(ExpectedState::ElementExists {
+            target: SemanticTarget {
+                name: Some("Guardado".into()),
+                ..Default::default()
+            },
+        }),
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done {
+            result,
+            verification,
+            ..
+        } => {
+            assert!(
+                result.is_none(),
+                "no delivery report exists to relay — only the verdict"
+            );
+            assert_eq!(verification.unwrap().status, VerificationStatus::Verified);
+        }
+        other => panic!("expected Done (verified post-error), got {other:?}"),
+    }
+}
+
+#[test]
+fn menu_target_under_window_scope_derives_no_expectation() {
+    // Under a pinned window the menu window can't enter the window
+    // list and menu elements are signature-excluded — a WorldChanged
+    // expectation would poll for a change it cannot see. The honest
+    // derive is none.
+    let mut menu = el(1, "menu_item", "Archivo");
+    menu.bounds = Some(Rect {
+        x: 10.0,
+        y: 10.0,
+        w: 60.0,
+        h: 20.0,
+    });
+    let sim = SimDriver::new(vec![menu]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                role: Some("menu_item".into()),
+                name: Some("Archivo".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+            count: 1,
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    let mut scoped = cfg();
+    scoped.window_scope = Some(1);
+    match engine.run_step(&step, &scoped) {
+        StepStatus::Done { verification, .. } => {
+            assert!(
+                verification.is_none(),
+                "menu act under window scope must not derive an unsatisfiable expectation"
+            );
+        }
+        other => panic!("expected Done (unverified), got {other:?}"),
+    }
+}
+
+#[test]
+fn sensitive_target_route_gets_secrets_floor() {
+    // A route into a secure field upgrades to Secrets at the engine
+    // seam — under `mutating = "allow"` the floor still gates it, on
+    // every driver, whatever the driver declared.
+    let policy = Policy::from_toml(
+        r#"
+[defaults]
+mutating = "allow"
+"#,
+    )
+    .unwrap();
+    let sim = SimDriver::new(vec![el(1, "secure_text_field", "Password")]);
+    let mut engine = Engine::new(sim, policy, Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::TypeText {
+            text: "s3cret".into(),
+            target: Some(Target::Semantic(SemanticTarget {
+                role: Some("secure_text_field".into()),
+                name: Some("Password".into()),
+                ..Default::default()
+            })),
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::NeedsApproval { .. } => {}
+        other => panic!("secrets floor must gate the route, got {other:?}"),
+    }
+}
+
+#[test]
+fn invoke_and_drag_journal_target_bounds() {
+    // The overlay's presence contract covers every element-bound act —
+    // Invoke and Drag carry the same target_bounds click does.
+    let mut btn = el(1, "button", "Guardar");
+    btn.bounds = Some(Rect {
+        x: 10.0,
+        y: 20.0,
+        w: 80.0,
+        h: 24.0,
+    });
+    let mut drop_zone = el(2, "group", "Destino");
+    drop_zone.bounds = Some(Rect {
+        x: 200.0,
+        y: 200.0,
+        w: 100.0,
+        h: 100.0,
+    });
+    let sim = SimDriver::new(vec![btn, drop_zone]);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "Guardado")),
+    );
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let target = |name: &str| {
+        Target::Semantic(SemanticTarget {
+            name: Some(name.into()),
+            ..Default::default()
+        })
+    };
+    for action in [
+        Action::Invoke {
+            target: target("Guardar"),
+            action: "press".into(),
+        },
+        Action::Drag {
+            from: target("Guardar"),
+            to: target("Destino"),
+            duration_ms: 0,
+        },
+    ] {
+        let step = Step {
+            note: None,
+            action,
+            expect: None,
+            max_attempts: Some(1),
+            app: None,
+        };
+        engine.run_step(&step, &cfg());
+    }
+    let events = engine.events();
+    let proposed: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::ActionProposed)
+        .collect();
+    assert_eq!(proposed.len(), 2, "both acts must be proposed");
+    for ev in proposed {
+        assert!(
+            ev.data["target_bounds"].is_object(),
+            "ActionProposed must carry target_bounds for overlay presence: {}",
+            ev.data
+        );
+    }
+}
+
+#[test]
+fn training_journal_scrubs_action_payloads() {
+    // The Training journal keeps replayable structure — but typed/set
+    // values appear only as digest tokens, never plaintext.
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{TaskConfig, TraceMode};
+
+    let sim = SimDriver::new(vec![el(1, "text_field", "Cuenta")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    engine.set_trace_mode(TraceMode::Training);
+    let outcome = engine.run_task(
+        "type \"hunter2\" into cuenta",
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 2,
+            max_duration: None,
+            cancel: None,
+            done_when: ExpectedState::ElementValue {
+                target: SemanticTarget {
+                    name: Some("Cuenta".into()),
+                    ..Default::default()
+                },
+                predicate: ValuePredicate::Contains("hunter2".into()),
+            },
+        },
+    );
+    assert!(matches!(
+        outcome,
+        dexter_engine::TaskOutcome::Completed { .. }
+    ));
+    // The replay contract holds: the context still deserializes and
+    // every action payload rides as a digest token — the goal text
+    // itself is user input and stays verbatim, but no `Action` in the
+    // journal may carry its payload in plaintext.
+    let events = engine.events();
+    let ctx_event = events
+        .iter()
+        .find(|e| e.kind == EventKind::CandidatesGenerated)
+        .expect("candidates event");
+    let ctx = &ctx_event.data["context"];
+    let candidates = ctx["candidates"]
+        .as_array()
+        .expect("context keeps its shape");
+    let typed = candidates
+        .iter()
+        .map(|c| &c["action"])
+        .find(|a| a["type"] == "type_text" || a["text"].is_string())
+        .expect("a TypeText candidate exists");
+    let payload = typed["text"].as_str().unwrap_or_default();
+    assert!(
+        payload.starts_with("[redacted len=7 sha256="),
+        "candidate payload must be a digest token, got {payload:?}"
+    );
+    let decision_event = events
+        .iter()
+        .find(|e| e.kind == EventKind::DecisionMade)
+        .expect("decision event");
+    let decision = serde_json::to_string(&decision_event.data["decision"]).unwrap();
+    assert!(
+        !decision.contains("\"hunter2\""),
+        "decision action must not carry the plaintext payload"
     );
 }

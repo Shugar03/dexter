@@ -163,14 +163,21 @@ impl BrowserDriver {
         )
     }
 
-    /// The actions the live element currently advertises — the
-    /// fail-closed check `Invoke` shares with the AX path.
-    fn element_actions(&self, id: ElementId) -> Result<Vec<String>, DriverError> {
-        let obs = self.obs_cache.lock().unwrap();
-        Ok(obs
+    /// The actions the live element advertises — looked up in the
+    /// observation the id was minted from. Element ids are per-
+    /// observation sequential handles; searching across cached
+    /// observations could match a same-id element from a stale
+    /// snapshot and validate against the wrong world.
+    fn element_actions(
+        &self,
+        observation: ObservationId,
+        id: ElementId,
+    ) -> Result<Vec<String>, DriverError> {
+        let cache = self.obs_cache.lock().unwrap();
+        Ok(cache
             .iter()
-            .flat_map(|(_, els, _)| els.iter())
-            .find(|e| e.id == id)
+            .find(|(obs_id, _, _)| *obs_id == observation)
+            .and_then(|(_, els, _)| els.iter().find(|e| e.id == id))
             .map(|e| e.actions.clone())
             .unwrap_or_default())
     }
@@ -182,8 +189,10 @@ impl BrowserDriver {
         cache.truncate(4);
     }
 
-    /// Resolve a `Target` to the element id within the *current* walk.
-    fn resolve(&self, target: &Target) -> Result<ElementId, DriverError> {
+    /// Resolve a `Target` to the element id and the observation that
+    /// minted it — callers checking observation-scoped state (e.g.
+    /// advertised actions) must pin that same observation.
+    fn resolve(&self, target: &Target) -> Result<(ElementId, ObservationId), DriverError> {
         match target {
             Target::Element {
                 observation,
@@ -223,14 +232,14 @@ impl BrowserDriver {
                     *observation,
                     *element,
                 )?;
-                Ok(*element)
+                Ok((*element, *observation))
             }
             Target::Semantic(_) | Target::Focused => {
                 // Fresh observation + world-model resolution (ambiguous /
                 // not-found fail closed, same as macOS).
                 let obs = self.observe(&ObservationScope::default())?;
                 let el = dexter_driver::resolve::resolve_semantic(&obs, target)?;
-                Ok(el.id)
+                Ok((el.id, obs.id))
             }
             Target::Point { .. } | Target::Window { .. } => {
                 Err(DriverError::Unsupported("target is not an element".into()))
@@ -465,7 +474,17 @@ impl ComputerDriver for BrowserDriver {
                         format!("click count {count} out of range 1..=3"),
                     ));
                 }
-                let id = self.resolve(target)?;
+                // A context menu is a single semantic event — there is
+                // no "double right-click"; fail closed rather than
+                // silently degrading to one show_menu.
+                if !matches!(button, dexter_core::MouseButton::Left) && *count > 1 {
+                    return Ok(ActionResult::failure(
+                        ActionStatus::Unsupported,
+                        Mechanism::Dom,
+                        format!("multi-click count {count} only applies to the left button"),
+                    ));
+                }
+                let (id, _) = self.resolve(target)?;
                 let js = match (button, *count) {
                     (dexter_core::MouseButton::Right, _) => {
                         "el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true})); 'right-clicked'"
@@ -490,7 +509,7 @@ impl ComputerDriver for BrowserDriver {
                 .with_element(Some(id)))
             }
             Action::Invoke { target, action } => {
-                let id = self.resolve(target)?;
+                let (id, obs_id) = self.resolve(target)?;
                 // DOM/API mapping — only names the element advertises.
                 let js = match action.as_str() {
                     "press" | "open" => "el.click(); 'invoked'",
@@ -508,8 +527,9 @@ impl ComputerDriver for BrowserDriver {
                     }
                 };
                 // The element must still advertise the action — same
-                // fail-closed contract as AX.
-                let advertised = self.element_actions(id)?;
+                // fail-closed contract as AX, checked against the
+                // observation the resolved id was minted from.
+                let advertised = self.element_actions(obs_id, id)?;
                 if !advertised.iter().any(|a| a == action) {
                     return Ok(ActionResult::failure(
                         ActionStatus::Unsupported,
@@ -591,8 +611,8 @@ impl ComputerDriver for BrowserDriver {
                 duration_ms: _,
             } => {
                 // DOM event synthesis — never moves the OS cursor.
-                let a = self.resolve(from)?;
-                let b = self.resolve(to)?;
+                let (a, _) = self.resolve(from)?;
+                let (b, _) = self.resolve(to)?;
                 let resp = self.exec_on_args(
                     a,
                     "const to = window.__dexterNodes?.[a[0]]; \
@@ -643,7 +663,7 @@ impl ComputerDriver for BrowserDriver {
                         Some(format!("switched to tab (window {window_id})")),
                     ));
                 }
-                let id = self.resolve(target)?;
+                let (id, _) = self.resolve(target)?;
                 let resp = self.exec_on(id, "el.focus(); 'focused'")?;
                 if resp["__dexter_err"].is_string() {
                     return Err(DriverError::StaleReference("stale node".into()));
@@ -654,7 +674,7 @@ impl ComputerDriver for BrowserDriver {
                 )
             }
             Action::SetValue { target, value } => {
-                let id = self.resolve(target)?;
+                let (id, _) = self.resolve(target)?;
                 let resp = self.client.lock().unwrap().execute(
                     &format!(
                         "return (() => {{ const el = window.__dexterNodes?.[{}]; \
@@ -678,8 +698,8 @@ impl ComputerDriver for BrowserDriver {
             }
             Action::TypeText { text, target } => {
                 let t = target.clone().unwrap_or(Target::Focused);
-                let id = self.resolve(&t)?;
-                self.client.lock().unwrap().execute(
+                let (id, _) = self.resolve(&t)?;
+                let resp = self.client.lock().unwrap().execute(
                     &format!(
                         "return (() => {{ const el = window.__dexterNodes?.[{}]; \
                          if (!el) return {{__dexter_err:'stale node'}}; \
@@ -690,6 +710,9 @@ impl ComputerDriver for BrowserDriver {
                     ),
                     vec![json!(text)],
                 )?;
+                if resp["__dexter_err"].is_string() {
+                    return Err(DriverError::StaleReference("stale node".into()));
+                }
                 Ok(
                     ActionResult::success(Mechanism::Dom, Some(format!("typed into element {id}")))
                         .with_element(Some(id)),
@@ -725,7 +748,7 @@ impl ComputerDriver for BrowserDriver {
             }
             Action::Scroll { delta, target } => {
                 if let Some(t) = target {
-                    let id = self.resolve(t)?;
+                    let (id, _) = self.resolve(t)?;
                     self.exec_on(id, "el.scrollIntoView({block:'center'}); 'scrolled'")?;
                     return Ok(ActionResult::success(
                         Mechanism::Dom,

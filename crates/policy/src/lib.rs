@@ -378,24 +378,41 @@ fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 /// The payload an action carries, when it is content (not structure).
+/// Every content-bearing action binds its payload — a granted approval
+/// is never fungible across different text.
 fn payload_of(action: &Action) -> Option<&str> {
     match action {
         Action::TypeText { text, .. } => Some(text),
         Action::SetValue { value, .. } => Some(value),
+        Action::WriteClipboardText { text } => Some(text),
         _ => None,
     }
 }
 
-/// The target identity a grant binds — the fields stable across
-/// re-observation. Element and observation ids are ephemeral handles
-/// (regenerated per walk), so binding them would make a granted retry
-/// unmatchable; the SDD excludes them on purpose. Explicit point
+/// The target identity a grant binds. For element targets the minted
+/// element handle is bound — an approval is scoped to that element,
+/// not to any same-shaped target in the app. The observation id is
+/// *not* bound: it is a per-snapshot nonce and grant+retry re-observes,
+/// so binding it would make approvals unreachable. Semantic identity
+/// fields ride alongside so a grant still reads as "the Guardar
+/// button", not an opaque token — and under engine enrichment they
+/// make the fingerprint drift when the world changed. Explicit point
 /// coordinates stay: a point target *is* its coordinates.
 fn grant_target(t: &dexter_core::TargetDescriptor) -> serde_json::Value {
     serde_json::json!({
         "role": t.role,
         "name": t.name,
         "identifier": t.identifier,
+        // The element handle binds which element the grant covers;
+        // `observation` deliberately does not — it is a per-snapshot
+        // nonce, and binding it would make a granted approval
+        // unreachable once the world is re-observed (grant+retry).
+        // Element ids mint deterministically, so the same element
+        // re-observed in an unchanged world keeps its handle; when the
+        // engine's live observation matches the descriptor's,
+        // enrichment adds role/name/identifier on top, so a changed
+        // world still drifts the fingerprint back to needs_approval.
+        "element": t.element,
         "window_id": t.window_id,
         "point": t.point,
         "focused": t.focused,

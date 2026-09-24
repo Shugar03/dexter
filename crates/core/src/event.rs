@@ -38,15 +38,25 @@ pub enum EventKind {
 /// One structured event in the execution log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
+    /// Event record format version — v2 records carry `2`; the serde
+    /// default keeps v1 records (which had no field) parseable during
+    /// the migration window.
+    #[serde(default = "v1_schema_version")]
+    pub schema_version: u32,
     pub ts: SystemTime,
     pub kind: EventKind,
     /// Free-form JSON payload (ids and statuses — never secrets).
     pub data: serde_json::Value,
 }
 
+fn v1_schema_version() -> u32 {
+    1
+}
+
 impl Event {
     pub fn new(kind: EventKind, data: serde_json::Value) -> Self {
         Self {
+            schema_version: 2,
             ts: SystemTime::now(),
             kind,
             data,

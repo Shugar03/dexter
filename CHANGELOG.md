@@ -42,6 +42,64 @@
   object per clipboard/app lookup; stale-resolution `.expect()`
   replaced with a fail-closed error.
 
+### Fixed (runtime-reliability-v2 review, round 2)
+
+- `kCGMouseEventClickState` corrected to field 1 (`CGEventTypes.h`) —
+  multi-click counts were written into scroll-wheel field 23, so the
+  "real double-click" contract silently wasn't delivered. A regression
+  test now pins the CGEvent field ids to the SDK, matching the AXValue
+  precedent.
+- `write_clipboard_text` payloads now bind the approval fingerprint —
+  a grant for one clipboard text no longer covers another.
+- macOS `plan` no longer drops route metadata when the AX grant is
+  missing for actions that don't need it: clipboard and lifecycle
+  routes keep their mechanism and the `Secrets` sensitivity floor in
+  the degraded-permission case.
+- Browser `invoke` validates the element's advertised actions against
+  the observation its id was minted from — element ids collide across
+  cached snapshots, so a cross-observation search could approve
+  against the wrong world. `type_text` now checks the `__dexter_err`
+  stale sentinel like every other element act.
+- Secrets sensitivity is enforced at the engine seam for every
+  driver: a route into a secure/password field (role, subrole or raw
+  role) upgrades to `Secrets` before policy sees it. macOS sensitivity
+  now checks subrole as well as role, matching `Element::is_sensitive`.
+- Element-target approvals bind the `(element, observation)` pair —
+  a grant for one handle no longer covers a same-shaped element.
+- `execute` errors are verified before they are reported when an
+  expectation exists: a timed-out delivery report can postdate the
+  side effect, so the verify poll runs first — a landed effect
+  completes with `result: null` and the verification as the verdict
+  (the SDD's "verify before considering another action" contract).
+- Training-mode journal events scrub action payloads — typed, set and
+  clipboard values appear only as `{len, sha256}` digest tokens while
+  the context stays deserializable for replay. The redaction contract
+  ("never in any mode") now actually holds.
+- `ActionProposed` carries `target_bounds` for `invoke` and `drag`,
+  closing the overlay presence gap.
+- Menu targets under a pinned `window_scope` derive no expectation —
+  menu elements are signature-excluded and the menu window can't enter
+  the pinned list, so `WorldChanged` would poll for an invisible
+  change.
+- `click.count` above 1 on a non-left button is refused on macOS and
+  browser — a context menu is a single event, and `right x2` no longer
+  silently degrades to one `show_menu`/`contextmenu`.
+- `element_value` verification is honest under mixed sensitivity: a
+  redacted secure-field candidate alongside visible candidates yields
+  `uncertain`/`redacted_value`, not `failed` — the hidden value could
+  hold the expected text.
+- AX `walk` no longer abandons sibling subtrees at the first
+  depth-boundary node — depth truncation marks the tree partial but
+  every branch within the element budget is still visited; only the
+  element cap is a hard stop.
+- The unused `AXRoleDescription` attribute was dropped from the
+  batched read — one fewer slot fetched per element.
+- `Event` records now carry `schema_version: 2` (serde default 1) per
+  the agent-contract SDD. The dead `Effect`/`Escalation`/
+  `classify_effect`/`classified` vocabulary was removed — the live
+  taxonomy is the journal's `effect` string computed from verification
+  status.
+
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:

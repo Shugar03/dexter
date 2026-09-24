@@ -112,9 +112,11 @@ pub const K_CG_EVENT_RIGHT_UP: u32 = 4;
 pub const K_CG_EVENT_LEFT_DRAGGED: u32 = 6;
 pub const K_CG_EVENT_MIDDLE_DOWN: u32 = 10;
 pub const K_CG_EVENT_MIDDLE_UP: u32 = 11;
-/// `kCGMouseEventClickState` — integer field carrying the click count
-/// (1 = single, 2 = double, ...) on mouse down/up events.
-pub const K_CG_MOUSE_EVENT_CLICK_STATE: u32 = 23;
+/// `kCGMouseEventClickState` (`CGEventTypes.h`) — the click-count
+/// field on mouse down/up events (1 = single, 2 = double...). Field
+/// 23 is a scroll-wheel delta axis — the wrong constant here silently
+/// downgraded multi-clicks to repeated singles.
+pub const K_CG_MOUSE_EVENT_CLICK_STATE: u32 = 1;
 /// CGEventTapLocation — post at the HID level (before session routing).
 pub const K_CG_HID_EVENT_TAP: u32 = 0;
 /// Mouse buttons for CGEventCreateMouseEvent.
@@ -143,5 +145,17 @@ mod tests {
                                                 // 3 is kAXValueCGRectType, 4 is kAXValueCFRangeType — neither
                                                 // is the error slot.
         assert_eq!(K_AX_VALUE_AX_ERROR_TYPE, 5); // kAXValueAXErrorType
+    }
+
+    // CGEvent field ids are fixed by `CGEventTypes.h`: click state is
+    // field 1 — writing the count anywhere else degrades multi-clicks
+    // to repeated singles the OS happens to merge.
+    #[test]
+    fn cg_event_field_constants_match_the_sdk() {
+        assert_eq!(K_CG_MOUSE_EVENT_CLICK_STATE, 1); // kCGMouseEventClickState
+        assert_eq!(K_CG_EVENT_LEFT_DOWN, 1); // kCGEventLeftMouseDown
+        assert_eq!(K_CG_EVENT_LEFT_UP, 2); // kCGEventLeftMouseUp
+        assert_eq!(K_CG_EVENT_RIGHT_DOWN, 3); // kCGEventRightMouseDown
+        assert_eq!(K_CG_EVENT_RIGHT_UP, 4); // kCGEventRightMouseUp
     }
 }

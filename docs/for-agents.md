@@ -145,7 +145,8 @@ Notes worth knowing:
 
 - **`click.count` 2–3** plans the element's advertised `open` action
   when it exists (double-click = open); a physical multi-click is the
-  gated last resort.
+  gated last resort. `count` above 1 on a non-left button is refused —
+  a context menu is a single event, there is no double right-click.
 - **`key`** tries a semantic menu route first: the chord is matched
   against menu items' advertised shortcuts and `AXPress`ed — the
   physical keyboard is only used when no menu advertises the chord
@@ -178,9 +179,17 @@ Notes worth knowing:
 - **Some actions are intentionally unverifiable** — the world model
   cannot express a reliable effect for them, so they run with
   `verification: null` rather than a fake check: `window` ops,
-  clipboard reads/writes, `key`, `scroll`, `navigate`, `wait` and
-  `click` on raw `{"point"}` coordinates. Where the API accepts an
-  explicit `expect`, you may still supply one.
+  clipboard reads/writes, `key`, `scroll`, `navigate`, `wait`,
+  `click` on raw `{"point"}` coordinates, and menu elements under a
+  pinned `--window` scope (the menu's effect lives outside the pinned
+  window). Where the API accepts an explicit `expect`, you may still
+  supply one.
+- **A delivery error is verified before it is reported**: when
+  `execute` fails but an expectation exists — a timed-out reply can
+  postdate the side effect — Dexter runs the verify poll first. If the
+  expected state holds, the step completes with `result: null` and the
+  verification as the verdict; only then does an unverifiable error
+  surface.
 - **Secure fields are unverifiable by design**: `type_text`/`set_value`
   into a password or other secure field never derives a value
   expectation — the field's value is redacted at collection, so a

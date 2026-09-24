@@ -20,8 +20,7 @@ pub use event::{Event, EventKind};
 pub use execution::{ExecutionPlan, ExecutionRoute, Sensitivity, TargetDescriptor};
 pub use observation::{AppSelector, Observation, ObservationId, ObservationScope, Window};
 pub use result::{
-    classify_effect, ActionResult, ActionStatus, Effect, Escalation, EscalationReason,
-    EscalationTarget, Mechanism, UnknownReason, Verification, VerificationStatus,
+    ActionResult, ActionStatus, Mechanism, UnknownReason, Verification, VerificationStatus,
 };
 pub use target::{ExpectedState, SemanticTarget, Target, ValuePredicate};
 

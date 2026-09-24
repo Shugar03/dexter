@@ -241,8 +241,10 @@ pub fn signature(obs: &Observation) -> u64 {
 
 /// Menu-catalog roles — `AXMenu*` raw or the normalized equivalents.
 /// Counted out of [`signature`] so menu-presence differences between
-/// observations never read as world changes.
-fn is_menu_element(e: &Element) -> bool {
+/// observations never read as world changes. Also used by the engine:
+/// an expectation that only a menu's appearance could satisfy is
+/// unverifiable wherever menu windows can't be observed.
+pub fn is_menu_element(e: &Element) -> bool {
     e.raw_role
         .as_deref()
         .is_some_and(|r| r.starts_with("AXMenu"))

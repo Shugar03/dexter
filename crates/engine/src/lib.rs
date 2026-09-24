@@ -19,8 +19,8 @@
 
 use dexter_core::{
     Action, ActionResult, ActionStatus, AppSelector, Event, EventKind, ExecutionRoute,
-    ExpectedState, Observation, ObservationScope, Rect, SemanticTarget, Target, ValuePredicate,
-    Verification, VerificationStatus,
+    ExpectedState, Observation, ObservationScope, Rect, SemanticTarget, Sensitivity, Target,
+    ValuePredicate, Verification, VerificationStatus,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverError, WakeHandle};
 use dexter_policy::{ActionContext, ApprovalStore, Policy, PolicyDecision};
@@ -47,12 +47,23 @@ pub struct Step {
     pub app: Option<AppSelector>,
 }
 
+/// The verify-poll's terminal verdict plus the attempts it spent —
+/// carried back so the caller shapes `StepStatus` without re-deriving.
+#[derive(Debug)]
+struct PollOutcome {
+    verification: Verification,
+    attempts: u32,
+}
+
 /// How a step ended.
 #[derive(Debug)]
 pub enum StepStatus {
     /// Action executed (and expectation verified, when present).
     Done {
-        result: ActionResult,
+        /// The driver's delivery report — `None` when execute errored
+        /// but the expectation verified anyway (the side effect landed
+        /// despite the broken report; there is no result to relay).
+        result: Option<ActionResult>,
         verification: Option<Verification>,
         attempts: u32,
     },
@@ -134,7 +145,8 @@ impl Default for RunConfig {
 /// decision contexts — the public trail agents and operators read.
 /// `Training` keeps the full decision context (`CandidatesGenerated`
 /// `context`, full `DecisionMade`) for the eval harness to replay —
-/// a private capture, never the MCP-facing journal.
+/// still payload-scrubbed: typed/set/clipboard secrets appear only as
+/// digest tokens, in every mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TraceMode {
     #[default]
@@ -311,7 +323,7 @@ impl<D: ComputerDriver> Engine<D> {
         let step = if step.expect.is_none() {
             derived = obs
                 .as_ref()
-                .and_then(|o| derive_expect(&step.action, o))
+                .and_then(|o| derive_expect(&step.action, o, cfg.window_scope.is_some()))
                 .map(|e| Step {
                     expect: Some(e),
                     ..step.clone()
@@ -426,12 +438,17 @@ impl<D: ComputerDriver> Engine<D> {
         // resolved them — fill role/name/identifier from the live
         // observation so policy `target` matchers and the grant
         // fingerprint see semantic identity, not ephemeral handles.
+        // The secrets floor rides the same resolution: an element the
+        // driver marked sensitive upgrades the route before policy sees
+        // it, on every driver.
         for route in &mut routes {
             enrich_descriptor(&mut route.target, obs);
+            enforce_sensitivity_floor(route, obs);
         }
 
         let bounds = target_bounds(&step.action, obs);
         let mut executed: Option<ActionResult> = None;
+        let mut exec_error: Option<DriverError> = None;
         let mut last_refusal = String::from("no route executed");
 
         // AUTHORIZE + EXECUTE — each route independently. One approval
@@ -504,6 +521,16 @@ impl<D: ComputerDriver> Engine<D> {
                         EventKind::ActionFailed,
                         serde_json::json!({"error": e.to_string(), "route": index}),
                     );
+                    // A delivery error can postdate the side effect —
+                    // a timed-out reply after the text was typed, a
+                    // dropped IPC after the click landed. With an
+                    // expectation to check, verify before declaring the
+                    // act dead (SDD recovery-v2); without one, the
+                    // error is the only verdict there is.
+                    if step.expect.is_some() {
+                        exec_error = Some(e);
+                        break;
+                    }
                     return StepStatus::Errored { error: e };
                 }
             };
@@ -577,6 +604,21 @@ impl<D: ComputerDriver> Engine<D> {
         }
 
         let Some(result) = executed else {
+            // Execute errored with an expectation in hand: run the
+            // verify-poll before reporting — the side effect may have
+            // landed despite the broken delivery report.
+            if let (Some(e), Some(expected)) = (exec_error, step.expect.as_ref()) {
+                return match self.verify_poll(expected, step, cfg, &app) {
+                    Ok(p) if p.verification.status == VerificationStatus::Verified => {
+                        StepStatus::Done {
+                            result: None,
+                            verification: Some(p.verification),
+                            attempts: p.attempts,
+                        }
+                    }
+                    _ => StepStatus::Errored { error: e },
+                };
+            }
             return StepStatus::Failed {
                 reason: format!("every planned route refused — last: {last_refusal}"),
                 attempts: routes.len() as u32,
@@ -585,20 +627,47 @@ impl<D: ComputerDriver> Engine<D> {
 
         let Some(expected) = &step.expect else {
             return StepStatus::Done {
-                result,
+                result: Some(result),
                 verification: None,
                 attempts: 1,
             };
         };
 
-        // VERIFY-POLL — the world may need time to reach the expected
-        // state; re-observe, never re-execute. `max_attempts` is the v1
-        // alias for the poll bound (renamed `verify_attempts` upstream).
-        // The first poll runs immediately — most effects land
-        // synchronously (AX updates are not async); the settle delay
-        // only pays between failed polls.
+        match self.verify_poll(expected, step, cfg, &app) {
+            Ok(p) if p.verification.status == VerificationStatus::Verified => StepStatus::Done {
+                result: Some(result),
+                verification: Some(p.verification),
+                attempts: p.attempts,
+            },
+            Ok(p) => StepStatus::Failed {
+                reason: format!(
+                    "verification never reached VERIFIED — last: {:?}: {}",
+                    p.verification.status,
+                    p.verification.checks.join(" | ")
+                ),
+                attempts: p.attempts,
+            },
+            Err(e) => StepStatus::Errored { error: e },
+        }
+    }
+
+    /// VERIFY-POLL — the world may need time to reach the expected
+    /// state; re-observe, never re-execute. `max_attempts` is the v1
+    /// alias for the poll bound (renamed `verify_attempts` upstream).
+    /// The first poll runs immediately — most effects land
+    /// synchronously (AX updates are not async); the settle delay only
+    /// pays between failed polls. Returns the last verdict with its
+    /// attempt count; `Err` when re-observation itself failed — no
+    /// verdict exists then.
+    fn verify_poll(
+        &mut self,
+        expected: &ExpectedState,
+        step: &Step,
+        cfg: &RunConfig,
+        app: &Option<AppSelector>,
+    ) -> Result<PollOutcome, DriverError> {
         let verify_attempts = step.max_attempts.unwrap_or(cfg.max_attempts).max(1);
-        let mut last_detail = String::new();
+        let mut last: Option<Verification> = None;
         for attempt in 1..=verify_attempts {
             if attempt > 1 {
                 self.journal(
@@ -630,7 +699,7 @@ impl<D: ComputerDriver> Engine<D> {
                         EventKind::ActionFailed,
                         serde_json::json!({"error": format!("verify observe: {e}"), "attempt": attempt}),
                     );
-                    return StepStatus::Errored { error: e };
+                    return Err(e);
                 }
             };
             let observe_ms = observe_start.elapsed().as_millis() as u64;
@@ -675,24 +744,20 @@ impl<D: ComputerDriver> Engine<D> {
                     "verify_ms": verify_ms,
                 }),
             );
-            match verification.status {
-                VerificationStatus::Verified => {
-                    return StepStatus::Done {
-                        result,
-                        verification: Some(verification),
-                        attempts: attempt,
-                    };
-                }
-                other => {
-                    last_detail = format!("{:?}: {}", other, verification.checks.join(" | "));
-                }
+            if verification.status == VerificationStatus::Verified {
+                return Ok(PollOutcome {
+                    verification,
+                    attempts: attempt,
+                });
             }
+            last = Some(verification);
         }
 
-        StepStatus::Failed {
-            reason: format!("verification never reached VERIFIED — last: {last_detail}"),
+        Ok(PollOutcome {
+            verification: last
+                .unwrap_or_else(|| Verification::failed(vec!["no verification ran".into()])),
             attempts: verify_attempts,
-        }
+        })
     }
 
     /// Run steps in order; stop at the first non-Done outcome.
@@ -973,7 +1038,7 @@ impl<D: ComputerDriver> Engine<D> {
                     TraceMode::Training => serde_json::json!({
                         "count": ctx.candidates.len(),
                         "step": step,
-                        "context": &ctx,
+                        "context": audit::training_context(&ctx),
                     }),
                     TraceMode::Audit => audit::candidates_summary(&ctx),
                 },
@@ -995,7 +1060,10 @@ impl<D: ComputerDriver> Engine<D> {
                 serde_json::json!({
                     "engine": decider.name(),
                     "decision": match self.trace {
-                        TraceMode::Training => serde_json::to_value(&decision).unwrap_or_default(),
+                        TraceMode::Training => {
+                            serde_json::to_value(audit::training_decision(&decision))
+                                .unwrap_or_default()
+                        }
                         TraceMode::Audit => audit::decision_summary(&decision),
                     },
                     "step": step,
@@ -1013,7 +1081,7 @@ impl<D: ComputerDriver> Engine<D> {
                     // progress is judged by done_when AND by evidence the
                     // act itself landed. Acts the model can't express an
                     // outcome for stay unverified, honestly.
-                    let expect = derive_expect(&action, &obs);
+                    let expect = derive_expect(&action, &obs, cfg.run.window_scope.is_some());
                     let status = self.run_step_inner(
                         &Step {
                             note: Some(rationale),
@@ -1227,6 +1295,51 @@ pub(crate) mod audit {
         }
     }
 
+    /// Replace a payload string with its digest token — the action
+    /// keeps its serde shape so the context still deserializes and
+    /// replays, while the secret never lands on disk. Identical
+    /// payloads produce identical tokens, so training rows keep their
+    /// equality signal.
+    pub fn scrub_action_payload(action: &mut Action) {
+        let token = |text: &mut String| {
+            *text = format!(
+                "[redacted len={} sha256={}]",
+                text.len(),
+                dexter_policy::payload_digest(text)
+            );
+        };
+        match action {
+            Action::TypeText { text, .. } => token(text),
+            Action::SetValue { value, .. } => token(value),
+            Action::WriteClipboardText { text } => token(text),
+            _ => {}
+        }
+    }
+
+    /// A `DecisionContext` with candidate payloads scrubbed — the
+    /// Training journal keeps the full replayable structure (the eval
+    /// harness re-feeds it to a `DecisionEngine`) but typed/set/
+    /// clipboard secrets never leave the process.
+    pub fn training_context(
+        ctx: &dexter_decision::DecisionContext,
+    ) -> dexter_decision::DecisionContext {
+        let mut ctx = ctx.clone();
+        for c in &mut ctx.candidates {
+            scrub_action_payload(&mut c.action);
+        }
+        ctx
+    }
+
+    /// A `Decision` with its action payload scrubbed — same serde
+    /// shape, so `rows_from_events` still reads `candidate_index`.
+    pub fn training_decision(decision: &dexter_decision::Decision) -> dexter_decision::Decision {
+        let mut d = decision.clone();
+        if let dexter_decision::Decision::Act { action, .. } = &mut d {
+            scrub_action_payload(action);
+        }
+        d
+    }
+
     /// The `CandidatesGenerated` payload for the public audit trail:
     /// counts and digests, no world contents and no candidate payloads.
     pub fn candidates_summary(ctx: &dexter_decision::DecisionContext) -> serde_json::Value {
@@ -1259,8 +1372,11 @@ fn bounds_need_observation(action: &Action) -> bool {
     let target = match action {
         Action::Click { target, .. }
         | Action::Focus { target }
+        | Action::Invoke { target, .. }
         | Action::SetValue { target, .. } => Some(target),
         Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
+        // Presence lands where the press does — the drag's source.
+        Action::Drag { from, .. } => Some(from),
         _ => None,
     };
     matches!(target, Some(t) if !matches!(t, Target::Point { .. }))
@@ -1270,8 +1386,11 @@ fn target_bounds(action: &Action, obs: Option<&Observation>) -> Option<Rect> {
     let target = match action {
         Action::Click { target, .. }
         | Action::Focus { target }
+        | Action::Invoke { target, .. }
         | Action::SetValue { target, .. } => Some(target),
         Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
+        // The overlay draws where the press lands — the drag's source.
+        Action::Drag { from, .. } => Some(from),
         _ => None,
     }?;
     match target {
@@ -1386,6 +1505,29 @@ fn enrich_descriptor(desc: &mut dexter_core::TargetDescriptor, obs: Option<&Obse
         if desc.identifier.is_none() {
             desc.identifier = el.identifier.clone();
         }
+    }
+}
+
+/// The secrets floor is driver-agnostic: an element-bound route whose
+/// resolved element (or declared role) is a secure/password field
+/// upgrades to `Secrets` here — a standard-scope grant can never
+/// silently cover a sensitive target, whatever the driver declared.
+fn enforce_sensitivity_floor(route: &mut ExecutionRoute, obs: Option<&Observation>) {
+    let desc = &route.target;
+    let sensitive = desc
+        .role
+        .as_deref()
+        .is_some_and(dexter_core::is_sensitive_role)
+        || desc
+            .element
+            .zip(desc.observation)
+            .and_then(|(el_id, obs_id)| {
+                obs.filter(|o| o.id == obs_id)
+                    .and_then(|o| o.elements.iter().find(|e| e.id == el_id))
+            })
+            .is_some_and(|e| e.is_sensitive());
+    if sensitive {
+        route.sensitivity = Sensitivity::Secrets;
     }
 }
 
@@ -1509,10 +1651,22 @@ fn semantic_for(target: &Target, obs: &Observation) -> Option<SemanticTarget> {
 /// Navigate, Wait, Observe, point clicks — return `None` and stay on
 /// the unverified path rather than carrying a check that cannot fail
 /// honestly.
-fn derive_expect(action: &Action, obs: &Observation) -> Option<ExpectedState> {
+fn derive_expect(action: &Action, obs: &Observation, window_scoped: bool) -> Option<ExpectedState> {
+    // A menu target under a pinned window scope has no observable
+    // effect: menu elements are signature-excluded and the menu window
+    // can't enter the pinned window list, so `WorldChanged` would poll
+    // the full budget for a change it cannot see. Honestly
+    // unverifiable — better `None` than a guaranteed false failure.
+    let menu_target = |t: &Target| -> bool {
+        window_scoped
+            && dexter_world_model::resolve_element(obs, t)
+                .map(dexter_world_model::is_menu_element)
+                .unwrap_or(false)
+    };
     match action {
         Action::Click { target, .. } => match target {
             Target::Point { .. } => None,
+            t if menu_target(t) => None,
             _ => Some(ExpectedState::WorldChanged {
                 from: dexter_world_model::signature(obs),
             }),
@@ -1543,6 +1697,8 @@ fn derive_expect(action: &Action, obs: &Observation) -> Option<ExpectedState> {
             semantic_for(target, obs).map(|st| ExpectedState::FocusedElement { target: st })
         }
         // Invoke/Drag: effect unpredictable — the world must change.
+        Action::Invoke { target, .. } if menu_target(target) => None,
+        Action::Drag { from, .. } if menu_target(from) => None,
         Action::Invoke { .. } | Action::Drag { .. } => Some(ExpectedState::WorldChanged {
             from: dexter_world_model::signature(obs),
         }),

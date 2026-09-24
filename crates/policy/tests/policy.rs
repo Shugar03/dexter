@@ -477,3 +477,51 @@ decision = "allow"
         other => panic!("explicit rule should win over the floor, got {other:?}"),
     }
 }
+
+#[test]
+fn clipboard_write_payload_binds_the_fingerprint() {
+    // A secrets-tier clipboard write digests its text like TypeText /
+    // SetValue do — an approval for one payload must never cover
+    // another.
+    let a = Action::WriteClipboardText {
+        text: "first".into(),
+    };
+    let b = Action::WriteClipboardText {
+        text: "second".into(),
+    };
+    assert_ne!(
+        dexter_policy::fingerprint(&a, &ctx(None)),
+        dexter_policy::fingerprint(&b, &ctx(None)),
+    );
+}
+
+#[test]
+fn element_target_ids_bind_the_fingerprint() {
+    // An element route binds its minted element handle — a grant for
+    // element 4 never covers a same-shaped click on element 7. The
+    // observation nonce is deliberately *not* bound: grant+retry
+    // re-observes, so the same element under a fresh observation id
+    // must reproduce the fingerprint or approvals would be
+    // unreachable.
+    let route = |obs, el| ExecutionRoute {
+        action: click(),
+        target: dexter_core::TargetDescriptor {
+            observation: Some(dexter_core::ObservationId(obs)),
+            element: Some(dexter_core::ElementId(el)),
+            ..Default::default()
+        },
+        mechanism: Some(dexter_core::Mechanism::Accessibility),
+        intrusiveness: dexter_core::Intrusiveness::Physical,
+        sensitivity: dexter_core::Sensitivity::Standard,
+        requires_foreground: false,
+    };
+    let c = ctx(None);
+    assert_ne!(
+        dexter_policy::fingerprint_route(&route(12, 4), &c),
+        dexter_policy::fingerprint_route(&route(12, 7), &c),
+    );
+    assert_eq!(
+        dexter_policy::fingerprint_route(&route(12, 4), &c),
+        dexter_policy::fingerprint_route(&route(13, 4), &c),
+    );
+}

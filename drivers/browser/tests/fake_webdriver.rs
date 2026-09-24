@@ -53,6 +53,12 @@ struct FakeServer {
     /// Toggle: make the walker return a *different* tree to simulate a
     /// mutated DOM (stale detection test).
     mutated: Arc<Mutex<bool>>,
+    /// Toggle: non-walker scripts return the `__dexter_err` sentinel —
+    /// what a real page answers when the node handle is gone.
+    stale: Arc<Mutex<bool>>,
+    /// Toggle: the walker reports element 3 without `press` — a DOM
+    /// whose advertised actions changed between observations.
+    actions_mutated: Arc<Mutex<bool>>,
     /// Report N iframe collection errors from the walker result.
     iframe_errors: Arc<Mutex<u32>>,
 }
@@ -65,13 +71,17 @@ fn fake_webdriver() -> FakeServer {
     let scripts = Arc::new(Mutex::new(Vec::new()));
     let args = Arc::new(Mutex::new(Vec::new()));
     let mutated = Arc::new(Mutex::new(false));
+    let stale = Arc::new(Mutex::new(false));
+    let actions_mutated = Arc::new(Mutex::new(false));
     let handles = Arc::new(Mutex::new(vec!["h1".to_string()]));
     let current = Arc::new(Mutex::new("h1".to_string()));
     let iframe_errors = Arc::new(Mutex::new(0u32));
-    let (s2, a2, m2, h2, c2, e2) = (
+    let (s2, a2, m2, st2, am2, h2, c2, e2) = (
         scripts.clone(),
         args.clone(),
         mutated.clone(),
+        stale.clone(),
+        actions_mutated.clone(),
         handles.clone(),
         current.clone(),
         iframe_errors.clone(),
@@ -177,14 +187,18 @@ fn fake_webdriver() -> FakeServer {
                     a2.lock().unwrap().push(parsed["args"].clone());
                     if script.contains("__dexterNodes = nodes") {
                         let errs = *e2.lock().unwrap();
+                        let mut fx = walker_fixture();
                         if *m2.lock().unwrap() {
                             // DOM changed: "Pay now" renamed → stale.
-                            let mut fx = walker_fixture();
                             fx[3]["name"] = json!("Confirm payment");
-                            json!({"value":{"elements":fx,"errors":errs}})
-                        } else {
-                            json!({"value":{"elements":walker_fixture(),"errors":errs}})
                         }
+                        if *am2.lock().unwrap() {
+                            // Element 3 stopped advertising `press`.
+                            fx[3]["actions"] = json!(["scroll_into_view"]);
+                        }
+                        json!({"value":{"elements":fx,"errors":errs}})
+                    } else if *st2.lock().unwrap() {
+                        json!({"value":{"__dexter_err":"stale node"}})
                     } else {
                         json!({"value":"ok"})
                     }
@@ -211,6 +225,8 @@ fn fake_webdriver() -> FakeServer {
         scripts,
         args,
         mutated,
+        stale,
+        actions_mutated,
         iframe_errors,
     }
 }
@@ -756,4 +772,109 @@ fn drag_dispatches_press_on_source_and_drop_on_destination() {
         .map(|(a, b)| (a.to_string(), b.to_string())),
     );
     assert_eq!(got, want);
+}
+
+#[test]
+fn right_multi_click_is_rejected_not_degraded() {
+    // `right x2` has no semantics — a context menu is one event. The
+    // driver must refuse, not silently dispatch a single contextmenu.
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let result = driver
+        .act(
+            &Action::Click {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("button".into()),
+                    name: Some("Pay now".into()),
+                    ..Default::default()
+                }),
+                button: MouseButton::Right,
+                count: 2,
+            },
+            &ActContext::default(),
+        )
+        .expect("click returns a verdict");
+
+    assert_eq!(result.status, dexter_core::ActionStatus::Unsupported);
+    assert!(
+        server
+            .scripts
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|s| !s.contains("contextmenu")),
+        "no contextmenu may be dispatched for a refused count"
+    );
+}
+
+#[test]
+fn type_text_reports_stale_sentinel() {
+    // A node handle gone between resolve and dispatch must surface
+    // `StaleReference`, never a fabricated success.
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+    *server.stale.lock().unwrap() = true;
+
+    let err = driver
+        .act(
+            &Action::TypeText {
+                text: "4242".into(),
+                target: Some(Target::Semantic(SemanticTarget {
+                    role: Some("text_field".into()),
+                    name: Some("Card number".into()),
+                    ..Default::default()
+                })),
+            },
+            &ActContext::default(),
+        )
+        .expect_err("stale node must not report success");
+
+    assert!(
+        matches!(err, DriverError::StaleReference(_)),
+        "expected StaleReference, got {err:?}"
+    );
+}
+
+#[test]
+fn invoke_checks_advertised_actions_of_its_own_observation() {
+    // Element ids are per-observation handles — the advertised-action
+    // check must read the observation the id was minted from, not a
+    // same-id element in a newer snapshot.
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    // obs1: element 3 advertises `press`.
+    let obs1 = driver.observe(&ObservationScope::default()).unwrap();
+    // obs2: same tree except element 3 no longer advertises `press` —
+    // the collision the unpinned lookup would hit first.
+    *server.actions_mutated.lock().unwrap() = true;
+    let _obs2 = driver.observe(&ObservationScope::default()).unwrap();
+
+    // The element's identity is unchanged (name/role/bounds match), so
+    // resolution succeeds and the action list must come from obs1 —
+    // where `press` was advertised.
+    let result = driver.act(
+        &Action::Invoke {
+            target: Target::Element {
+                observation: obs1.id,
+                element: dexter_core::ElementId(3),
+            },
+            action: "press".into(),
+        },
+        &ActContext::default(),
+    );
+    assert!(
+        matches!(&result, Ok(r) if r.status.ok()),
+        "invoke must validate against the minting observation: {result:?}"
+    );
+    assert!(
+        server
+            .scripts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.contains("el.click()")),
+        "the press dispatch must run"
+    );
 }

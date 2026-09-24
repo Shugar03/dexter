@@ -428,6 +428,17 @@ pub fn act(
                     "window targets not implemented — use semantic or element targets",
                 )),
                 _ => {
+                    // A context menu is one semantic event — there is
+                    // no "double right-click". Refuse up front rather
+                    // than silently degrading `right x2` to one
+                    // show_menu after resolving.
+                    if !matches!(button, MouseButton::Left) && *count > 1 {
+                        return Ok(ActionResult::failure(
+                            ActionStatus::Unsupported,
+                            Mechanism::Accessibility,
+                            format!("multi-click count {count} only applies to the left button"),
+                        ));
+                    }
                     let r = resolve_element(target, ctx, cache)?;
                     // v2: a multi-click on an element advertising `open`
                     // is a semantic open — never a physical double-click.
@@ -805,8 +816,14 @@ fn cg_route(action: &Action, target: TargetDescriptor, sensitivity: Sensitivity)
 /// approval fingerprint binds sensitivity, so a standard grant never
 /// silently covers a secrets field.
 fn sensitivity_of(r: &Resolved) -> Sensitivity {
-    let role = r.el.role().ok().map(|s| s.to_string());
-    if role.as_deref().is_some_and(ax::is_sensitive_role) {
+    // Role AND subrole — `Element::is_sensitive` checks all three
+    // fields; an element sensitive only via subrole must not slip
+    // through with a Standard route.
+    let sensitive = [r.el.role().ok(), r.el.subrole().ok()]
+        .into_iter()
+        .flatten()
+        .any(|s| ax::is_sensitive_role(&s.to_string()));
+    if sensitive {
         Sensitivity::Secrets
     } else {
         Sensitivity::Standard
@@ -868,9 +885,21 @@ pub fn plan(
     ctx: &ActContext,
     cache: &ObsCache,
 ) -> Result<ExecutionPlan, DriverError> {
-    // Without the AX grant act() refuses every action the same way — no
-    // honest route exists, so keep that verdict on the legacy route.
-    if !permissions::accessibility_trusted() {
+    plan_inner(action, ctx, cache, permissions::accessibility_trusted())
+}
+
+fn plan_inner(
+    action: &Action,
+    ctx: &ActContext,
+    cache: &ObsCache,
+    ax_trusted: bool,
+) -> Result<ExecutionPlan, DriverError> {
+    // Without the AX grant, AX-needing actions have no honest route —
+    // keep act()'s refusal verdict on the legacy route. Clipboard and
+    // lifecycle actions don't need the grant: they still plan their
+    // real routes so policy sees mechanism + sensitivity (the secrets
+    // floor must not silently drop in the degraded-permission case).
+    if !ax_trusted && needs_ax(action) {
         return Ok(ExecutionPlan::legacy(action));
     }
     let plan = match action {
@@ -1147,5 +1176,44 @@ mod tests {
             "Window::New must plan empty, got {:?}",
             plan.routes
         );
+    }
+
+    #[test]
+    fn degraded_permissions_keep_non_ax_route_metadata() {
+        // Without the AX grant a clipboard write still plans its real
+        // route — the secrets floor must not silently drop exactly in
+        // the degraded-permission case.
+        let write = Action::WriteClipboardText { text: "x".into() };
+        let plan = plan_inner(&write, &ActContext::default(), &ObsCache::new(), false).unwrap();
+        assert_eq!(plan.routes.len(), 1);
+        assert_eq!(plan.routes[0].sensitivity, Sensitivity::Secrets);
+        assert_eq!(plan.routes[0].mechanism, Some(Mechanism::Api));
+
+        // An AX-needing action still collapses to the legacy refusal.
+        let click = Action::Click {
+            target: Target::Focused,
+            button: MouseButton::Left,
+            count: 1,
+        };
+        let plan = plan_inner(&click, &ActContext::default(), &ObsCache::new(), false).unwrap();
+        assert!(
+            plan.routes.len() == 1 && plan.routes[0].mechanism.is_none(),
+            "AX-needing action must keep the legacy refusal, got {:?}",
+            plan.routes
+        );
+    }
+
+    #[test]
+    fn non_left_multi_click_is_rejected_before_resolving() {
+        // `right x2` has no semantics — a context menu is one event.
+        // The refusal fires before element resolution, so it needs no
+        // AX grant to be observable.
+        let click = Action::Click {
+            target: Target::Focused,
+            button: MouseButton::Right,
+            count: 2,
+        };
+        let result = act(&click, &ActContext::default(), &ObsCache::new(), None).unwrap();
+        assert_eq!(result.status, ActionStatus::Unsupported);
     }
 }

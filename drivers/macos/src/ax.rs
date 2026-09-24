@@ -259,12 +259,11 @@ fn action_names(el: &AXUIElement) -> Vec<String> {
 /// roundtrip (`AXUIElementCopyMultipleAttributeValues`) instead of a
 /// dozen. Failed slots arrive as AXValue-wrapped AXError and decode to
 /// `None` — same per-attribute tolerance as individual reads.
-const BATCH_ATTRS: [&str; 14] = [
+const BATCH_ATTRS: [&str; 13] = [
     "AXRole",
     "AXSubrole",
     "AXTitle",
     "AXDescription",
-    "AXRoleDescription",
     "AXIdentifier",
     "AXValue",
     "AXEnabled",
@@ -279,15 +278,15 @@ const I_ROLE: usize = 0;
 const I_SUBROLE: usize = 1;
 const I_TITLE: usize = 2;
 const I_DESC: usize = 3;
-const I_IDENT: usize = 5;
-const I_VALUE: usize = 6;
-const I_ENABLED: usize = 7;
-const I_FOCUSED: usize = 8;
-const I_POS: usize = 9;
-const I_SIZE: usize = 10;
-const I_CHILDREN: usize = 11;
-const I_CMDCHAR: usize = 12;
-const I_CMDMODS: usize = 13;
+const I_IDENT: usize = 4;
+const I_VALUE: usize = 5;
+const I_ENABLED: usize = 6;
+const I_FOCUSED: usize = 7;
+const I_POS: usize = 8;
+const I_SIZE: usize = 9;
+const I_CHILDREN: usize = 10;
+const I_CMDCHAR: usize = 11;
+const I_CMDMODS: usize = 12;
 
 /// Slim batch for menu-bar descendants — menus only need role, title,
 /// enabled, shortcut and children. Position/size/value are absent on
@@ -494,7 +493,11 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx, 
     }
     for child in children {
         walk(&child, Some(this_id), depth + 1, ctx, false);
-        if ctx.truncated {
+        // A depth-boundary subtree sets `truncated` — the tree IS
+        // partial — but that must not starve the node's siblings:
+        // every branch within budget still gets walked. Only the
+        // element cap is a hard stop.
+        if ctx.elements.len() >= ctx.max_elements {
             return;
         }
     }
@@ -546,7 +549,9 @@ fn walk_menu(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut 
     ctx.nodes.push(el.clone());
     for child in children_slot(slot(M_CHILDREN)) {
         walk_menu(&child, Some(this_id), depth + 1, ctx);
-        if ctx.truncated {
+        // Same sibling contract as `walk` — depth truncation marks the
+        // tree partial; only the element budget stops the traversal.
+        if ctx.elements.len() >= ctx.max_elements {
             return;
         }
     }

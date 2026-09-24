@@ -171,6 +171,51 @@ fn element_value_on_sensitive_field_is_uncertain_not_failed() {
 }
 
 #[test]
+fn element_value_mixed_sensitivity_is_uncertain() {
+    // When the target matches BOTH a redacted secure field and a
+    // visible field, and the visible one doesn't satisfy the
+    // predicate, the hidden candidate could still hold the value —
+    // "no match" is unknowable, not a failure.
+    let mut hidden = el(1, "secure_text_field", Some("Password"));
+    hidden.value = None; // redacted at collection
+    let mut visible = el(2, "secure_text_field", Some("Password"));
+    visible.subrole = None;
+    visible.role = Some("text_field".into());
+    visible.value = Some("other".into());
+    let o = obs_with(vec![hidden, visible]);
+    let r = verify(
+        &o,
+        &ExpectedState::ElementValue {
+            target: SemanticTarget {
+                name: Some("Password".into()),
+                ..Default::default()
+            },
+            predicate: ValuePredicate::Contains("s3cret".into()),
+        },
+    );
+    assert_eq!(r.status, VerificationStatus::Uncertain);
+    assert_eq!(r.unknown_reason, Some(UnknownReason::RedactedValue));
+
+    // But a visible candidate that satisfies it still verifies.
+    let mut ok = el(3, "text_field", Some("Password"));
+    ok.value = Some("s3cret".into());
+    let mut hidden2 = el(4, "secure_text_field", Some("Password"));
+    hidden2.value = None;
+    let o2 = obs_with(vec![hidden2, ok]);
+    let r2 = verify(
+        &o2,
+        &ExpectedState::ElementValue {
+            target: SemanticTarget {
+                name: Some("Password".into()),
+                ..Default::default()
+            },
+            predicate: ValuePredicate::Contains("s3cret".into()),
+        },
+    );
+    assert_eq!(r2.status, VerificationStatus::Verified);
+}
+
+#[test]
 fn window_title_uncertain_when_all_titles_hidden() {
     let mut o = obs_with(vec![]);
     o.windows.push(Window {
