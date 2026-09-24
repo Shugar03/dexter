@@ -347,6 +347,7 @@ pub fn run_scenario_with<D: ComputerDriver>(
                 // events still journal, so `approvals` stays honest.
                 approve_all: true,
                 observe_max_elements: 4_000,
+                window_scope: None,
             },
             max_steps: spec.task.max_steps,
             max_duration: spec.task.max_secs.map(Duration::from_secs),

@@ -77,6 +77,7 @@ fn run_cfg(app: Option<String>, cfg: ServerConfig) -> RunConfig {
         allow_coordinates: cfg.allow_coords,
         approve_all: cfg.approve_all,
         observe_max_elements: 4_000,
+        window_scope: None,
     }
 }
 
@@ -176,6 +177,10 @@ pub struct TaskParams {
     pub max_steps: Option<u32>,
     /// Wall-clock budget in seconds (default none, hard cap 3600).
     pub max_secs: Option<u64>,
+    /// Pin every observation to one window id (from `dexter_observe`'s
+    /// windows) — O(window) per step instead of O(app) on multi-window
+    /// apps.
+    pub window: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -593,7 +598,10 @@ impl DexterMcp {
                 &runtime.generator,
                 runtime.decider.as_ref(),
                 &TaskConfig {
-                    run: run_cfg(params.app.clone(), runtime.config),
+                    run: RunConfig {
+                        window_scope: params.window,
+                        ..run_cfg(params.app.clone(), runtime.config)
+                    },
                     max_steps,
                     max_duration: max_secs.map(Duration::from_secs),
                     cancel: Some(token),

@@ -107,6 +107,12 @@ pub struct RunConfig {
     pub approve_all: bool,
     /// Element cap for verification re-observations.
     pub observe_max_elements: usize,
+    /// Pin every observation of the run to one window (a `Window::id`
+    /// from a prior observe). Multi-window apps otherwise walk every
+    /// window's tree per step — the caller that knows the workspace
+    /// window pays O(window) instead of O(app). All observes share the
+    /// scope so signatures stay comparable.
+    pub window_scope: Option<u32>,
 }
 
 impl Default for RunConfig {
@@ -119,6 +125,7 @@ impl Default for RunConfig {
             allow_coordinates: false,
             approve_all: false,
             observe_max_elements: 4_000,
+            window_scope: None,
         }
     }
 }
@@ -265,6 +272,7 @@ impl<D: ComputerDriver> Engine<D> {
             let scope = ObservationScope {
                 app: step.app.clone().or_else(|| cfg.app.clone()),
                 max_elements: cfg.observe_max_elements,
+                window: cfg.window_scope,
                 ..Default::default()
             };
             self.driver.observe(&scope).ok()
@@ -279,6 +287,7 @@ impl<D: ComputerDriver> Engine<D> {
         let scope = ObservationScope {
             app: app.clone(),
             max_elements: cfg.observe_max_elements,
+            window: cfg.window_scope,
             ..Default::default()
         };
         let wake = self.maybe_wake(app.as_ref(), &mut obs, &scope);
@@ -569,6 +578,7 @@ impl<D: ComputerDriver> Engine<D> {
             let scope = ObservationScope {
                 app: app.clone(),
                 max_elements: cfg.observe_max_elements,
+                window: cfg.window_scope,
                 // Element- and text-referencing expectations can point at
                 // menu items; signature-level ones cannot (menus are
                 // excluded from the signature), so the re-observe skips
@@ -770,6 +780,7 @@ impl<D: ComputerDriver> Engine<D> {
         let scope = ObservationScope {
             app: cfg.run.app.clone(),
             max_elements: cfg.run.observe_max_elements,
+            window: cfg.run.window_scope,
             ..Default::default()
         };
         let mut obs = self.driver.observe(&scope).ok();
@@ -806,6 +817,7 @@ impl<D: ComputerDriver> Engine<D> {
         let scope = ObservationScope {
             app: cfg.run.app.clone(),
             max_elements: cfg.run.observe_max_elements,
+            window: cfg.run.window_scope,
             ..Default::default()
         };
 

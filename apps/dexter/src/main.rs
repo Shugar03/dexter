@@ -429,6 +429,10 @@ struct TaskArgs {
     /// Scope to an application.
     #[arg(long)]
     app: Option<String>,
+    /// Pin every observation to one window id (from `dexter windows`) —
+    /// O(window) per step instead of O(app) on multi-window apps.
+    #[arg(long)]
+    window: Option<u32>,
     /// Max decide/act iterations.
     #[arg(long, default_value = "10")]
     max_steps: u32,
@@ -997,6 +1001,7 @@ fn run_action(
         verify_delay: Duration::from_millis(250),
         post_act_settle: Duration::ZERO,
         observe_max_elements: 4_000,
+        window_scope: None,
     };
     let step = Step {
         note: None,
@@ -1169,6 +1174,7 @@ fn run_scenario(
         allow_coordinates: coords,
         approve_all,
         observe_max_elements: 4_000,
+        window_scope: None,
     };
     let steps: Vec<Step> = file
         .steps
@@ -1252,6 +1258,7 @@ fn run_task(
                 allow_coordinates: args.coords,
                 approve_all: args.approve_all,
                 observe_max_elements: 4_000,
+                window_scope: args.window,
             },
             max_steps: args.max_steps,
             max_duration: args.max_secs.map(Duration::from_secs),
