@@ -30,19 +30,21 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
 
 ## The loop you should run
 
-1. **`dexter_observe {app?, window?, vision?}`** — returns `observation`
-   id, a text `digest`, a `windows` array (`{id, app, title, bounds,
-   on_screen}`) and a structured `elements` array (`{id:"e_4", role,
-   source, name, value, enabled, focused, actions, bounds}`). Element
-   ids are scoped to the observation that produced them — a stale id is
-   rejected, so re-observe after the world changes. Pass
-   `window: <id>` to scope to one window — smaller digest, fewer
-   candidates; elements without bounds (menubar items) are dropped.
-   Pass `vision: true` when the digest is thin or empty (`ax_limited`)
-   — on-device OCR of the target window appends `[ocr]` elements.
-   They are *evidence only*: no actions, no live handle — clicking one
-   means `Target::Point` at its bounds center, which stays
-   approval/policy-gated.
+1. **`dexter_observe {app?, window?, vision?, include_menu?}`** — returns
+   `observation` id, a text `digest`, a `windows` array (`{id, app,
+   title, bounds, on_screen}`) and a structured `elements` array
+   (`{id:"e_4", role, source, name, value, enabled, focused, actions,
+   bounds}`). Element ids are scoped to the observation that produced
+   them — a stale id is rejected, so re-observe after the world
+   changes. Pass `window: <id>` to scope to one window — smaller
+   digest, fewer candidates; elements without bounds (menubar items)
+   are dropped. Pass `include_menu: false` when you only need window
+   controls — the menu catalog often outnumbers real elements ~10:1
+   and dominates observe cost. Pass `vision: true` when the digest is
+   thin or empty (`ax_limited`) — on-device OCR of the target window
+   appends `[ocr]` elements. They are *evidence only*: no actions, no
+   live handle — clicking one means `Target::Point` at its bounds
+   center, which stays approval/policy-gated.
 2. **`dexter_candidates {goal}`** — ranked plausible actions for your
    goal: `[{action, rationale, prior}]`. Priors are heuristic hints, not
    truth — *you* decide. Each `action` is ready-to-pass JSON for
@@ -114,6 +116,62 @@ with `dexter mcp --coords`. Agents cannot request it per call; a
 `coords` field in tool arguments is ignored.
 Semantic targets (name/element/focused) never touch the user's mouse.
 
+## Action vocabulary
+
+The full `Action` wire format (`dexter_act {action}` or CLI
+equivalents) — everything not listed under *physical* below stays in
+the background tier:
+
+```json
+{"type":"click","target":{...},"button":"left","count":1}
+{"type":"type_text","target":{...},"text":"hello"}
+{"type":"key","chord":{"key":"s","modifiers":["cmd"]}}
+{"type":"scroll","delta":{"dx":0,"dy":-3},"target":{...}}
+{"type":"focus","target":{...}}
+{"type":"set_value","target":{...},"value":"42"}
+{"type":"observe"}
+{"type":"wait","millis":500}
+{"type":"navigate","url":"https://example.com"}
+{"type":"invoke","target":{...},"action":"open"}
+{"type":"launch_app","app":{"by":"name","value":"Calculator"},"activate":true}
+{"type":"quit_app","app":{"by":"bundle_id","value":"com.apple.calculator"}}
+{"type":"window","window_id":null,"operation":{"op":"close"}}
+{"type":"read_clipboard_text"}
+{"type":"write_clipboard_text","text":"..."}
+{"type":"drag","from":{...},"to":{...},"duration_ms":300}
+```
+
+Notes worth knowing:
+
+- **`click.count` 2–3** plans the element's advertised `open` action
+  when it exists (double-click = open); a physical multi-click is the
+  gated last resort.
+- **`key`** tries a semantic menu route first: the chord is matched
+  against menu items' advertised shortcuts and `AXPress`ed — the
+  physical keyboard is only used when no menu advertises the chord
+  (and `--coords` is set).
+- **`invoke`** performs an action the element itself advertises —
+  `open`, `confirm`, `cancel`, `pick`, `show_menu`... The element's
+  `actions` list in `dexter_observe` tells you what exists; an
+  unadvertised name fails closed, never guesses.
+- **`window`** operations: `{"op":"new" | "focus" | "raise" | "close" |
+  "minimize" | "restore" | "move" {"x","y"} | "resize" {"width","height"}}`.
+  `window_id: null` targets the scoped app's frontmost window.
+- **`app` selectors** are tagged: `{"by":"name"|"bundle_id"|"pid",
+  "value":...}` — a bundle id can never be confused with a display name.
+- **`launch_app`/`quit_app`** verify by world change — a localized app
+  name ("Calculadora") still verifies even if you launched
+  "Calculator". Launch by bundle id when you can.
+- **`read_clipboard_text`/`write_clipboard_text`** carry a secrets
+  floor: they need approval even when ordinary mutations are allowed,
+  and the clipboard content never reaches the journal.
+- **`drag`** resolves and validates both endpoints *before* the
+  pointer moves — a stale endpoint aborts cleanly.
+- **Every mutating action is verified**: after acting, Dexter
+  re-observes and checks the world actually changed (or the derived
+  expectation holds). A no-op reports `failed`/`suspected_noop`, never
+  silent success — trust `status: "done"` to mean *observed* success.
+
 ## The intrusiveness contract
 
 Every action reports a tier in the journal:
@@ -128,6 +186,13 @@ Every action reports a tier in the journal:
 
 While Dexter works, the `dexter-overlay` process can show the agent's
 presence — a named floating cursor + state tag — without capturing input.
+
+## Recording trajectories
+
+`dexter task ... --export rows.jsonl` writes the run's decisions as
+Laya training rows — each act labelled with its verified outcome.
+Nothing is written when the task fails: a mislabeled trajectory is
+worse than none. `--events run.jsonl` dumps the raw journal instead.
 
 ## Policy
 

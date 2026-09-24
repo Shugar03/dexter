@@ -97,6 +97,11 @@ pub struct ObserveParams {
     /// means targeting their bounds center as a point, which stays
     /// approval/policy-gated.
     pub vision: Option<bool>,
+    /// Walk the app's menu-bar subtree (default true). Menu items often
+    /// outnumber window elements ~10:1 — pass `false` when you only need
+    /// window controls. Menu chords (`key` actions) resolve the menu
+    /// live and are unaffected.
+    pub include_menu: Option<bool>,
 }
 
 /// Server-level trust configuration — set by the operator at startup,
@@ -233,6 +238,7 @@ impl DexterMcp {
             max_elements,
             window,
             vision: params.vision.unwrap_or(false),
+            include_menu: params.include_menu.unwrap_or(true),
             ..Default::default()
         };
         let max_out = max_elements.min(500);
