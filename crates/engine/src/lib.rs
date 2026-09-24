@@ -569,6 +569,11 @@ impl<D: ComputerDriver> Engine<D> {
             let scope = ObservationScope {
                 app: app.clone(),
                 max_elements: cfg.observe_max_elements,
+                // Element- and text-referencing expectations can point at
+                // menu items; signature-level ones cannot (menus are
+                // excluded from the signature), so the re-observe skips
+                // the menu-bar walk for those — its dominant cost.
+                include_menu: expected_needs_menu(expected),
                 ..Default::default()
             };
             let observe_start = std::time::Instant::now();
@@ -1483,6 +1488,26 @@ fn derive_expect(action: &Action, obs: &Observation) -> Option<ExpectedState> {
         // Window ops / clipboard / read: the world model can't express
         // their effect — honestly unverified.
         _ => None,
+    }
+}
+
+/// Whether a verification re-observe needs the menu-bar subtree walked.
+/// Element- and text-referencing expectations can point at menu items;
+/// world-level ones (`WorldChanged`, `AppRunning`, `WindowTitleContains`)
+/// cannot — the signature excludes menu elements — so those polls skip
+/// the walk, which dominates observe cost on real apps.
+fn expected_needs_menu(expected: &ExpectedState) -> bool {
+    use ExpectedState as E;
+    match expected {
+        E::ElementExists { .. }
+        | E::ElementAbsent { .. }
+        | E::ElementValue { .. }
+        | E::FocusedElement { .. }
+        | E::TextPresent { .. } => true,
+        E::WorldChanged { .. } | E::AppRunning { .. } | E::WindowTitleContains { .. } => false,
+        E::All { all } => all.iter().any(expected_needs_menu),
+        E::Any { any } => any.iter().any(expected_needs_menu),
+        E::Not { not } => expected_needs_menu(not),
     }
 }
 

@@ -96,3 +96,34 @@ fn signature_tracks_values_screenshots_and_membership() {
         dexter_world_model::signature(&spawned)
     );
 }
+
+#[test]
+fn signature_excludes_menu_catalog() {
+    let with_menu = obs(vec![
+        el(1, "button", "Save"),
+        {
+            let mut m = el(2, "menu_item", "Print");
+            m.raw_role = Some("AXMenuItem".into());
+            m
+        },
+        {
+            let mut m = el(3, "menu_bar_item", "File");
+            m.raw_role = Some("AXMenuBarItem".into());
+            m
+        },
+    ]);
+    let without_menu = obs(vec![el(9, "button", "Save")]);
+    // Menu presence/absence or menu-item state is catalog noise, not a
+    // world change — this is what lets verification re-observes skip
+    // the menu-bar walk and stay signature-comparable.
+    assert_eq!(
+        dexter_world_model::signature(&with_menu),
+        dexter_world_model::signature(&without_menu)
+    );
+    // A window element still moves it.
+    let changed = obs(vec![el(9, "button", "Save"), el(10, "button", "OK")]);
+    assert_ne!(
+        dexter_world_model::signature(&without_menu),
+        dexter_world_model::signature(&changed)
+    );
+}

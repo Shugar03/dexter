@@ -185,6 +185,11 @@ pub fn digest_worthy(e: &Element) -> bool {
 /// "changed"); bounds are quantized to an 8px grid so sub-cell jitter
 /// doesn't flip the signature but a real move/resize does. Sorted window
 /// titles, a screenshot-presence bit and per-role counts ride along.
+///
+/// Menu-catalog elements are excluded: they outnumber window controls
+/// ~10:1, almost never carry verification-relevant state, and dropping
+/// them lets verification re-observes skip the menu-bar walk entirely
+/// while signatures stay comparable.
 pub fn signature(obs: &Observation) -> u64 {
     use std::collections::BTreeMap;
     use std::hash::{Hash, Hasher};
@@ -200,6 +205,7 @@ pub fn signature(obs: &Observation) -> u64 {
     let mut items: Vec<Item> = obs
         .elements
         .iter()
+        .filter(|e| !is_menu_element(e))
         .map(|e| {
             (
                 e.role.as_deref().unwrap_or(""),
@@ -224,13 +230,26 @@ pub fn signature(obs: &Observation) -> u64 {
     titles.hash(&mut h);
     obs.screenshot.is_some().hash(&mut h);
     let mut role_counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for e in &obs.elements {
+    for e in obs.elements.iter().filter(|e| !is_menu_element(e)) {
         *role_counts
             .entry(e.role.as_deref().unwrap_or(""))
             .or_default() += 1;
     }
     role_counts.hash(&mut h);
     h.finish()
+}
+
+/// Menu-catalog roles — `AXMenu*` raw or the normalized equivalents.
+/// Counted out of [`signature`] so menu-presence differences between
+/// observations never read as world changes.
+fn is_menu_element(e: &Element) -> bool {
+    e.raw_role
+        .as_deref()
+        .is_some_and(|r| r.starts_with("AXMenu"))
+        || matches!(
+            e.role.as_deref(),
+            Some("menu" | "menu_item" | "menu_bar" | "menu_bar_item")
+        )
 }
 
 /// Render an observation as compact text — the `state` a decision engine
