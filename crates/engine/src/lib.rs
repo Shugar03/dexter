@@ -19,8 +19,8 @@
 
 use dexter_core::{
     Action, ActionResult, ActionStatus, AppSelector, Event, EventKind, ExecutionRoute,
-    ExpectedState, Observation, ObservationScope, Rect, SemanticTarget, Sensitivity, Target,
-    ValuePredicate, Verification, VerificationStatus,
+    ExpectedState, Intrusiveness, Observation, ObservationScope, Rect, SemanticTarget, Sensitivity,
+    Target, TargetDescriptor, ValuePredicate, Verification, VerificationStatus,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverError, WakeHandle};
 use dexter_policy::{ActionContext, ApprovalStore, Policy, PolicyDecision};
@@ -196,6 +196,11 @@ pub struct Engine<D: ComputerDriver> {
     /// journal while the task is still running.
     journal_sink: Option<std::io::BufWriter<std::fs::File>>,
     trace: TraceMode,
+    /// Fingerprints of stage borrows the human granted this session.
+    /// A wake is a repeated side effect — every retry re-activates the
+    /// app — so unlike an execute grant (single-use, one act), a granted
+    /// stage borrow covers re-borrowing the same app for the session.
+    stage_grants: std::collections::HashSet<String>,
 }
 
 impl<D: ComputerDriver> Engine<D> {
@@ -207,6 +212,7 @@ impl<D: ComputerDriver> Engine<D> {
             journal: Default::default(),
             journal_sink: None,
             trace: TraceMode::Audit,
+            stage_grants: Default::default(),
         }
     }
 
@@ -295,7 +301,7 @@ impl<D: ComputerDriver> Engine<D> {
         let needs_obs = bounds_need_observation(&step.action)
             || (step.expect.is_none() && derives(&step.action))
             || needs_stage(&step.action);
-        let mut obs = if needs_obs {
+        let obs = if needs_obs {
             let scope = ObservationScope {
                 app: step.app.clone().or_else(|| cfg.app.clone()),
                 max_elements: cfg.observe_max_elements,
@@ -317,10 +323,12 @@ impl<D: ComputerDriver> Engine<D> {
         } else {
             None
         };
-        // Windowless borrow — macOS only surfaces an app's AX window
-        // tree while it is frontmost. Centralized here so CLI, MCP and
-        // SDK paths share the contract; `WakeGuard` restores focus on
-        // every return path.
+        // The stage borrow happens inside run_step_inner: the route
+        // about to execute decides whether the app must be frontmost —
+        // a background route (a menu AXPress) never steals focus — and
+        // the wake itself goes through policy there, as a visible side
+        // effect. The handle is restored here so the whole step —
+        // verify-poll included — sees the world the wake produced.
         let app = step.app.clone().or_else(|| cfg.app.clone());
         let scope = ObservationScope {
             app: app.clone(),
@@ -328,9 +336,10 @@ impl<D: ComputerDriver> Engine<D> {
             window: cfg.window_scope,
             ..Default::default()
         };
-        let wake = self.maybe_wake(app.as_ref(), &mut obs, &scope, needs_stage(&step.action));
         // An explicit expect wins; otherwise mutating actions verify
         // their effect by derivation — the same contract goal flow has.
+        // A second derivation runs inside run_step_inner after a stage
+        // borrow, on the world the wake produced.
         let derived;
         let step = if step.expect.is_none() {
             derived = obs
@@ -344,63 +353,118 @@ impl<D: ComputerDriver> Engine<D> {
         } else {
             step
         };
-        let status = self.run_step_inner(step, cfg, obs.as_ref(), None);
+        let mut wake = None;
+        let status = self.run_step_inner(step, cfg, obs.as_ref(), &scope, &mut wake, None);
         if let Some(h) = wake {
             self.driver.restore(&h);
         }
         status
     }
 
-    /// Borrow the stage once when a scoped observation shows no window
-    /// content — some platforms (macOS) only expose an app's AX window
-    /// tree while it is frontmost. Two guards keep the steal honest:
-    /// the action must actually need the stage (`stage_needed`), and a
-    /// real observation must have shown the windowless state — waking
-    /// on an absent observation would foreground apps for actions that
-    /// never wanted the stage (a background `--launch`, a `wait`).
-    /// On wake the observation is refreshed in place so callers act on
-    /// the world the wake produced. The caller restores the returned
-    /// handle — every terminal path funnels through a single point
-    /// that hands focus back.
-    fn maybe_wake(
+    /// Authorize and perform a stage borrow — foregrounding `app` is a
+    /// visible side effect, so it goes through `evaluate_route` like
+    /// any mutation: the route it asks for is the launch-or-activate it
+    /// actually performs (`Api` mechanism, `Visual` tier). A policy
+    /// `deny` on `launch_app` is a denied stage steal; an unapproved
+    /// one surfaces its fingerprint — never an unauthenticated
+    /// activation. `Clear` means no activation was needed; `Activated`
+    /// carries the restore handle and the refreshed observation.
+    fn authorize_stage(
         &mut self,
-        app: Option<&AppSelector>,
-        obs: &mut Option<Observation>,
+        app: &AppSelector,
+        ctx: &ActionContext,
+        cfg: &RunConfig,
         scope: &ObservationScope,
-        stage_needed: bool,
-    ) -> Option<WakeHandle> {
-        let app = app?;
-        if !stage_needed {
-            return None;
-        }
-        let windowed = obs.as_ref().is_some_and(|o| {
-            o.elements
-                .iter()
-                .any(|e| e.role.as_deref() == Some("window"))
-        });
-        if windowed {
-            return None;
-        }
-        let observed = obs.is_some();
-        if !observed {
-            return None;
-        }
-        let handle = self.driver.wake(app).ok()?;
-        if !handle.activated {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(800));
-        *obs = match self.observe_scoped(scope) {
-            Ok(o) => Some(o),
-            Err(e) => {
+    ) -> StageOutcome {
+        let route = stage_route(app);
+        let fp = dexter_policy::fingerprint_route(&route, ctx);
+        self.journal(
+            EventKind::ActionProposed,
+            serde_json::json!({
+                "action": audit::action_summary(&route.action),
+                "app": app,
+                "fingerprint": &fp,
+                "intrusiveness": route.intrusiveness,
+                "mechanism": route.mechanism,
+                "stage": "wake",
+            }),
+        );
+        match self.policy.evaluate_route(&route, ctx) {
+            PolicyDecision::Allow => {}
+            PolicyDecision::Deny { reason } => {
                 self.journal(
-                    EventKind::ObservationFailed,
-                    serde_json::json!({"error": e.to_string(), "context": "post_wake"}),
+                    EventKind::PolicyChecked,
+                    serde_json::json!({"decision": "deny", "reason": &reason, "stage": "wake"}),
                 );
-                obs.take()
+                return StageOutcome::Refused { reason };
             }
+            PolicyDecision::RequireApproval { reason } => {
+                // A granted stage borrow lasts the session: every retry
+                // re-activates the app, so single-use consumption here
+                // would demand a new grant per retry of the same step.
+                let granted = cfg.approve_all
+                    || self.stage_grants.contains(&fp)
+                    || self.approvals.check_and_consume(&fp);
+                if !granted {
+                    self.journal(
+                        EventKind::HumanApprovalRequired,
+                        serde_json::json!({
+                            "fingerprint": &fp,
+                            "reason": &reason,
+                            "action": audit::action_summary(&route.action),
+                            "stage": "wake",
+                        }),
+                    );
+                    return StageOutcome::Approval {
+                        fingerprint: fp,
+                        reason,
+                        action: audit::action_summary(&route.action),
+                    };
+                }
+                self.stage_grants.insert(fp);
+                self.journal(
+                    EventKind::PolicyChecked,
+                    serde_json::json!({"decision": "approved", "stage": "wake"}),
+                );
+            }
+        }
+        let handle = match self.driver.wake(app) {
+            Ok(h) => h,
+            Err(e) => return StageOutcome::Errored(e),
         };
-        Some(handle)
+        if !handle.activated {
+            return StageOutcome::Clear;
+        }
+        // Activation returns before the window tree exists — poll the
+        // scoped world until a window shows rather than sleeping a
+        // fixed beat. Same 800ms budget, early exit on the common case.
+        let mut new_obs = None;
+        for _ in 0..10 {
+            match self.observe_scoped(scope) {
+                Ok(o) => {
+                    let windowed = o
+                        .elements
+                        .iter()
+                        .any(|e| e.role.as_deref() == Some("window"));
+                    new_obs = Some(o);
+                    if windowed {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    self.journal(
+                        EventKind::ObservationFailed,
+                        serde_json::json!({"error": e.to_string(), "context": "post_wake"}),
+                    );
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(80));
+        }
+        StageOutcome::Activated {
+            handle,
+            obs: new_obs,
+        }
     }
 
     /// `driver.observe` plus the window-scope guarantee: when the scope
@@ -425,9 +489,73 @@ impl<D: ComputerDriver> Engine<D> {
         }
     }
 
+    /// Evaluate one route through policy and journal the verdict —
+    /// extracted so a route re-authorized on a post-wake world goes
+    /// through the identical decision path.
+    fn authorize_route(
+        &mut self,
+        route: &ExecutionRoute,
+        fp: &str,
+        ctx: &ActionContext,
+        cfg: &RunConfig,
+    ) -> RouteVerdict {
+        match self.policy.evaluate_route(route, ctx) {
+            PolicyDecision::Allow => RouteVerdict::Allow,
+            PolicyDecision::Deny { reason } => {
+                self.journal(
+                    EventKind::PolicyChecked,
+                    serde_json::json!({
+                        "decision": "deny",
+                        "reason": &reason,
+                        "intrusiveness": route.intrusiveness,
+                    }),
+                );
+                RouteVerdict::Denied(reason)
+            }
+            PolicyDecision::RequireApproval { reason } => {
+                if cfg.approve_all {
+                    self.journal(
+                        EventKind::HumanApprovalRequired,
+                        serde_json::json!({
+                            "fingerprint": fp,
+                            "reason": &reason,
+                            "granted": "approve_all",
+                        }),
+                    );
+                } else if !self.approvals.check_and_consume(fp) {
+                    self.journal(
+                        EventKind::HumanApprovalRequired,
+                        serde_json::json!({
+                            "fingerprint": fp,
+                            "reason": &reason,
+                            "action": audit::action_summary(&route.action),
+                        }),
+                    );
+                    return RouteVerdict::Approval {
+                        fingerprint: fp.to_string(),
+                        reason,
+                    };
+                }
+                self.journal(
+                    EventKind::PolicyChecked,
+                    serde_json::json!({
+                        "decision": "approved",
+                        "fingerprint": fp,
+                        "intrusiveness": route.intrusiveness,
+                    }),
+                );
+                RouteVerdict::Allow
+            }
+        }
+    }
+
     /// `obs` is the live observation when one exists (the `run_task` loop);
     /// it lets the journal carry the target's on-screen bounds so an
     /// overlay can render presence without touching the machine.
+    /// `wake` is the caller's stage-borrow slot: set when this step
+    /// activated an app so the caller restores focus once the whole
+    /// step — verify-poll included — is done. `scope` is the
+    /// observation scope a post-wake re-observe must honor.
     ///
     /// v2 execution contract: plan → authorize the concrete route →
     /// execute **once** → verify by polling. A slow world never causes
@@ -438,6 +566,8 @@ impl<D: ComputerDriver> Engine<D> {
         step: &Step,
         cfg: &RunConfig,
         obs: Option<&Observation>,
+        scope: &ObservationScope,
+        wake: &mut Option<WakeHandle>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> StepStatus {
         let app = step.app.clone().or_else(|| cfg.app.clone());
@@ -479,18 +609,41 @@ impl<D: ComputerDriver> Engine<D> {
         for route in &mut routes {
             enrich_descriptor(&mut route.target, obs);
             enforce_sensitivity_floor(route, obs);
+            // A route with no mechanism claim can't tell the engine
+            // whether it resolves against the stage — the action's own
+            // stage need is the honest foreground claim (the legacy
+            // compat route and v1 drivers land here).
+            if route.mechanism.is_none() && needs_stage(&route.action) {
+                route.requires_foreground = true;
+            }
         }
 
         let bounds = target_bounds(&step.action, obs);
         let mut executed: Option<ActionResult> = None;
         let mut exec_error: Option<DriverError> = None;
         let mut last_refusal = String::from("no route executed");
+        // The expectation the verify-poll checks — an explicit
+        // `step.expect`, or one derived post-wake on the world the act
+        // will actually execute in.
+        let mut expect = step.expect.clone();
+        // A windowless pre-act observation is what makes the stage
+        // question real — asked per-route below, only for the route
+        // about to execute. An absent observation never justifies one.
+        let stage_needed = needs_stage(&step.action) && windowless(obs);
+        // The stage question is answered once per step: `true` once a
+        // verdict (activation, no-op, or refusal) landed, so a second
+        // foreground route doesn't re-ask policy or re-call `wake`.
+        // A refusal is remembered because the same fingerprint denies
+        // identically — asking again would only duplicate the journal.
+        let mut stage_answered = false;
+        let mut stage_refusal: Option<String> = None;
 
         // AUTHORIZE + EXECUTE — each route independently. One approval
         // covers exactly one route's execution: a fallback route is a
         // new authorization question, not a silent escalation.
-        for (index, route) in routes.iter().enumerate() {
-            let fp = dexter_policy::fingerprint_route(route, &ctx);
+        for index in 0..routes.len() {
+            let mut route = routes[index].clone();
+            let mut fp = dexter_policy::fingerprint_route(&route, &ctx);
             self.journal(
                 EventKind::ActionProposed,
                 serde_json::json!({
@@ -505,56 +658,121 @@ impl<D: ComputerDriver> Engine<D> {
                 }),
             );
 
-            match self.policy.evaluate_route(route, &ctx) {
-                PolicyDecision::Allow => {}
-                PolicyDecision::Deny { reason } => {
-                    self.journal(
-                        EventKind::PolicyChecked,
-                        serde_json::json!({
-                            "decision": "deny",
-                            "reason": &reason,
-                            "intrusiveness": route.intrusiveness,
-                        }),
-                    );
-                    return StepStatus::Denied { reason };
-                }
-                PolicyDecision::RequireApproval { reason } => {
-                    if cfg.approve_all {
-                        self.journal(
-                            EventKind::HumanApprovalRequired,
-                            serde_json::json!({
-                                "fingerprint": &fp,
-                                "reason": &reason,
-                                "granted": "approve_all",
-                            }),
-                        );
-                    } else if !self.approvals.check_and_consume(&fp) {
-                        self.journal(
-                            EventKind::HumanApprovalRequired,
-                            serde_json::json!({
-                                "fingerprint": &fp,
-                                "reason": &reason,
-                                "action": audit::action_summary(&route.action),
-                            }),
-                        );
-                        return StepStatus::NeedsApproval {
-                            fingerprint: fp,
-                            reason,
-                            action: audit::action_summary(&route.action),
-                        };
-                    }
-                    self.journal(
-                        EventKind::PolicyChecked,
-                        serde_json::json!({
-                            "decision": "approved",
-                            "fingerprint": &fp,
-                            "intrusiveness": route.intrusiveness,
-                        }),
-                    );
+            match self.authorize_route(&route, &fp, &ctx, cfg) {
+                RouteVerdict::Allow => {}
+                RouteVerdict::Denied(reason) => return StepStatus::Denied { reason },
+                RouteVerdict::Approval {
+                    fingerprint,
+                    reason,
+                } => {
+                    return StepStatus::NeedsApproval {
+                        fingerprint,
+                        reason,
+                        action: audit::action_summary(&route.action),
+                    };
                 }
             }
 
-            let result = match self.driver.execute(route, &act_ctx) {
+            // STAGE — only the route about to execute decides the
+            // borrow: a foreground route on a windowless app asks
+            // policy for the activation (a visible side effect, never
+            // unauthenticated), re-observes, then re-floors and
+            // re-authorizes itself on the world the wake produced. A
+            // background route — a menu AXPress — never steals focus.
+            if wake.is_none() && stage_needed && route.requires_foreground {
+                // A stage denied earlier this step denies every
+                // remaining foreground route identically — same
+                // fingerprint, same verdict, no duplicate journal.
+                if let Some(reason) = &stage_refusal {
+                    last_refusal = format!("stage borrow refused: {reason}");
+                    continue;
+                }
+                if !stage_answered {
+                    if let Some(sel) = &app {
+                        match self.authorize_stage(sel, &ctx, cfg, scope) {
+                            StageOutcome::Approval {
+                                fingerprint,
+                                reason,
+                                action,
+                            } => {
+                                return StepStatus::NeedsApproval {
+                                    fingerprint,
+                                    reason,
+                                    action,
+                                };
+                            }
+                            StageOutcome::Refused { reason } => {
+                                stage_answered = true;
+                                stage_refusal = Some(reason.clone());
+                                last_refusal = format!("stage borrow refused: {reason}");
+                                continue;
+                            }
+                            StageOutcome::Errored(error) => {
+                                return StepStatus::Errored { error };
+                            }
+                            StageOutcome::Clear => {
+                                stage_answered = true;
+                            }
+                            StageOutcome::Activated { handle, obs: new } => {
+                                stage_answered = true;
+                                *wake = Some(handle);
+                                let cur = new.as_ref().or(obs);
+                                // The world moved — re-resolve descriptors
+                                // and floors for every remaining route…
+                                for r in routes.iter_mut() {
+                                    enrich_descriptor(&mut r.target, cur);
+                                    enforce_sensitivity_floor(r, cur);
+                                }
+                                route = routes[index].clone();
+                                // …then re-authorize this route: the
+                                // fingerprint the first verdict bound was
+                                // computed on a windowless world.
+                                fp = dexter_policy::fingerprint_route(&route, &ctx);
+                                self.journal(
+                                    EventKind::ActionProposed,
+                                    serde_json::json!({
+                                        "action": audit::action_summary(&route.action),
+                                        "app": &app,
+                                        "fingerprint": &fp,
+                                        "intrusiveness": route.intrusiveness,
+                                        "mechanism": route.mechanism,
+                                        "route": index,
+                                        "of": routes.len(),
+                                        "stage": "post_wake",
+                                        "target_bounds": bounds,
+                                    }),
+                                );
+                                match self.authorize_route(&route, &fp, &ctx, cfg) {
+                                    RouteVerdict::Allow => {}
+                                    RouteVerdict::Denied(reason) => {
+                                        return StepStatus::Denied { reason };
+                                    }
+                                    RouteVerdict::Approval {
+                                        fingerprint,
+                                        reason,
+                                    } => {
+                                        return StepStatus::NeedsApproval {
+                                            fingerprint,
+                                            reason,
+                                            action: audit::action_summary(&route.action),
+                                        };
+                                    }
+                                }
+                                // Re-derive the expectation on the world the
+                                // act executes in — the pre-wake observation
+                                // saw no window content.
+                                if expect.is_none() {
+                                    expect = cur.and_then(|o| {
+                                        derive_expect(&step.action, o, cfg.window_scope.is_some())
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let result = match self.driver.execute(&route, &act_ctx) {
                 Ok(r) => r,
                 Err(e) => {
                     self.journal(
@@ -567,7 +785,7 @@ impl<D: ComputerDriver> Engine<D> {
                     // expectation to check, verify before declaring the
                     // act dead (SDD recovery-v2); without one, the
                     // error is the only verdict there is.
-                    if step.expect.is_some() {
+                    if expect.is_some() {
                         exec_error = Some(e);
                         break;
                     }
@@ -647,7 +865,7 @@ impl<D: ComputerDriver> Engine<D> {
             // Execute errored with an expectation in hand: run the
             // verify-poll before reporting — the side effect may have
             // landed despite the broken delivery report.
-            if let (Some(e), Some(expected)) = (exec_error, step.expect.as_ref()) {
+            if let (Some(e), Some(expected)) = (exec_error, expect.as_ref()) {
                 return match self.verify_poll(expected, step, cfg, &app, cancel) {
                     Ok(p) if p.verification.status == VerificationStatus::Verified => {
                         StepStatus::Done {
@@ -665,7 +883,7 @@ impl<D: ComputerDriver> Engine<D> {
             };
         };
 
-        let Some(expected) = &step.expect else {
+        let Some(expected) = &expect else {
             return StepStatus::Done {
                 result: Some(result),
                 verification: None,
@@ -941,7 +1159,7 @@ impl<D: ComputerDriver> Engine<D> {
             window: cfg.run.window_scope,
             ..Default::default()
         };
-        let mut obs = match self.observe_scoped(&scope) {
+        let obs = match self.observe_scoped(&scope) {
             Ok(o) => Some(o),
             Err(e) => {
                 self.journal(
@@ -951,12 +1169,26 @@ impl<D: ComputerDriver> Engine<D> {
                 None
             }
         };
-        // A goal exists to act on elements — it always needs the stage.
-        let wake = self.maybe_wake(cfg.run.app.as_ref(), &mut obs, &scope, true);
-        // The wake-check observation doubles as step 1's — observing is
+        // No upfront stage borrow: the route loop inside each step
+        // asks for activation only when the route about to execute
+        // declares `requires_foreground` — a menu AXPress never steals
+        // focus. The shared slot means the first borrow covers the
+        // rest of the task and is restored once, here, so the whole
+        // goal — verify-polls included — runs on the woken world.
+        let mut wake: Option<WakeHandle> = None;
+        // The opening observation doubles as step 1's — observing is
         // not free (drivers tick, AX walks cost), so the loop must not
         // pay for a second one.
-        let outcome = self.run_goal_loop(goal, done, generator, decider, cfg, task_started, obs);
+        let outcome = self.run_goal_loop(
+            goal,
+            done,
+            generator,
+            decider,
+            cfg,
+            task_started,
+            obs,
+            &mut wake,
+        );
         if let Some(h) = wake {
             self.driver.restore(&h);
         }
@@ -973,6 +1205,7 @@ impl<D: ComputerDriver> Engine<D> {
         cfg: &TaskConfig,
         task_started: Instant,
         mut initial_obs: Option<Observation>,
+        wake: &mut Option<WakeHandle>,
     ) -> TaskOutcome {
         use dexter_decision::{Decision, DecisionContext, GenHistory, Route};
         let started = task_started;
@@ -1133,7 +1366,14 @@ impl<D: ComputerDriver> Engine<D> {
                 } => {
                     let mutating = is_mutating(&action);
                     hist.attempt_names.push(attempt_label(&action, &obs));
-                    hist.attempts.push((*action).clone());
+                    // Record the attempt by semantic identity, not the
+                    // ephemeral element token: ids are per-observation,
+                    // so a token stops meaning anything the moment the
+                    // loop re-observes. `already_tried` compares
+                    // role+name — the same element suppresses on any
+                    // later world, a different element at a recycled id
+                    // never does.
+                    hist.attempts.push(normalize_attempt(&action, &obs));
                     // Every mutating act earns a derived expectation —
                     // progress is judged by done_when AND by evidence the
                     // act itself landed. Acts the model can't express an
@@ -1149,6 +1389,8 @@ impl<D: ComputerDriver> Engine<D> {
                         },
                         &cfg.run,
                         Some(&obs),
+                        &scope,
+                        wake,
                         cfg.cancel.as_deref(),
                     );
                     match status {
@@ -1693,6 +1935,18 @@ fn enforce_sensitivity_floor(route: &mut ExecutionRoute, obs: Option<&Observatio
     {
         route.sensitivity = Sensitivity::Destructive;
     }
+    // Clipboard is action-shaped sensitivity too — the v1
+    // `Policy::evaluate` mapping declares it; the floor must match so
+    // a driver whose plan is empty (legacy route, `Standard`) can't
+    // slip a clipboard read/write past the secrets gate.
+    if route.sensitivity == Sensitivity::Standard
+        && matches!(
+            route.action,
+            Action::ReadClipboardText | Action::WriteClipboardText { .. }
+        )
+    {
+        route.sensitivity = Sensitivity::Secrets;
+    }
 }
 
 /// The label an attempted action resolved to on this observation —
@@ -1733,8 +1987,74 @@ fn derives(action: &Action) -> bool {
     }
 }
 
+/// The observation shows no window content — the precondition that
+/// makes a stage borrow worth asking for at all. An absent
+/// observation is *not* windowless evidence: no observation, no wake.
+fn windowless(obs: Option<&Observation>) -> bool {
+    obs.is_some_and(|o| {
+        !o.elements
+            .iter()
+            .any(|e| e.role.as_deref() == Some("window"))
+    })
+}
+
+/// The route a stage borrow asks policy for — launch-or-activate on
+/// the target app (`Api` mechanism, `Visual` tier). Public so callers
+/// that pre-compute grants (scenario harnesses, operators seeding an
+/// `ApprovalStore`) can reproduce the exact fingerprint the engine
+/// will request.
+pub fn stage_route(app: &AppSelector) -> ExecutionRoute {
+    let action = Action::LaunchApp {
+        app: app.clone(),
+        activate: true,
+    };
+    ExecutionRoute {
+        target: TargetDescriptor::from_action(&action),
+        action,
+        mechanism: Some(dexter_core::Mechanism::Api),
+        intrusiveness: Intrusiveness::Visual,
+        sensitivity: Sensitivity::Standard,
+        requires_foreground: false,
+    }
+}
+
+/// What `authorize_stage` concluded — the wake is a side effect with
+/// its own policy verdict, not a silent precondition.
+enum StageOutcome {
+    /// No activation happened — the app was already on stage, or the
+    /// wake was a no-op.
+    Clear,
+    /// The app was activated; `obs` is the world the wake produced
+    /// (`None` when the post-wake observe failed).
+    Activated {
+        handle: WakeHandle,
+        obs: Option<Observation>,
+    },
+    /// Policy denied the activation — a route needing the stage
+    /// cannot honestly execute.
+    Refused { reason: String },
+    /// The borrow needs an approval — surface the fingerprint; the
+    /// caller stops rather than activating unauthenticated.
+    Approval {
+        fingerprint: String,
+        reason: String,
+        action: serde_json::Value,
+    },
+    /// The wake call itself failed.
+    Errored(DriverError),
+}
+
+/// One route's policy verdict — extracted so a post-wake world can be
+/// re-authorized with the same journaling.
+enum RouteVerdict {
+    Allow,
+    Denied(String),
+    Approval { fingerprint: String, reason: String },
+}
+
 /// Whether the action needs the app on stage (window-layer element
-/// resolution or foreground input) — the honest gate for `maybe_wake`.
+/// resolution or foreground input) — the honest gate for the stage
+/// borrow.
 /// Lifecycle, waits, clipboard, navigation and window ops never do:
 /// waking for them would steal focus for no reason. A point click
 /// doesn't either — the coordinate is the target.
@@ -1785,6 +2105,39 @@ fn target_is_sensitive(target: &Target, obs: &Observation) -> bool {
         .is_some_and(|e| e.is_sensitive())
 }
 
+/// Rewrite an action's element targets to their semantic identity while
+/// the observation that minted the tokens is still at hand — what
+/// `GenHistory::attempts` stores, since element ids are per-observation
+/// and mean nothing once the loop re-observes. Unresolvable (foreign)
+/// tokens pass through untouched.
+fn normalize_attempt(action: &Action, obs: &Observation) -> Action {
+    let mut a = action.clone();
+    let rewrite = |t: &mut Target| {
+        if matches!(t, Target::Element { .. } | Target::Focused) {
+            if let Some(st) = semantic_for(t, obs) {
+                *t = Target::Semantic(st);
+            }
+        }
+    };
+    match &mut a {
+        Action::Click { target, .. }
+        | Action::Focus { target }
+        | Action::SetValue { target, .. }
+        | Action::Invoke { target, .. } => rewrite(target),
+        Action::TypeText { target, .. } | Action::Scroll { target, .. } => {
+            if let Some(t) = target {
+                rewrite(t);
+            }
+        }
+        Action::Drag { from, to, .. } => {
+            rewrite(from);
+            rewrite(to);
+        }
+        _ => {}
+    }
+    a
+}
+
 /// The semantic identity an act's target refers to — for deriving a
 /// checkable expectation. `Element`/`Focused` resolve through the
 /// observation to role+name+identifier; `Semantic` passes through.
@@ -1803,12 +2156,22 @@ fn semantic_for(target: &Target, obs: &Observation) -> Option<SemanticTarget> {
         // observation).
         Target::Element { .. } | Target::Focused => {
             let el = dexter_world_model::resolve_element(obs, target).ok()?;
-            Some(SemanticTarget {
+            let mut st = SemanticTarget {
                 role: el.role.clone(),
                 name: el.name.clone(),
                 identifier: el.identifier.clone(),
                 ..Default::default()
-            })
+            };
+            // Duplicates share role+name — pin the element's tree-order
+            // ordinal so the identity still discriminates (a recorded
+            // attempt on "Guardar"[preview] must not suppress
+            // "Guardar"[main]). Single matches keep `None`: exact
+            // semantics, fail-closed.
+            let matches = dexter_world_model::find_elements(obs, &st);
+            if matches.len() > 1 {
+                st.index = matches.iter().position(|e| e.id == el.id);
+            }
+            Some(st)
         }
         Target::Point { .. } | Target::Window { .. } => None,
     }

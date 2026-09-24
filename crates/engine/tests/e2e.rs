@@ -1435,8 +1435,9 @@ fn stage_free_actions_never_wake_the_app() {
         engine.driver().wakes()
     );
 
-    // Positive control: a stage-needing act on a windowless app DOES
-    // wake — the gate narrows, it doesn't remove the borrow.
+    // A stage-needing act whose route is background-capable (sim's
+    // semantic click resolves without the stage) still does not wake —
+    // the borrow belongs to the route that executes, not the action.
     let click = Step {
         note: None,
         action: Action::Click {
@@ -1452,7 +1453,238 @@ fn stage_free_actions_never_wake_the_app() {
         app: None,
     };
     engine.run_step(&click, &c);
+    assert!(
+        engine.driver().wakes().is_empty(),
+        "background route stole focus: {:?}",
+        engine.driver().wakes()
+    );
+
+    // Positive control: a route that declares `requires_foreground`
+    // (physical key input) DOES borrow the stage — the gate narrows
+    // the borrow to the route that needs it, it doesn't remove it.
+    let coords_cfg = RunConfig {
+        allow_coordinates: true,
+        ..c.clone()
+    };
+    let key = Step {
+        note: None,
+        action: Action::Key {
+            chord: KeyChord::parse("a").unwrap(),
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    engine.run_step(&key, &coords_cfg);
     assert_eq!(engine.driver().wakes(), vec!["sim".to_string()]);
+}
+
+/// A driver whose app only exposes window content once `wake` runs —
+/// the Activation path's test double (macOS hides the AX window tree
+/// of a non-frontmost app the same way). The default plan yields the
+/// legacy route, which the engine marks `requires_foreground` for
+/// stage-needing actions.
+struct StageDriver {
+    wakes: Arc<AtomicU32>,
+    restores: Arc<AtomicU32>,
+    executes: Arc<AtomicU32>,
+}
+
+impl StageDriver {
+    fn new() -> (Self, Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>) {
+        let wakes = Arc::new(AtomicU32::new(0));
+        let restores = Arc::new(AtomicU32::new(0));
+        let executes = Arc::new(AtomicU32::new(0));
+        (
+            Self {
+                wakes: wakes.clone(),
+                restores: restores.clone(),
+                executes: executes.clone(),
+            },
+            wakes,
+            restores,
+            executes,
+        )
+    }
+}
+
+impl ComputerDriver for StageDriver {
+    fn capabilities(&self) -> DriverCapabilities {
+        DriverCapabilities {
+            name: "stage",
+            element_tree: true,
+            screenshots: false,
+            background_input: true,
+        }
+    }
+
+    fn windows(&self) -> Result<Vec<Window>, DriverError> {
+        Ok(vec![])
+    }
+
+    fn observe(&self, _scope: &ObservationScope) -> Result<Observation, DriverError> {
+        // Pre-wake the app shows no window tree; post-wake one appears.
+        let mut elements = vec![];
+        if self.wakes.load(Ordering::SeqCst) > 0 {
+            elements.push(el(1, "window", "Main"));
+            elements.push(el(2, "button", "A"));
+        }
+        // The act has a real effect — the derived WorldChanged
+        // expectation has something to see.
+        if self.executes.load(Ordering::SeqCst) > 0 {
+            elements.push(el(3, "static_text", "done"));
+        }
+        Ok(Observation {
+            id: ObservationId(1),
+            timestamp: std::time::SystemTime::now(),
+            elements,
+            ..Default::default()
+        })
+    }
+
+    fn act(&self, _action: &Action, _ctx: &ActContext) -> Result<ActionResult, DriverError> {
+        self.executes.fetch_add(1, Ordering::SeqCst);
+        Ok(ActionResult::success(Mechanism::Api, Some("ran".into())))
+    }
+
+    fn wake(&self, _app: &AppSelector) -> Result<WakeHandle, DriverError> {
+        self.wakes.fetch_add(1, Ordering::SeqCst);
+        Ok(WakeHandle::activated(None))
+    }
+
+    fn restore(&self, _handle: &WakeHandle) {
+        self.restores.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn stage_click() -> Step {
+    Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                name: Some("A".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+            count: 1,
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: Some(AppSelector::Name("stage-app".into())),
+    }
+}
+
+#[test]
+fn denied_stage_borrow_never_activates() {
+    // The reviewer's critical: a step policy will deny must not
+    // activate the app first. Deny the activation while allowing the
+    // click — the step fails with the stage refusal and zero wakes.
+    let (driver, wakes, _, executes) = StageDriver::new();
+    let policy = Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "click"
+        decision = "allow"
+        [[rule]]
+        action = "launch_app"
+        decision = "deny"
+        "#,
+    )
+    .unwrap();
+    let mut engine = Engine::new(driver, policy, Duration::from_secs(60));
+    match engine.run_step(&stage_click(), &cfg()) {
+        StepStatus::Failed { reason, .. } => {
+            assert!(reason.contains("stage borrow refused"), "{reason}")
+        }
+        other => panic!("expected Failed (stage refused), got {other:?}"),
+    }
+    assert_eq!(wakes.load(Ordering::SeqCst), 0, "denied stage still woke");
+    assert_eq!(executes.load(Ordering::SeqCst), 0, "refused route ran");
+}
+
+#[test]
+fn stage_borrow_approval_then_grant_activates_and_restores() {
+    let (driver, wakes, restores, executes) = StageDriver::new();
+    let policy = Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "click"
+        decision = "allow"
+        [[rule]]
+        action = "launch_app"
+        decision = "require_approval"
+        "#,
+    )
+    .unwrap();
+    let mut engine = Engine::new(driver, policy, Duration::from_secs(60));
+    let fp = match engine.run_step(&stage_click(), &cfg()) {
+        StepStatus::NeedsApproval { fingerprint, .. } => fingerprint,
+        other => panic!("expected NeedsApproval for the stage, got {other:?}"),
+    };
+    assert_eq!(wakes.load(Ordering::SeqCst), 0, "unapproved stage woke");
+    engine.grant_approval(&fp);
+    match engine.run_step(&stage_click(), &cfg()) {
+        StepStatus::Done { .. } => {}
+        other => panic!("granted stage should run, got {other:?}"),
+    }
+    assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    assert_eq!(executes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        restores.load(Ordering::SeqCst),
+        1,
+        "focus must be handed back after the step"
+    );
+}
+
+#[test]
+fn post_wake_route_is_reauthorized() {
+    // The first verdict was computed on a windowless world — after
+    // activation the route is re-evaluated rather than executed on the
+    // stale authorization. The consumed single-use grant doesn't cover
+    // the second ask, so the route re-surfaces NeedsApproval instead
+    // of running. (A semantic descriptor's bound tuple is unchanged by
+    // the wake — element-token routes can see the fingerprint move.)
+    let (driver, wakes, _, executes) = StageDriver::new();
+    let policy = Policy::from_toml(
+        r#"
+        [defaults]
+        mutating = "allow"
+        [[rule]]
+        action = "click"
+        decision = "require_approval"
+        [[rule]]
+        action = "launch_app"
+        decision = "allow"
+        "#,
+    )
+    .unwrap();
+    let mut engine = Engine::new(driver, policy, Duration::from_secs(60));
+    let fp1 = match engine.run_step(&stage_click(), &cfg()) {
+        StepStatus::NeedsApproval { fingerprint, .. } => fingerprint,
+        other => panic!("expected NeedsApproval, got {other:?}"),
+    };
+    engine.grant_approval(&fp1);
+    match engine.run_step(&stage_click(), &cfg()) {
+        StepStatus::NeedsApproval { fingerprint, .. } => {
+            assert_eq!(fingerprint, fp1, "same bound tuple re-asked")
+        }
+        other => panic!("post-wake route must re-ask, got {other:?}"),
+    }
+    assert_eq!(wakes.load(Ordering::SeqCst), 1, "stage borrow ran once");
+    assert_eq!(
+        executes.load(Ordering::SeqCst),
+        0,
+        "route ran on a stale authorization"
+    );
+    // Grant again — now the world is already windowed, no borrow is
+    // needed, and the act executes.
+    engine.grant_approval(&fp1);
+    match engine.run_step(&stage_click(), &cfg()) {
+        StepStatus::Done { .. } => {}
+        other => panic!("granted post-wake route should run, got {other:?}"),
+    }
+    assert_eq!(executes.load(Ordering::SeqCst), 1);
+    assert_eq!(wakes.load(Ordering::SeqCst), 1, "no second borrow needed");
 }
 
 #[test]

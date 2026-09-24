@@ -110,12 +110,20 @@ not.
 
 Engine owns wake/restore for all callers — there is no mode flag. Wake fires
 only for acts that stage a pre-action observation (`needs_stage`: the
-element-targeted acts) and only when the target app currently has no windows;
-read-only observes never wake.
+element-targeted acts), only when the scoped observation really showed no
+window content, and only for the concrete route about to execute that
+declares `requires_foreground` — a background route (a menu AXPress) never
+steals focus. Read-only observes never wake.
 
-Wake is a visual operation and goes through policy before activation. Restore
-runs after success, error, denial, approval request, cancellation and timeout.
-CLI/MCP/eval do not implement private wake helpers.
+Wake is a visual operation and goes through policy before activation — the
+borrow is evaluated as a launch-or-activate route, so a `deny` on
+`launch_app` refuses it and an unapproved one surfaces its own fingerprint.
+A granted stage approval is session-scoped: retries re-borrow the same app
+without re-asking (execute approvals stay single-use). After activation the
+engine re-observes, re-resolves descriptors and re-authorizes the concrete
+route on the woken world before executing. Restore runs after success,
+error, denial, approval request, cancellation and timeout. CLI/MCP/eval do
+not implement private wake helpers.
 
 ## Events
 
@@ -139,3 +147,6 @@ recovery outcome and duplicate effects.
    policy.
 8. Wake restores frontmost state on every terminal path.
 9. Cancellation interrupts verify delay and clears MCP task state.
+10. A denied or unapproved stage borrow never activates the app, and a
+    route authorized on a windowless world is re-authorized after the wake
+    before it may execute.

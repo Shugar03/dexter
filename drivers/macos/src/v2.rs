@@ -409,6 +409,15 @@ pub fn menu_item_for_chord(pid: i32, chord: &KeyChord) -> Result<Option<AXUIElem
     let app = AXUIElement::application(pid);
     let _ = app.set_messaging_timeout(1.5);
     let tree = crate::ax::collect_menu_bar(&app, 512);
+    // A capped catalog is honest about its limit: items beyond 512
+    // could claim this chord (hiding a match) or make a found one
+    // non-unique — say so rather than let the verdict look exhaustive.
+    if tree.truncated {
+        eprintln!(
+            "menu catalog truncated at 512 items — chord match for '{}' may be incomplete",
+            chord.key
+        );
+    }
     // `elements` and `nodes` are index-aligned — the match runs on
     // collected data, the press lands on the live handle.
     let enabled: Vec<&AXUIElement> = tree

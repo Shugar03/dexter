@@ -87,8 +87,10 @@ plans and executes only the first route. Engine v2 never calls it.
   `requires_foreground`; it does not foreground the app itself.
 - If planning cannot inspect a hidden macOS window, it returns
   `DriverError::ForegroundRequired`. Engine represents wake as a separate
-  visual route, authorizes it, wakes once, re-plans and then authorizes the
-  concrete route. No side effect occurs before policy.
+  visual route (launch-or-activate), authorizes it through the same
+  `evaluate_route` path, wakes once, re-observes, re-resolves route
+  descriptors and re-authorizes the concrete route on the woken world. No
+  side effect occurs before policy.
 - Routes using a physical mechanism are present only when the operator enabled
   coordinate input. Their presence is not authorization: policy still gates
   each route.
@@ -111,7 +113,11 @@ Policy evaluates action kind, app, planned mechanism, planned intrusiveness,
 sensitivity and structured target metadata. Free-form target hints and model
 rationales are audit text only and cannot authorize anything.
 
-Rules remain first-match-wins. Existing v1 fields continue to parse. V2 adds:
+Rules remain first-match-wins. Existing v1 fields continue to parse, and
+parsing fails closed: an unrecognised key on a rule, the defaults table or
+the document is a load error, never a silently widened authorization. A
+`mechanism` matcher only matches routes that declare that mechanism — a
+route with no declared mechanism cannot satisfy it. V2 adds:
 
 ```toml
 [[rule]]
@@ -119,12 +125,18 @@ action = "click"
 app = "bundle:com.apple.TextEdit"
 mechanism = "accessibility"
 intrusiveness = "background"
+sensitivity = "standard"
 decision = "allow"
 
 [rule.target]
 role = "button"
 name = "Save"
 ```
+
+`target = "save"` remains the v1 shorthand — a case-insensitive substring
+over the resolved descriptor's role, name and identifier. The
+`[rule.target]` table is the structured form: every present field must
+equal the resolved value case-insensitively.
 
 The approval key canonically binds action kind, every non-secret action
 parameter (chord, url digest, app selector, window op, button, count, invoke

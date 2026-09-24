@@ -935,6 +935,7 @@ name = "dexter-decision"
 version = "0.1.0"
 dependencies = [
  "dexter-core",
+ "dexter-world-model",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

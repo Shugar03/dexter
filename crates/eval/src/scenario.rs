@@ -304,6 +304,20 @@ pub fn run_scenario_with<D: ComputerDriver>(
     for fp in &spec.task.grants {
         engine.grant_approval(fp);
     }
+    // A live scenario's `app` declaration is operator consent for
+    // activating that app: seed the stage-borrow fingerprint so the
+    // engine's policy-gated wake doesn't stall the run asking for a
+    // grant no headless rep can give.
+    if let Some(live) = &spec.live {
+        let sel = AppSelector::parse(&live.app);
+        let route = dexter_engine::stage_route(&sel);
+        let ctx = dexter_policy::ActionContext {
+            app: Some(sel),
+            target_hint: None,
+        };
+        let fp = dexter_policy::fingerprint_route(&route, &ctx);
+        engine.grant_approval(&fp);
+    }
     if let Some(p) = journal_path {
         // Presence is best-effort — a journal that can't open doesn't
         // fail the rep.

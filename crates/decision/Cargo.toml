@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 dexter-core.workspace = true
+dexter-world-model.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

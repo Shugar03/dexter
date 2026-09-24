@@ -143,6 +143,56 @@
   bytes via a streaming writer instead of materializing
   `to_string()` — same 64KB limit, no large allocation.
 
+### Fixed (runtime-reliability-v2 review, round 9)
+
+- Policy rules no longer silently drop unknown keys: `RawPolicy`,
+  `Defaults`, `RawRule` and the `[rule.target]` table all use
+  `deny_unknown_fields`, so a typo'd or unsupported matcher fails
+  closed at load instead of widening authorization (previously
+  `mechanism = "accessibility"` was discarded and the rule authorized
+  coordinate clicks outright). The v2 matchers the SDD documents are
+  implemented: `mechanism`, `sensitivity`, and the structured
+  `[rule.target]` table (per-field case-insensitive equality over the
+  resolved descriptor) alongside the `target = "…"` substring
+  shorthand. A `mechanism` matcher never satisfies a route that
+  declares no mechanism.
+- Stage borrows now go through policy before activation — the
+  reviewer's critical. `run_step` no longer wakes before planning;
+  inside the route loop, only the concrete route about to execute
+  that declares `requires_foreground` (on a real windowless
+  observation) asks `authorize_stage` — a launch-or-activate route
+  evaluated through the same `evaluate_route` path. A `deny` refuses
+  without touching the machine; an unapproved borrow surfaces its own
+  fingerprint; after activation the engine re-observes, re-resolves
+  every route's descriptor, re-applies the sensitivity floor and
+  re-authorizes the route on the woken world before executing.
+  Background routes (menu AXPress) never steal focus, and granted
+  stage approvals are session-scoped per fingerprint so retries
+  re-borrow the same app while execute approvals stay single-use.
+- The engine's sensitivity floor now mirrors `Policy::evaluate`'s
+  action→sensitivity map for clipboard actions — an empty-plan legacy
+  route for `read_clipboard_text`/`write_clipboard_text` upgrades to
+  `Secrets` before policy sees it, matching the v1 verdict shape.
+- `GenHistory` attempts are recorded by semantic identity
+  (`normalize_attempt`), not ephemeral element tokens: element ids
+  are per-observation, so token comparison across observations both
+  failed to suppress retried elements and could suppress a different
+  element sitting on a recycled id. Recorded semantics carry the
+  tree-order `index` when duplicates share role+name, so a
+  duplicate's sibling is not "the same element" either.
+- `same_element_target` qualifies element-token matches by the
+  observation that minted them and compares semantic attempts on
+  role+name (+recorded identifier/index) — fixing both directions of
+  the cross-observation id hazard.
+- `menu_item_for_chord` warns when the menubar catalog truncates at
+  the 512-item cap — a hidden match (or an under-counted ambiguity)
+  no longer looks exhaustive; the 800ms post-wake sleep is a bounded
+  poll for the window tree instead.
+- Live scenario runs seed the stage-borrow fingerprint for the
+  declared `app` — declaring a live app is operator consent for
+  activating it, and `stage_route` is public so harnesses and
+  operators can reproduce the exact fingerprint.
+
 ### Fixed (runtime-reliability-v2 review, round 2)
 
 - `kCGMouseEventClickState` corrected to field 1 (`CGEventTypes.h`) —

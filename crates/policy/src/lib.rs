@@ -6,7 +6,8 @@
 //! pass through the same `evaluate` path.
 
 use dexter_core::{
-    Action, AppSelector, DexterError, ExecutionRoute, Intrusiveness, TargetDescriptor,
+    Action, AppSelector, DexterError, ExecutionRoute, Intrusiveness, Mechanism, Sensitivity,
+    TargetDescriptor,
 };
 use serde::Deserialize;
 use sha2::Digest;
@@ -40,6 +41,7 @@ enum DecisionKind {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawPolicy {
     #[serde(default)]
     defaults: Defaults,
@@ -48,6 +50,7 @@ struct RawPolicy {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Defaults {
     #[serde(default = "default_mutating")]
     mutating: DecisionKind,
@@ -72,7 +75,28 @@ fn default_mutating() -> DecisionKind {
     DecisionKind::RequireApproval
 }
 
+/// The `target` filter on a rule. `target = "save"` is the v1
+/// shorthand — a case-insensitive substring over the resolved
+/// target's role, name and identifier. `[rule.target]` is the v2
+/// structured form — every present field must equal the resolved
+/// value case-insensitively.
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawTarget {
+    Text(String),
+    Table(RawTargetTable),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTargetTable {
+    role: Option<String>,
+    name: Option<String>,
+    identifier: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawRule {
     /// `click`, `type_text`, `key`, `scroll`, `focus`, `set_value`,
     /// `observe`, `wait`, or `*` for every mutating action.
@@ -82,11 +106,18 @@ struct RawRule {
     app: Option<String>,
     /// Optional intrusiveness filter. Absent = matches any level.
     intrusiveness: Option<Intrusiveness>,
-    /// Optional target filter: case-insensitive substring matched
-    /// against the resolved target's role, name or identifier. This is
-    /// what lets a rule distinguish "Save" from "Delete" — it only sees
-    /// what the driver resolved, never model claims.
-    target: Option<String>,
+    /// Optional mechanism filter — `api`, `dom`, `accessibility`,
+    /// `native_automation`, `vision` or `coordinates`. A route that
+    /// declares no mechanism never matches a mechanism-constrained
+    /// rule: the claim can't be proven.
+    mechanism: Option<Mechanism>,
+    /// Optional sensitivity filter — `standard`, `secrets` or
+    /// `destructive`. Absent = matches any sensitivity.
+    sensitivity: Option<Sensitivity>,
+    /// Optional target filter. This is what lets a rule distinguish
+    /// "Save" from "Delete" — it only sees what the driver resolved,
+    /// never model claims.
+    target: Option<RawTarget>,
     decision: DecisionKind,
     #[serde(default)]
     reason: String,
@@ -197,9 +228,8 @@ impl Policy {
         ctx: &ActionContext,
     ) -> PolicyDecision {
         let intrusiveness = route.intrusiveness;
-        let target = &route.target;
         for rule in &self.rules {
-            if !rule_matches(rule, kind, intrusiveness, target, ctx) {
+            if !rule_matches(rule, kind, route, ctx) {
                 continue;
             }
             let reason = if rule.reason.is_empty() {
@@ -327,8 +357,7 @@ fn action_kind_of(s: &str) -> Option<()> {
 fn rule_matches(
     rule: &RawRule,
     kind: &'static str,
-    intrusiveness: Intrusiveness,
-    target: &TargetDescriptor,
+    route: &ExecutionRoute,
     ctx: &ActionContext,
 ) -> bool {
     let action_ok = rule.action == "*" || rule.action == kind;
@@ -336,16 +365,42 @@ fn rule_matches(
         return false;
     }
     if let Some(tier) = rule.intrusiveness {
-        if tier != intrusiveness {
+        if tier != route.intrusiveness {
             return false;
         }
     }
+    // A mechanism-constrained rule only matches a route that declares
+    // that mechanism — an undeclared mechanism can't prove the claim.
+    if let Some(m) = rule.mechanism {
+        if route.mechanism != Some(m) {
+            return false;
+        }
+    }
+    if let Some(s) = rule.sensitivity {
+        if route.sensitivity != s {
+            return false;
+        }
+    }
+    let target = &route.target;
     if let Some(pattern) = &rule.target {
-        let needle = pattern.to_lowercase();
-        let hit = [&target.role, &target.name, &target.identifier]
-            .into_iter()
-            .flatten()
-            .any(|f| f.to_lowercase().contains(&needle));
+        let hit = match pattern {
+            RawTarget::Text(text) => {
+                let needle = text.to_lowercase();
+                [&target.role, &target.name, &target.identifier]
+                    .into_iter()
+                    .flatten()
+                    .any(|f| f.to_lowercase().contains(&needle))
+            }
+            RawTarget::Table(table) => {
+                let eq = |want: &Option<String>, got: &Option<String>| {
+                    want.as_ref()
+                        .is_none_or(|w| got.as_ref().is_some_and(|g| g.eq_ignore_ascii_case(w)))
+                };
+                eq(&table.role, &target.role)
+                    && eq(&table.name, &target.name)
+                    && eq(&table.identifier, &target.identifier)
+            }
+        };
         if !hit {
             return false;
         }

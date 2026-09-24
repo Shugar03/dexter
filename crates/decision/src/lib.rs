@@ -24,7 +24,7 @@
 //!   engines (Laya) express themselves through; the engine-internal
 //!   `decide()` call stays opaque.
 
-use dexter_core::{Action, Element, MouseButton, Observation, Target};
+use dexter_core::{Action, Element, MouseButton, Observation, SemanticTarget, Target};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -827,27 +827,58 @@ fn element_target(obs: &Observation, el: &Element) -> Target {
     }
 }
 
-/// Does `attempted` point at `el`? Element targets match by id; semantic
-/// targets (attempts recorded by external engines) match role+name.
-fn same_element_target(attempted: &Target, el: &Element) -> bool {
+/// Does `attempted` point at `el` in `obs`? Element targets match by
+/// id *only within the observation that minted them* — ids are
+/// per-observation, so a token from a different observation may sit on
+/// a different node now and must not suppress this candidate. Semantic
+/// targets (what the engine records attempts as) match role+name, the
+/// identifier when recorded, and the tree-order index when several
+/// elements share the identity — a duplicate's sibling is not "the
+/// same element".
+fn same_element_target(attempted: &Target, el: &Element, obs: &Observation) -> bool {
     match attempted {
-        Target::Element { element, .. } => element == &el.id,
-        Target::Semantic(st) => st.role == el.role && st.name == el.name,
+        Target::Element {
+            observation,
+            element,
+        } => observation == &obs.id && element == &el.id,
+        Target::Semantic(st) => {
+            if !(st.role == el.role && st.name == el.name)
+                || !(st.identifier.is_none() || st.identifier == el.identifier)
+            {
+                return false;
+            }
+            match st.index {
+                None => true,
+                Some(i) => {
+                    // el's own ordinal among the same filters — the
+                    // recorded pick and this candidate must hold the
+                    // same slot to count as the same element.
+                    let filters = SemanticTarget {
+                        index: None,
+                        ..st.clone()
+                    };
+                    dexter_world_model::find_elements(obs, &filters)
+                        .iter()
+                        .position(|e| e.id == el.id)
+                        == Some(i)
+                }
+            }
+        }
         _ => false,
     }
 }
 
 /// Does `attempts` already contain an action on this same element?
-fn already_tried(el: &Element, attempts: &[Action]) -> bool {
+fn already_tried(el: &Element, attempts: &[Action], obs: &Observation) -> bool {
     attempts.iter().any(|a| match a {
         Action::Click { target, .. }
         | Action::Focus { target }
         | Action::SetValue { target, .. }
-        | Action::Invoke { target, .. } => same_element_target(target, el),
-        Action::Drag { from, .. } => same_element_target(from, el),
-        Action::TypeText { target, .. } => {
-            target.as_ref().is_some_and(|t| same_element_target(t, el))
-        }
+        | Action::Invoke { target, .. } => same_element_target(target, el, obs),
+        Action::Drag { from, .. } => same_element_target(from, el, obs),
+        Action::TypeText { target, .. } => target
+            .as_ref()
+            .is_some_and(|t| same_element_target(t, el, obs)),
         _ => false,
     })
 }
@@ -964,7 +995,7 @@ impl CandidateGenerator for HeuristicGenerator {
                     prior += 0.15;
                 }
             }
-            if already_tried(el, &hist.attempts) {
+            if already_tried(el, &hist.attempts, obs) {
                 prior *= 0.35;
             }
             let prior = prior.min(1.0);

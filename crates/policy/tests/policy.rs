@@ -645,3 +645,148 @@ fn destructive_floor_requires_approval_under_mutating_allow() {
         other => panic!("explicit quit_app rule should win, got {other:?}"),
     }
 }
+
+#[test]
+fn unknown_policy_keys_fail_closed() {
+    // A typo'd matcher must not silently widen authorization: before
+    // `deny_unknown_fields`, an unrecognised key was dropped by serde
+    // and the rule authorized more than the operator wrote.
+    let err = Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "click"
+        intrusivness = "physical"
+        decision = "allow"
+        "#,
+    );
+    assert!(err.is_err(), "misspelled field must fail closed");
+    let err = Policy::from_toml("[defaults]\nmutating = \"allow\"\nphysicsl = \"deny\"\n");
+    assert!(err.is_err(), "unknown defaults key must fail closed");
+    let err = Policy::from_toml("unknown_top = 1\n");
+    assert!(err.is_err(), "unknown top-level key must fail closed");
+}
+
+#[test]
+fn mechanism_matcher_scopes_a_rule() {
+    // The reviewer's scenario: `mechanism = "accessibility"` must gate
+    // exactly the AX route — a coordinate click falls through to the
+    // physical floor and is denied.
+    let policy = Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "click"
+        mechanism = "accessibility"
+        decision = "allow"
+        "#,
+    )
+    .unwrap();
+    let route = |mechanism, intrusiveness| ExecutionRoute {
+        action: click(),
+        target: Default::default(),
+        mechanism,
+        intrusiveness,
+        sensitivity: dexter_core::Sensitivity::Standard,
+        requires_foreground: false,
+    };
+    assert_eq!(
+        policy.evaluate_route(
+            &route(
+                Some(dexter_core::Mechanism::Accessibility),
+                dexter_core::Intrusiveness::Background,
+            ),
+            &ctx(None),
+        ),
+        PolicyDecision::Allow,
+    );
+    match policy.evaluate_route(
+        &route(
+            Some(dexter_core::Mechanism::Coordinates),
+            dexter_core::Intrusiveness::Physical,
+        ),
+        &ctx(None),
+    ) {
+        PolicyDecision::Deny { .. } => {}
+        other => panic!("coordinate route must hit the physical floor, got {other:?}"),
+    }
+    // A route that declares no mechanism can never satisfy a
+    // mechanism-constrained rule — the claim can't be proven.
+    match policy.evaluate_route(
+        &route(None, dexter_core::Intrusiveness::Background),
+        &ctx(None),
+    ) {
+        PolicyDecision::RequireApproval { .. } => {}
+        other => panic!("undeclared mechanism must not match, got {other:?}"),
+    }
+}
+
+#[test]
+fn sensitivity_matcher_scopes_a_rule() {
+    let policy = Policy::from_toml(
+        r#"
+        [defaults]
+        mutating = "deny"
+        [[rule]]
+        action = "type_text"
+        sensitivity = "secrets"
+        decision = "require_approval"
+        "#,
+    )
+    .unwrap();
+    let route = |sensitivity| ExecutionRoute {
+        action: Action::TypeText {
+            text: "x".into(),
+            target: None,
+        },
+        target: Default::default(),
+        mechanism: Some(dexter_core::Mechanism::Accessibility),
+        intrusiveness: dexter_core::Intrusiveness::Background,
+        sensitivity,
+        requires_foreground: false,
+    };
+    match policy.evaluate_route(&route(dexter_core::Sensitivity::Secrets), &ctx(None)) {
+        PolicyDecision::RequireApproval { .. } => {}
+        other => panic!("secrets-scoped rule should match, got {other:?}"),
+    }
+    match policy.evaluate_route(&route(dexter_core::Sensitivity::Standard), &ctx(None)) {
+        PolicyDecision::Deny { .. } => {}
+        other => panic!("standard route must fall to mutating=deny, got {other:?}"),
+    }
+}
+
+#[test]
+fn structured_target_table_matches_present_fields() {
+    // `[rule.target]` is the v2 form: every present field must equal
+    // the resolved descriptor case-insensitively — role alone can't
+    // distinguish "Save" from "Delete".
+    let policy = Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "click"
+        decision = "allow"
+        [rule.target]
+        role = "button"
+        name = "Save"
+        "#,
+    )
+    .unwrap();
+    let route = |name: &str| ExecutionRoute {
+        action: click(),
+        target: dexter_core::TargetDescriptor {
+            role: Some("button".into()),
+            name: Some(name.into()),
+            ..Default::default()
+        },
+        mechanism: Some(dexter_core::Mechanism::Accessibility),
+        intrusiveness: dexter_core::Intrusiveness::Background,
+        sensitivity: dexter_core::Sensitivity::Standard,
+        requires_foreground: false,
+    };
+    assert_eq!(
+        policy.evaluate_route(&route("Save"), &ctx(None)),
+        PolicyDecision::Allow,
+    );
+    match policy.evaluate_route(&route("Delete"), &ctx(None)) {
+        PolicyDecision::RequireApproval { .. } => {}
+        other => panic!("mismatched name must not match, got {other:?}"),
+    }
+}
