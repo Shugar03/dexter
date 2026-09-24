@@ -36,6 +36,9 @@ pub struct CGSize {
 /// AXValueType values we decode.
 pub const K_AX_VALUE_CG_POINT_TYPE: i32 = 1;
 pub const K_AX_VALUE_CG_SIZE_TYPE: i32 = 2;
+/// `kAXValueAXErrorType` — the failure slot inside a batched
+/// `AXUIElementCopyMultipleAttributeValues` result array.
+pub const K_AX_VALUE_AX_ERROR_TYPE: i32 = 3;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
@@ -47,6 +50,16 @@ extern "C" {
     /// Create an AXValue wrapping a CGPoint/CGSize — needed to *set*
     /// AXPosition/AXSize (window move/resize).
     pub fn AXValueCreate(theType: i32, valuePtr: *const c_void) -> CFTypeRef;
+    /// Fetch several attributes in one IPC roundtrip — the documented
+    /// fast path for tree walks. `values` is a CFArray parallel to
+    /// `attributes`; unfetchable slots arrive as AXValue-wrapped
+    /// AXError (type `kAXValueAXErrorType`).
+    pub fn AXUIElementCopyMultipleAttributeValues(
+        element: CFTypeRef,
+        attributes: core_foundation::array::CFArrayRef,
+        options: u32,
+        values: *mut core_foundation::array::CFArrayRef,
+    ) -> i32;
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]

@@ -90,6 +90,10 @@ enum Command {
         /// inert `[ocr]` elements.
         #[arg(long)]
         vision: bool,
+        /// Skip the menu-bar subtree — much faster when only window
+        /// controls are needed (menu chords still resolve live).
+        #[arg(long)]
+        no_menu: bool,
     },
     /// Map an app's interface: windows, control clusters, the menubar
     /// verb vocabulary and inferred capabilities — one call answers
@@ -591,6 +595,7 @@ fn run() -> Result<()> {
             digest,
             screenshot,
             vision,
+            no_menu,
         } => {
             let scope = ObservationScope {
                 app: app.as_deref().map(AppSelector::parse),
@@ -600,6 +605,7 @@ fn run() -> Result<()> {
                 screenshot: screenshot.is_some(),
                 vision,
                 screenshot_path: screenshot,
+                include_menu: !no_menu,
             };
             observe(engine.driver(), &scope, digest)
         }

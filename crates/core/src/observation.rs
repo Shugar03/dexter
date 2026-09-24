@@ -61,6 +61,17 @@ pub struct ObservationScope {
     /// when absent).
     #[serde(default)]
     pub screenshot_path: Option<String>,
+    /// Whether to walk the app's menu-bar subtree. Menu items often
+    /// outnumber window elements ~10:1 and each costs an IPC roundtrip;
+    /// callers that only need window controls can opt out. Menu chords
+    /// (`Action::Key` semantic routing) resolve the menu live and are
+    /// unaffected.
+    #[serde(default = "default_true")]
+    pub include_menu: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for ObservationScope {
@@ -73,6 +84,7 @@ impl Default for ObservationScope {
             screenshot: false,
             vision: false,
             screenshot_path: None,
+            include_menu: true,
         }
     }
 }

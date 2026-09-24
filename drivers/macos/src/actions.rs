@@ -123,7 +123,7 @@ fn resolve_element(
             })?;
             let app = AXUIElement::application(pid);
             let _ = app.set_messaging_timeout(1.5);
-            let tree = ax::collect(&app, ACTION_WALK_DEPTH, ACTION_WALK_MAX);
+            let tree = ax::collect(&app, ACTION_WALK_DEPTH, ACTION_WALK_MAX, true);
             let fresh_idx = tree.elements.iter().position(|e| e.id == *element);
             dexter_driver::resolve::verify_identity(
                 &stored,
@@ -142,7 +142,7 @@ fn resolve_element(
         }
         Target::Semantic(_) => {
             let (_pid, app) = resolve_app(ctx)?;
-            let tree = ax::collect(&app, ACTION_WALK_DEPTH, ACTION_WALK_MAX);
+            let tree = ax::collect(&app, ACTION_WALK_DEPTH, ACTION_WALK_MAX, true);
             let obs = Observation {
                 elements: tree.elements,
                 elements_truncated: tree.truncated,

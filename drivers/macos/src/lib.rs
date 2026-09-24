@@ -149,10 +149,20 @@ impl ComputerDriver for MacOsDriver {
                         // (degraded AXWindows, same-bounds ambiguity) —
                         // walk the full tree; callers bounds-filter the
                         // result, which is still correct, just slower.
-                        Err(_) => ax::collect(&app, scope.max_depth, scope.max_elements),
+                        Err(_) => ax::collect(
+                            &app,
+                            scope.max_depth,
+                            scope.max_elements,
+                            scope.include_menu,
+                        ),
                     }
                 }
-                None => ax::collect(&app, scope.max_depth, scope.max_elements),
+                None => ax::collect(
+                    &app,
+                    scope.max_depth,
+                    scope.max_elements,
+                    scope.include_menu,
+                ),
             };
             obs.elements_truncated = tree.truncated;
             obs.collection_errors = tree.errors;
