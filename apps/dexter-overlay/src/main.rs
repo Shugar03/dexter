@@ -95,6 +95,10 @@ mod platform {
         if !s.visible {
             return;
         }
+        // Cursor anchor: the target's center when the journal carries
+        // real bounds; a degenerate rect (menubar items report 0×0) or
+        // no bounds at all (failed observe, navigate) anchors lower-
+        // center — presence must never be invisible in a corner.
         let d = *DISPLAY.read().unwrap();
         let (r, g, b) = status_color(s.status, s.user_control);
         let color: id = msg_send![class!(NSColor), colorWithSRGBRed:r green:g blue:b alpha:1.0f64];
@@ -150,6 +154,14 @@ mod platform {
         }
     }
 
+    fn screen_width() -> f64 {
+        unsafe {
+            let screen: id = msg_send![class!(NSScreen), mainScreen];
+            let frame: NSRect = msg_send![screen, frame];
+            frame.size.width
+        }
+    }
+
     fn ns(s: &str) -> id {
         unsafe { NSString::alloc(nil).init_str(s) }
     }
@@ -176,7 +188,8 @@ mod platform {
             // Above status-bar level; never intercepts clicks.
             let _: () = msg_send![win, setLevel: 25i64];
             win.setIgnoresMouseEvents_(YES);
-            let _: () = msg_send![win, setCollectionBehavior: 1u64 | 16u64]; // all spaces + stationary
+            // all spaces + stationary + over fullscreen apps' spaces
+            let _: () = msg_send![win, setCollectionBehavior: 1u64 | 16u64 | 256u64];
 
             // Custom view: draws arrow + reticle.
             let superclass = class!(NSView);
@@ -249,12 +262,6 @@ mod platform {
                             last_activity = Instant::now();
                         }
                         if dirty {
-                            if let Some((x, y)) = s.cursor {
-                                let mut d = DISPLAY.write().unwrap();
-                                if *d == (0.0, 0.0) {
-                                    *d = (x, y);
-                                }
-                            }
                             let label = format!("{} · {}", s.agent, s.status_line);
                             let _: () = msg_send![tag, setStringValue: ns(&label)];
                             let (r, g, b) = status_color(s.status, s.user_control);
@@ -276,18 +283,32 @@ mod platform {
                 }
 
                 // Lerp the displayed cursor toward the journal target.
+                // No usable bounds (degenerate rect, target-less act, or
+                // a terminal event cleared the target): hold the last
+                // position; before any placement, anchor lower-center —
+                // presence stays on screen, never parked in a corner.
                 if let Some(s) = STATE.read().unwrap().clone() {
-                    if let Some((tx, ty)) = s.cursor {
+                    let placed = *DISPLAY.read().unwrap() != (0.0, 0.0);
+                    // `cursor` outlives the terminal event that clears
+                    // `target` — a fast act read in one poll still lands.
+                    let tgt = s.cursor.or_else(|| {
+                        (!placed).then(|| (screen_width() * 0.5, screen_height() * 0.72))
+                    });
+                    if let Some((tx, ty)) = tgt {
                         let mut d = DISPLAY.write().unwrap();
-                        d.0 += (tx - d.0) * 0.22;
-                        d.1 += (ty - d.1) * 0.22;
+                        if *d == (0.0, 0.0) {
+                            *d = (tx, ty); // first frame snaps — no cross-screen slide
+                        } else {
+                            d.0 += (tx - d.0) * 0.22;
+                            d.1 += (ty - d.1) * 0.22;
+                        }
                     }
                     // Tag floats below-right of the arrow tip.
                     let d = *DISPLAY.read().unwrap();
                     let w = (label_width(&s) as f64).max(48.0);
                     let h = screen_height();
                     let _: () = msg_send![tag, setFrame: NSRect::new(
-                        NSPoint::new(d.0 + 14.0, h - d.1 - 24.0),
+                        NSPoint::new(d.0 + 30.0, h - d.1 - 40.0),
                         NSSize::new(w, 18.0))];
                 }
 
@@ -330,12 +351,14 @@ mod platform {
         rest.split('-').next()?.parse().ok()
     }
 
+    /// Signal 0 probes existence without delivering anything. (Not
+    /// NSRunningApplication — it only knows GUI apps, so a CLI writer
+    /// always looked dead and the overlay quit after one second.)
     fn pid_alive(pid: i32) -> bool {
-        unsafe {
-            let app: id = msg_send![class!(NSRunningApplication),
-                runningApplicationWithProcessIdentifier: pid];
-            app != nil
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
         }
+        unsafe { kill(pid, 0) == 0 }
     }
 
     /// Rough mono-font width estimate for the tag frame.

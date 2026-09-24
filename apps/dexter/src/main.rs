@@ -1516,6 +1516,7 @@ fn eval_harvest(driver: &dyn ComputerDriver, manifest_path: &str, out: &str) -> 
         }
         if let Some(cmd) = &page.prep {
             let status = std::process::Command::new("sh")
+                .env("DEXTER_OVERLAY", "0")
                 .arg("-c")
                 .arg(cmd)
                 .status()
@@ -1534,7 +1535,11 @@ fn eval_harvest(driver: &dyn ComputerDriver, manifest_path: &str, out: &str) -> 
             .observe(&scope)
             .map_err(|e| anyhow::anyhow!("{}: observe: {e}", page.id))?;
         if let Some(cmd) = &page.teardown {
-            let _ = std::process::Command::new("sh").arg("-c").arg(cmd).status();
+            let _ = std::process::Command::new("sh")
+                .env("DEXTER_OVERLAY", "0")
+                .arg("-c")
+                .arg(cmd)
+                .status();
         }
 
         let gold = match &page.gold {
@@ -1622,6 +1627,7 @@ fn eval_scenario(
     let mut export_skipped = 0usize;
 
     let mut all: Vec<ScenarioMetrics> = Vec::new();
+    let mut last_overlay: Option<std::process::Child> = None;
     for file in &files {
         let text =
             std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
@@ -1692,6 +1698,7 @@ fn eval_scenario(
                 // teardown always runs so a failed rep leaves no state.
                 if let Some(prep) = &lspec.prep {
                     let st = std::process::Command::new("sh")
+                        .env("DEXTER_OVERLAY", "0")
                         .arg("-c")
                         .arg(prep)
                         .status()
@@ -1744,6 +1751,7 @@ fn eval_scenario(
                             );
                             if let Some(teardown) = &lspec.teardown {
                                 let _ = std::process::Command::new("sh")
+                                    .env("DEXTER_OVERLAY", "0")
                                     .arg("-c")
                                     .arg(teardown)
                                     .status();
@@ -1757,6 +1765,7 @@ fn eval_scenario(
                             );
                             if let Some(teardown) = &lspec.teardown {
                                 let _ = std::process::Command::new("sh")
+                                    .env("DEXTER_OVERLAY", "0")
                                     .arg("-c")
                                     .arg(teardown)
                                     .status();
@@ -1776,7 +1785,13 @@ fn eval_scenario(
                         rep + 1
                     ))
                 });
-                let overlay_child = presence_journal
+                // One overlay on screen at a time: the previous rep's is
+                // retired when the next starts; the last one lingers on
+                // its own terminal timer so the outcome stays visible.
+                if let Some(mut c) = last_overlay.take() {
+                    let _ = c.kill();
+                }
+                last_overlay = presence_journal
                     .as_deref()
                     .and_then(dexter_engine::presence::spawn_overlay);
                 let run = run_scenario_with(
@@ -1786,11 +1801,9 @@ fn eval_scenario(
                     decider.as_ref(),
                     presence_journal.as_deref(),
                 );
-                if let Some(mut c) = overlay_child {
-                    let _ = c.kill();
-                }
                 if let Some(teardown) = &lspec.teardown {
                     let _ = std::process::Command::new("sh")
+                        .env("DEXTER_OVERLAY", "0")
                         .arg("-c")
                         .arg(teardown)
                         .status();
@@ -1942,7 +1955,10 @@ fn eval_scenario(
 /// headless unless asked — every act should be seen, not invisible.
 fn presence_wanted(overlay: bool, no_overlay: bool) -> bool {
     use std::io::IsTerminal;
-    !no_overlay && (overlay || std::io::stderr().is_terminal())
+    // DEXTER_OVERLAY=0 silences nested invocations (scenario prep and
+    // teardown scripts) so their overlays don't stack over the run's.
+    let muted = std::env::var("DEXTER_OVERLAY").is_ok_and(|v| v == "0");
+    !no_overlay && (overlay || (!muted && std::io::stderr().is_terminal()))
 }
 
 /// Temp journal path for presence runs without an explicit `--events`.

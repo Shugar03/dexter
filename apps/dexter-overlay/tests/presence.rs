@@ -38,6 +38,47 @@ fn action_proposed_moves_cursor_to_target_center() {
 }
 
 #[test]
+fn fast_act_keeps_cursor_on_target_after_terminal() {
+    // A single click journals proposed+completed within one overlay
+    // poll — the cursor must still land on the button it pressed.
+    let mut s = PresenceState::new("dexter");
+    for e in [
+        ev(
+            EventKind::ActionProposed,
+            serde_json::json!({
+                "action": {"type": "click"},
+                "intrusiveness": "background",
+                "target_bounds": {"x": 295.0, "y": 666.0, "w": 48.0, "h": 48.0},
+            }),
+        ),
+        ev(EventKind::TaskCompleted, serde_json::json!({"steps": 1})),
+    ] {
+        reduce(&mut s, &e);
+    }
+    assert_eq!(s.cursor, Some((319.0, 690.0)));
+}
+
+#[test]
+fn degenerate_bounds_do_not_move_cursor() {
+    // Menubar items report 0×0 rects at the screen edge — locking onto
+    // them parks the cursor in a corner where nobody sees it.
+    let mut s = PresenceState::new("dexter");
+    reduce(
+        &mut s,
+        &ev(
+            EventKind::ActionProposed,
+            serde_json::json!({
+                "action": {"type": "click"},
+                "intrusiveness": "background",
+                "target_bounds": {"x": 0.0, "y": 956.0, "w": 0.0, "h": 0.0},
+            }),
+        ),
+    );
+    assert!(s.cursor.is_none());
+    assert!(s.target.is_none());
+}
+
+#[test]
 fn physical_action_marks_exclusive_control() {
     // The one state the user must notice: the agent touching real input.
     let mut s = PresenceState::new("dexter");

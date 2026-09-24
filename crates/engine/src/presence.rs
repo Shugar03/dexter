@@ -32,9 +32,14 @@ fn resolve_overlay_bin() -> Option<PathBuf> {
 /// the child so a caller driving several runs can kill leftovers.
 pub fn spawn_overlay(events_path: &Path) -> Option<std::process::Child> {
     let bin = resolve_overlay_bin()?;
+    // Every presence journal is freshly created per run, so the overlay
+    // reads it from byte 0 (`--replay`) and keeps tailing. Starting at
+    // the end raced Cocoa's startup: a fast act finished before the
+    // overlay opened the file and the cursor never appeared.
     std::process::Command::new(bin)
         .arg("--events")
         .arg(events_path)
+        .arg("--replay")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

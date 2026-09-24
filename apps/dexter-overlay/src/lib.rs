@@ -108,6 +108,7 @@ pub fn reduce(state: &mut PresenceState, ev: &Event) {
                 .data
                 .get("target_bounds")
                 .and_then(|v| serde_json::from_value::<Rect>(v.clone()).ok())
+                .filter(|r| r.w >= 2.0 && r.h >= 2.0)
             {
                 state.target = Some(r);
                 state.cursor = Some((r.x + r.w / 2.0, r.y + r.h / 2.0));
