@@ -8,7 +8,8 @@ goal, and a `done_when`, driven end-to-end by `Engine::run_task` — the
 same closed loop production runs (observe → candidates → decide → act →
 re-check). The default surface is `SimDriver` — hermetic, CI-safe;
 `driver = "browser"` scenarios run the same loop on a live DOM over
-WebDriver, opt-in via `--browser-url`.
+WebDriver (opt-in via `--browser-url`); `driver = "macos"` + `[live]`
+runs it on a real app's AX tree (opt-in by environment).
 
 A task scenario is *not* a `dexter run` scenario: that one replays a
 fixed action list; this one gives an engine a goal and watches what it
@@ -18,7 +19,8 @@ does — including whether it stops.
 ScenarioSpec { scenario: {id, goal, optimal_steps, app, driver?},
                task: {done_when, expected, max_steps, max_secs, grants},
                world: {element[], rule[](on_press), tick[](on_observe)},
-               browser?: {page | url, settle_ms} }
+               browser?: {page | url, settle_ms},
+               live?: {app, prep?, teardown?, settle_ms} }
 ```
 
 ## What it measures
@@ -74,6 +76,58 @@ settle_ms = 500                 # post-navigate settle
   flaky on CI runners, and a metric suite must not flake the gate.
 - A scenario named in `baseline.toml` but absent from results (skipped
   or deleted) **is a violation** — a skip cannot hide a regression.
+
+## macOS-live scenarios
+
+`driver = "macos"` + a `[live]` section run the identical loop against
+a real app's Accessibility tree:
+
+```toml
+[scenario]
+driver = "macos"
+
+[live]
+app = "com.apple.calculator"   # RunConfig.app scope — same selector
+                               # syntax as --app (name | bundle | pid)
+prep = "open -a Calculator"    # shell, per rep — normalises the world
+teardown = "osascript -e '...'"# shell, per rep — always runs
+settle_ms = 1200               # post-prep AND post-act settle
+```
+
+- The observe probe runs **after** the first prep (prep is what
+  launches the app); a hard observe error — no AX permission, app
+  missing — prints `skipped`, never `failed`. Same contract as
+  browser: local-only, never CI-gated.
+- `settle_ms` is also applied as `RunConfig.post_act_settle` — a real
+  app propagates AX state asynchronously, so without it the post-act
+  observation races the state change (measured below).
+- `prep`/`teardown` may call `dexter` itself (on PATH post-install) —
+  teardowns in the suite use `dexter click` to restore app state.
+
+### What the first live run caught
+
+Four real-app failure modes, all invisible to sim and frozen eval:
+
+1. **Vacuous completion** — Calculator/Clock persist state across
+   quit (scientific mode, a running stopwatch), so `done_when` was
+   already true at step 0. `prep` must normalise inherited state, not
+   just launch the app.
+2. **Async AX propagation** — after a successful act the next observe
+   raced the retitle/relabel (`window Wi‑Fi`, `Iniciar → Detener`);
+   `done_when` missed, the repeated-attempt penalty sank the next
+   candidate, and the task *abstained after succeeding*. Fixed by
+   `RunConfig.post_act_settle`.
+3. **U+2011** — the real Settings label is `Wi‑Fi` with a
+   non-breaking hyphen, not ASCII `-`. Targets authored by guessing
+   fail; labels must come from a live `observe`.
+4. **Focus stealing** — TextEdit restores previous documents, and a
+   restored window's `text_area` stole focus from the fixture's.
+   `prep` closes restored documents; the focused-editable fallback
+   needs the caret on *our* field.
+
+Also surfaced a generator gap fixed in the same pass: a focused,
+*unnamed* editable field with a quoted literal in the goal now gets a
+`TypeText` candidate (previously only a no-op `Focus`).
 
 ## Limits honesty
 

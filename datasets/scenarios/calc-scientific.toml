@@ -1,0 +1,23 @@
+# calc-scientific — real menu navigation on Calculator: Presentación →
+# Científica swaps the keypad for scientific buttons. Verifies a new
+# control spawned (Raíz cuadrada), not a pixel guess.
+#
+# Calculator persists its mode across quit, so teardown returns it to
+# Básica first — without that the scenario would complete vacuously on
+# the next run.
+[scenario]
+id = "calc-scientific"
+driver = "macos"
+goal = "abrir científica"
+optimal_steps = 1
+app = "Calculadora"
+
+[live]
+app = "com.apple.calculator"
+prep = "osascript -e 'tell application id \"com.apple.calculator\" to quit' 2>/dev/null || true; sleep 0.5; open -a Calculator; sleep 0.8; dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true"
+teardown = "dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true; osascript -e 'tell application id \"com.apple.calculator\" to quit'"
+settle_ms = 1200
+
+[task]
+done_when = { type = "element_exists", target = { role = "button", name = "Raíz cuadrada" } }
+max_steps = 6

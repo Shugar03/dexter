@@ -1,0 +1,24 @@
+# clock-timer — real-app chain on Clock.app: tab selection reveals a
+# control that did not exist before, then pressing it changes state
+# (Iniciar → Detener). Measures the loop on a live AX tree.
+#
+# Clock persists both its tab and a running stopwatch across quit, so
+# teardown restores the world: stop the timer if running, switch back
+# to Reloj mundial, then quit. `dexter` is expected on PATH (the same
+# contract as a real install); `|| true` keeps teardown best-effort.
+[scenario]
+id = "clock-timer"
+driver = "macos"
+goal = "ir a cronómetro e iniciar"
+optimal_steps = 2
+app = "Clock"
+
+[live]
+app = "com.apple.clock"
+prep = "osascript -e 'tell application id \"com.apple.clock\" to quit' 2>/dev/null || true; sleep 0.5; open -a Clock; sleep 1; dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true"
+teardown = "dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true; osascript -e 'tell application id \"com.apple.clock\" to quit'"
+settle_ms = 1500
+
+[task]
+done_when = { type = "element_exists", target = { role = "button", name = "Detener" } }
+max_steps = 8

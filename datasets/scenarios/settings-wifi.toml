@@ -1,0 +1,24 @@
+# settings-wifi — real menu navigation on System Settings: the View
+# menu's items live in the AX tree permanently, and choosing Wi-Fi
+# retitles the window element itself. Navigation only — no network
+# state is touched.
+#
+# The label is U+2011 NON-BREAKING HYPHEN ("Wi‑Fi"), not ASCII "-" —
+# verified against the live AX tree. Settings always reopens on the
+# General pane, so quit + open is a clean reset.
+[scenario]
+id = "settings-wifi"
+driver = "macos"
+goal = "abrir wi‑fi"
+optimal_steps = 1
+app = "Settings"
+
+[live]
+app = "com.apple.systempreferences"
+prep = "osascript -e 'tell application id \"com.apple.systempreferences\" to quit' 2>/dev/null || true; sleep 0.5; open -a 'System Settings'"
+teardown = "osascript -e 'tell application id \"com.apple.systempreferences\" to quit'"
+settle_ms = 1800
+
+[task]
+done_when = { type = "element_exists", target = { role = "window", name = "Wi‑Fi" } }
+max_steps = 6

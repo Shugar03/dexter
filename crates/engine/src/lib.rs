@@ -89,6 +89,10 @@ pub struct RunConfig {
     pub max_attempts: u32,
     /// Settle time before re-observing for verification.
     pub verify_delay: Duration,
+    /// Settle after a completed act before the next observe — real apps
+    /// propagate state asynchronously, so the `done_when` check can
+    /// otherwise run against a world that hasn't updated yet.
+    pub post_act_settle: Duration,
     /// Permit coordinate mechanisms to reach the driver.
     pub allow_coordinates: bool,
     /// Treat `RequireApproval` as granted for this run — the human approved
@@ -105,6 +109,7 @@ impl Default for RunConfig {
             app: None,
             max_attempts: 3,
             verify_delay: Duration::from_millis(250),
+            post_act_settle: Duration::ZERO,
             allow_coordinates: false,
             approve_all: false,
             observe_max_elements: 4_000,
@@ -560,6 +565,11 @@ impl<D: ComputerDriver> Engine<D> {
                         other => {
                             last_error = Some(format!("{other:?}"));
                         }
+                    }
+                    // Let a real app's state propagate before the next
+                    // observe judges done_when — live UI is async.
+                    if !cfg.run.post_act_settle.is_zero() {
+                        std::thread::sleep(cfg.run.post_act_settle);
                     }
                 }
                 Decision::Route { route, rationale } => match route {

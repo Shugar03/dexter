@@ -1,0 +1,21 @@
+# textedit-write — real AX edit on TextEdit: the document area is an
+# unnamed focused text_area, so this exercises the focused-editable
+# TypeText path end to end. Prep recreates an empty fixture file and
+# opens it; teardown closes the document without saving (so TextEdit's
+# state restoration can't bring the text back) and quits.
+[scenario]
+id = "textedit-write"
+driver = "macos"
+goal = "escribir 'hola dexter'"
+optimal_steps = 1
+app = "TextEdit"
+
+[live]
+app = "com.apple.TextEdit"
+prep = "osascript -e 'tell application id \"com.apple.TextEdit\" to quit' 2>/dev/null || true; rm -f /tmp/dexter-live.txt; touch /tmp/dexter-live.txt; open -a TextEdit /tmp/dexter-live.txt; sleep 1; osascript -e 'tell application id \"com.apple.TextEdit\" to close (every document whose name is not \"dexter-live.txt\") saving no' 2>/dev/null || true"
+teardown = "osascript -e 'tell application id \"com.apple.TextEdit\" to close document \"dexter-live.txt\" saving no' -e 'tell application id \"com.apple.TextEdit\" to quit' 2>/dev/null || true; rm -f /tmp/dexter-live.txt"
+settle_ms = 1500
+
+[task]
+done_when = { type = "element_value", target = { role = "text_area" }, predicate = { contains = "hola dexter" } }
+max_steps = 8

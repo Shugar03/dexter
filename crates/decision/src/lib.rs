@@ -500,12 +500,20 @@ impl CandidateGenerator for HeuristicGenerator {
             if matched == 0 {
                 // Focused-editable fallback: the goal wants to type and a
                 // field already holds focus — the caret is the evidence,
-                // no label match needed.
+                // no label match needed. With a literal in the goal the
+                // honest offer is typing it; without one, only focus.
                 if want_edit && editable && el.focused {
-                    out.push(CandidateAction {
-                        action: Action::Focus {
+                    let action = match &gp.quoted {
+                        Some(text) => Action::TypeText {
+                            text: text.clone(),
+                            target: Some(element_target(el)),
+                        },
+                        None => Action::Focus {
                             target: element_target(el),
                         },
+                    };
+                    out.push(CandidateAction {
+                        action,
                         rationale: format!(
                             "{} already focused; edit goal needs no label match",
                             el.role.as_deref().unwrap_or("?"),

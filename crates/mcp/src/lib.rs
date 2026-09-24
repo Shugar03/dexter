@@ -73,6 +73,7 @@ fn run_cfg(app: Option<String>, cfg: ServerConfig) -> RunConfig {
         app: app.as_deref().map(AppSelector::parse),
         max_attempts: 3,
         verify_delay: Duration::from_millis(250),
+        post_act_settle: Duration::ZERO,
         allow_coordinates: cfg.allow_coords,
         approve_all: cfg.approve_all,
         observe_max_elements: 4_000,

@@ -6,7 +6,7 @@
 //! engine already writes — success, steps, phase latencies, recoveries —
 //! so this layer adds aggregation, not instrumentation.
 
-use dexter_core::{Element, ElementId, Event, ExpectedState, SemanticTarget};
+use dexter_core::{AppSelector, Element, ElementId, Event, ExpectedState, SemanticTarget};
 use dexter_decision::{CandidateGenerator, Decision, DecisionContext, DecisionEngine};
 use dexter_driver::ComputerDriver;
 use dexter_engine::{Engine, RunConfig, TaskConfig, TaskOutcome};
@@ -19,12 +19,15 @@ use std::time::Duration;
 pub struct ScenarioSpec {
     pub scenario: ScenarioMeta,
     pub task: TaskSpec,
-    /// Sim world — absent for `driver = "browser"` scenarios.
+    /// Sim world — absent for live-driver scenarios.
     #[serde(default)]
     pub world: WorldSpec,
     /// Live-browser target — only read when `scenario.driver = "browser"`.
     #[serde(default)]
     pub browser: Option<BrowserSpec>,
+    /// Real-app target — only read when `scenario.driver = "macos"`.
+    #[serde(default)]
+    pub live: Option<LiveSpec>,
 }
 
 impl ScenarioSpec {
@@ -64,6 +67,21 @@ pub struct BrowserSpec {
 
 fn default_settle_ms() -> u64 {
     500
+}
+
+/// Real-app target for `driver = "macos"` scenarios.
+#[derive(Debug, Deserialize)]
+pub struct LiveSpec {
+    /// Observation scope: app name, `com.bundle.id` or pid — becomes
+    /// `RunConfig.app`, so the run only sees this app's windows.
+    pub app: String,
+    /// Shell command run before each rep (launch/reset the fixture).
+    pub prep: Option<String>,
+    /// Shell command run after each rep — always, pass or fail.
+    pub teardown: Option<String>,
+    /// Post-prep settle before the task loop starts.
+    #[serde(default = "default_settle_ms")]
+    pub settle_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,9 +293,19 @@ pub fn run_scenario_with<D: ComputerDriver>(
         decider,
         &TaskConfig {
             run: RunConfig {
-                app: None,
+                // Live-app scenarios scope the observation to the
+                // declared app; sim/browser see everything.
+                app: spec.live.as_ref().map(|l| AppSelector::parse(&l.app)),
                 max_attempts: 1,
                 verify_delay: Duration::from_millis(5),
+                // Live apps propagate AX state asynchronously — reuse the
+                // [live] settle after each act so done_when doesn't judge
+                // a stale world.
+                post_act_settle: spec
+                    .live
+                    .as_ref()
+                    .map(|l| Duration::from_millis(l.settle_ms))
+                    .unwrap_or(Duration::ZERO),
                 allow_coordinates: false,
                 // The suite author is the operator approving the run —
                 // same contract as `dexter run --approve-all`. Approval

@@ -31,6 +31,7 @@ fn allow_all() -> Policy {
 fn cfg() -> RunConfig {
     RunConfig {
         verify_delay: Duration::from_millis(1),
+        post_act_settle: Duration::ZERO,
         ..Default::default()
     }
 }

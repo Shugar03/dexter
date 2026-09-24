@@ -122,6 +122,25 @@ done_when = { type = "text_present", text = "Bienvenido" }
 max_steps = 8
 "#;
 
+const CLOCK: &str = r#"
+[scenario]
+id = "clock-timer"
+driver = "macos"
+goal = "ir a cronómetro e iniciarlo"
+optimal_steps = 2
+app = "Clock"
+
+[live]
+app = "com.apple.clock"
+prep = "open -a Clock"
+teardown = "osascript -e 'tell application id \"com.apple.clock\" to quit'"
+settle_ms = 800
+
+[task]
+done_when = { type = "element_exists", target = { role = "button", name = "Detener" } }
+max_steps = 8
+"#;
+
 fn spec(toml_text: &str) -> ScenarioSpec {
     toml::from_str(toml_text).expect("scenario spec parses")
 }
@@ -134,6 +153,18 @@ fn spec_parses_browser_driver_section() {
     assert_eq!(b.page.as_deref(), Some("pages/web-login.html"));
     assert_eq!(b.settle_ms, 500);
     assert_eq!(spec(ABSENT).driver(), "sim", "absent driver key = sim");
+}
+
+#[test]
+fn spec_parses_live_macos_section() {
+    let s = spec(CLOCK);
+    assert_eq!(s.driver(), "macos");
+    let l = s.live.as_ref().expect("live section parsed");
+    assert_eq!(l.app, "com.apple.clock");
+    assert_eq!(l.prep.as_deref(), Some("open -a Clock"));
+    assert!(l.teardown.as_deref().unwrap().contains("quit"));
+    assert_eq!(l.settle_ms, 800);
+    assert!(spec(WEB_LOGIN).live.is_none());
 }
 
 #[test]

@@ -78,6 +78,25 @@ fn edit_verb_emits_setvalue_and_typetext_with_quoted_literal() {
 }
 
 #[test]
+fn focused_unnamed_field_with_literal_emits_typetext() {
+    // Real apps (TextEdit, compose panes) expose unnamed focused text
+    // areas: no label can match, so without this the only offer was a
+    // Focus no-op and TypeText never appeared — a focus loop, not a
+    // write. The caret plus the literal is enough evidence to type.
+    let o = obs(vec![Element {
+        focused: true,
+        ..el(1, "text_area", "", &["set_value", "focus"])
+    }]);
+    let cands = gen().generate(&o, "escribir 'hola dexter'", &empty());
+    assert!(
+        cands
+            .iter()
+            .any(|c| matches!(&c.action, Action::TypeText { text, .. } if text == "hola dexter")),
+        "expected TypeText to the focused field, got {cands:?}"
+    );
+}
+
+#[test]
 fn edit_verb_without_literal_offers_focus() {
     let o = obs(vec![el(
         1,

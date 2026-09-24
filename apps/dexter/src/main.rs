@@ -696,6 +696,7 @@ fn run_action(
         allow_coordinates: args.coords,
         approve_all: args.approve,
         verify_delay: Duration::from_millis(250),
+        post_act_settle: Duration::ZERO,
         observe_max_elements: 4_000,
     };
     let step = Step {
@@ -821,6 +822,7 @@ fn run_scenario(
         app: file.app.as_deref().map(AppSelector::parse),
         max_attempts: file.max_attempts.unwrap_or(3),
         verify_delay: Duration::from_millis(file.verify_delay_ms.unwrap_or(250)),
+        post_act_settle: Duration::ZERO,
         allow_coordinates: coords,
         approve_all,
         observe_max_elements: 4_000,
@@ -875,6 +877,7 @@ fn run_task(
                 app: args.app.as_deref().map(AppSelector::parse),
                 max_attempts: 1,
                 verify_delay: Duration::from_millis(250),
+                post_act_settle: Duration::ZERO,
                 allow_coordinates: args.coords,
                 approve_all: args.approve_all,
                 observe_max_elements: 4_000,
@@ -1440,23 +1443,80 @@ fn eval_scenario(
             _ => None,
         };
 
+        // Live macOS scenarios resolve their [live] spec up front — the
+        // observe probe runs after the first prep below, since prep is
+        // what launches the app.
+        let macos =
+            if spec.driver() == "macos" {
+                Some(spec.live.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("{}: [live] section required", file.display())
+                })?)
+            } else {
+                None
+            };
+
         let mut runs: Vec<ScenarioRun> = Vec::new();
         for rep in 0..reps.max(1) {
-            let run = match &browser {
-                Some((endpoint, url, settle_ms)) => {
-                    // Fresh session per rep — `connect` opens a new
-                    // window (closed on drop), so state is deterministic
-                    // and the user's live session is never hijacked.
-                    let driver =
-                        dexter_browser::BrowserDriver::connect(endpoint, browser_label(endpoint))
-                            .map_err(|e| anyhow::anyhow!("browser driver at {endpoint}: {e}"))?;
-                    driver
-                        .navigate(url)
-                        .map_err(|e| anyhow::anyhow!("navigate {url}: {e}"))?;
-                    std::thread::sleep(Duration::from_millis(*settle_ms));
-                    run_scenario_with(&spec, driver, &generator, decider.as_ref())
+            let run = if let Some((endpoint, url, settle_ms)) = &browser {
+                // Fresh session per rep — `connect` opens a new
+                // window (closed on drop), so state is deterministic
+                // and the user's live session is never hijacked.
+                let driver =
+                    dexter_browser::BrowserDriver::connect(endpoint, browser_label(endpoint))
+                        .map_err(|e| anyhow::anyhow!("browser driver at {endpoint}: {e}"))?;
+                driver
+                    .navigate(url)
+                    .map_err(|e| anyhow::anyhow!("navigate {url}: {e}"))?;
+                std::thread::sleep(Duration::from_millis(*settle_ms));
+                run_scenario_with(&spec, driver, &generator, decider.as_ref())
+            } else if let Some(lspec) = macos {
+                // Per rep: prep the fixture, settle, run, teardown —
+                // teardown always runs so a failed rep leaves no state.
+                if let Some(prep) = &lspec.prep {
+                    let st = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(prep)
+                        .status()
+                        .with_context(|| format!("running prep '{prep}'"))?;
+                    if !st.success() {
+                        println!("{:<24} skipped — prep failed ({st})", spec.scenario.id);
+                        break;
+                    }
                 }
-                None => run_scenario(&spec, &generator, decider.as_ref()),
+                std::thread::sleep(Duration::from_millis(lspec.settle_ms));
+                // Probe once after the first prep — a hard observe error
+                // (no AX permission, app missing) skips the scenario so
+                // CI runners and permission-less terminals never flake.
+                if rep == 0 {
+                    let probe = MacOsDriver::new().observe(&dexter_core::ObservationScope {
+                        app: Some(dexter_core::AppSelector::parse(&lspec.app)),
+                        ..Default::default()
+                    });
+                    if let Err(e) = probe {
+                        println!(
+                            "{:<24} skipped — macos observe failed: {e}",
+                            spec.scenario.id
+                        );
+                        if let Some(teardown) = &lspec.teardown {
+                            let _ = std::process::Command::new("sh")
+                                .arg("-c")
+                                .arg(teardown)
+                                .status();
+                        }
+                        break;
+                    }
+                }
+                let run =
+                    run_scenario_with(&spec, MacOsDriver::new(), &generator, decider.as_ref());
+                if let Some(teardown) = &lspec.teardown {
+                    let _ = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(teardown)
+                        .status();
+                }
+                run
+            } else {
+                run_scenario(&spec, &generator, decider.as_ref())
             };
             if let Some(dir) = &journal_out {
                 let name = if reps > 1 {
@@ -1488,6 +1548,10 @@ fn eval_scenario(
                 }
             }
             runs.push(run);
+        }
+        if runs.is_empty() {
+            // Prep failed on rep 0 — nothing was measured.
+            continue;
         }
         let m = aggregate(&spec.scenario.id, spec.scenario.optimal_steps, runs);
         println!(
