@@ -445,6 +445,11 @@ struct TaskArgs {
     /// Write the event journal (JSONL) to this path.
     #[arg(long)]
     events: Option<String>,
+    /// Export the run as Laya training rows (JSONL) — verified per-step
+    /// outcomes included. Written only when the task completes: a
+    /// failed trajectory exports no labels at all rather than wrong ones.
+    #[arg(long)]
+    export: Option<String>,
     /// Show the presence overlay: auto-spawns `dexter-overlay` on the
     /// journal (a temp file if --events isn't given). On by default
     /// when the terminal is interactive; best-effort — a missing
@@ -1233,6 +1238,10 @@ fn run_task(
         serde_json::from_str(&args.done).context("invalid --done ExpectedState JSON")?;
     let decider = build_decider(&args.engine, &args.engine_path, args.min_confidence)?;
     let generator = dexter_decision::HeuristicGenerator::default();
+    if args.export.is_some() {
+        // Training rows need the full decision context in the journal.
+        engine.set_trace_mode(dexter_engine::TraceMode::Training);
+    }
     if args.coords {
         engine.permit_physical();
     }
@@ -1302,6 +1311,21 @@ fn run_task(
     };
     match outcome {
         TaskOutcome::Completed { steps } => {
+            if let Some(path) = &args.export {
+                let app = args.app.clone().unwrap_or_else(|| "task".into());
+                let (rows, skipped) =
+                    dexter_eval::scenario::rows_from_events(&engine.events(), "task", &app);
+                let mut out = String::new();
+                for r in &rows {
+                    out.push_str(&serde_json::to_string(r)?);
+                    out.push('\n');
+                }
+                std::fs::write(path, out).with_context(|| format!("writing export '{path}'"))?;
+                eprintln!(
+                    "{} rows exported to {path} ({skipped} unlabelable)",
+                    rows.len()
+                );
+            }
             println!(
                 "{}",
                 serde_json::json!({"status": "completed", "steps": steps})
