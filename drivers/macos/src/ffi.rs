@@ -44,6 +44,9 @@ extern "C" {
     pub static kAXTrustedCheckOptionPrompt: CFStringRef;
     pub fn AXValueGetType(value: CFTypeRef) -> i32;
     pub fn AXValueGetValue(value: CFTypeRef, theType: i32, valuePtr: *mut c_void) -> CfBoolean;
+    /// Create an AXValue wrapping a CGPoint/CGSize — needed to *set*
+    /// AXPosition/AXSize (window move/resize).
+    pub fn AXValueCreate(theType: i32, valuePtr: *const c_void) -> CFTypeRef;
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -77,6 +80,9 @@ extern "C" {
         wheel2: i32,
     ) -> CFTypeRef;
     pub fn CGEventSetFlags(event: CFTypeRef, flags: u64);
+    /// Generic integer field setter — used for `kCGMouseEventClickState`
+    /// (multi-click) on mouse events.
+    pub fn CGEventSetIntegerValueField(event: CFTypeRef, field: u32, value: i64);
     pub fn CGEventPost(tap_location: u32, event: CFTypeRef);
     pub fn CFRelease(cf: CFTypeRef);
 }
@@ -86,8 +92,12 @@ pub const K_CG_EVENT_LEFT_DOWN: u32 = 1;
 pub const K_CG_EVENT_LEFT_UP: u32 = 2;
 pub const K_CG_EVENT_RIGHT_DOWN: u32 = 3;
 pub const K_CG_EVENT_RIGHT_UP: u32 = 4;
+pub const K_CG_EVENT_LEFT_DRAGGED: u32 = 6;
 pub const K_CG_EVENT_MIDDLE_DOWN: u32 = 10;
 pub const K_CG_EVENT_MIDDLE_UP: u32 = 11;
+/// `kCGMouseEventClickState` — integer field carrying the click count
+/// (1 = single, 2 = double, ...) on mouse down/up events.
+pub const K_CG_MOUSE_EVENT_CLICK_STATE: u32 = 23;
 /// CGEventTapLocation — post at the HID level (before session routing).
 pub const K_CG_HID_EVENT_TAP: u32 = 0;
 /// Mouse buttons for CGEventCreateMouseEvent.

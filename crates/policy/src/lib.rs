@@ -150,8 +150,14 @@ impl Policy {
         };
         self.decide(
             kind,
-            action.intrusiveness(),
-            &TargetDescriptor::from_action(action),
+            &ExecutionRoute {
+                action: action.clone(),
+                target: TargetDescriptor::from_action(action),
+                mechanism: None,
+                intrusiveness: action.intrusiveness(),
+                sensitivity: dexter_core::Sensitivity::Standard,
+                requires_foreground: action.intrusiveness() == Intrusiveness::Physical,
+            },
             ctx,
         )
     }
@@ -164,18 +170,20 @@ impl Policy {
         let Some(kind) = action_kind(&route.action) else {
             return PolicyDecision::Allow; // reads: Observe / Wait
         };
-        self.decide(kind, route.intrusiveness, &route.target, ctx)
+        self.decide(kind, route, ctx)
     }
 
     /// The shared decision: ordered rules first (first match wins),
-    /// then the physical floor, then the mutating default.
+    /// then the secrets floor, the physical floor, and the mutating
+    /// default.
     fn decide(
         &self,
         kind: &'static str,
-        intrusiveness: Intrusiveness,
-        target: &TargetDescriptor,
+        route: &ExecutionRoute,
         ctx: &ActionContext,
     ) -> PolicyDecision {
+        let intrusiveness = route.intrusiveness;
+        let target = &route.target;
         for rule in &self.rules {
             if !rule_matches(rule, kind, intrusiveness, target, ctx) {
                 continue;
@@ -194,6 +202,19 @@ impl Policy {
                 DecisionKind::Allow => PolicyDecision::Allow,
                 DecisionKind::Deny => PolicyDecision::Deny { reason },
                 DecisionKind::RequireApproval => PolicyDecision::RequireApproval { reason },
+            };
+        }
+        // No rule matched. Secret-bearing routes (clipboard, secure
+        // fields) have their own floor: a batch `mutating = "allow"`
+        // never silently authorizes reading or writing secrets — each
+        // one needs an explicit rule or an operator's approval.
+        if route.sensitivity == dexter_core::Sensitivity::Secrets {
+            return PolicyDecision::RequireApproval {
+                reason: format!(
+                    "sensitive {} on {} — secrets require explicit approval",
+                    kind,
+                    describe_ctx(ctx)
+                ),
             };
         }
         // No rule matched. Physical input has its own floor — a batch
@@ -255,6 +276,13 @@ fn action_kind(action: &Action) -> Option<&'static str> {
         Action::Focus { .. } => Some("focus"),
         Action::SetValue { .. } => Some("set_value"),
         Action::Navigate { .. } => Some("navigate"),
+        Action::Invoke { .. } => Some("invoke"),
+        Action::LaunchApp { .. } => Some("launch_app"),
+        Action::QuitApp { .. } => Some("quit_app"),
+        Action::Window { .. } => Some("window"),
+        Action::ReadClipboardText => Some("clipboard_read"),
+        Action::WriteClipboardText { .. } => Some("clipboard_write"),
+        Action::Drag { .. } => Some("drag"),
         Action::Observe | Action::Wait { .. } => None,
     }
 }
@@ -264,7 +292,8 @@ fn action_kind(action: &Action) -> Option<&'static str> {
 fn action_kind_of(s: &str) -> Option<()> {
     match s {
         "*" | "click" | "type_text" | "key" | "scroll" | "focus" | "set_value" | "observe"
-        | "wait" | "navigate" => Some(()),
+        | "wait" | "navigate" | "invoke" | "launch_app" | "quit_app" | "window"
+        | "clipboard_read" | "clipboard_write" | "drag" => Some(()),
         _ => None,
     }
 }

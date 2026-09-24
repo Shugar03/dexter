@@ -48,6 +48,7 @@ fn browser_observe_and_click() {
                     ..Default::default()
                 }),
                 button: MouseButton::Left,
+                count: 1,
             },
             &ActContext::default(),
         )

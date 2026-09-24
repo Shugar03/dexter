@@ -2,7 +2,7 @@
 //! bound single-use approvals. The driver is never involved — policy is
 //! evaluated on the action itself.
 
-use dexter_core::{Action, AppSelector, DexterError, KeyChord, Target};
+use dexter_core::{Action, AppSelector, DexterError, ExecutionRoute, KeyChord, Target};
 use dexter_policy::{ActionContext, ApprovalStore, Policy, PolicyDecision};
 use std::time::Duration;
 
@@ -17,6 +17,7 @@ fn click() -> Action {
     Action::Click {
         target: Target::Semantic(Default::default()),
         button: Default::default(),
+        count: 1,
     }
 }
 
@@ -24,6 +25,7 @@ fn coordinate_click() -> Action {
     Action::Click {
         target: Target::Point { x: 1.0, y: 2.0 },
         button: Default::default(),
+        count: 1,
     }
 }
 
@@ -321,6 +323,7 @@ fn structured_target_rule_distinguishes_save_from_delete() {
             ..Default::default()
         }),
         button: dexter_core::MouseButton::Left,
+        count: 1,
     };
     match policy.evaluate(&click_on("Delete"), &ctx(None)) {
         PolicyDecision::Deny { reason } => assert!(reason.contains("destructive")),
@@ -353,4 +356,124 @@ fn nonexistent_file_fails_closed() {
         err,
         Err(DexterError::Io(_)) | Err(DexterError::Other(_))
     ));
+}
+
+// ---------- desktop actions v2 ----------
+
+#[test]
+fn v2_action_kinds_match_rules() {
+    // A rule per new kind — first-match order is preserved.
+    let toml = r#"
+[defaults]
+mutating = "deny"
+
+[[rule]]
+action = "invoke"
+decision = "allow"
+
+[[rule]]
+action = "launch_app"
+decision = "allow"
+
+[[rule]]
+action = "quit_app"
+decision = "allow"
+
+[[rule]]
+action = "window"
+decision = "allow"
+
+[[rule]]
+action = "clipboard_read"
+decision = "allow"
+
+[[rule]]
+action = "clipboard_write"
+decision = "allow"
+
+[[rule]]
+action = "drag"
+decision = "allow"
+"#;
+    let dir = std::env::temp_dir().join(format!("dexter-pol-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("policy.toml");
+    std::fs::write(&path, toml).unwrap();
+    let policy = Policy::load(&path).unwrap();
+    use dexter_core::{AppSelector, WindowOperation};
+    let cases: &[Action] = &[
+        Action::Invoke {
+            target: Target::Focused,
+            action: "press".into(),
+        },
+        Action::LaunchApp {
+            app: AppSelector::Name("x".into()),
+            activate: true,
+        },
+        Action::QuitApp {
+            app: AppSelector::Name("x".into()),
+        },
+        Action::Window {
+            window_id: None,
+            operation: WindowOperation::Focus,
+        },
+        Action::ReadClipboardText,
+        Action::WriteClipboardText { text: "x".into() },
+        Action::Drag {
+            from: Target::Focused,
+            to: Target::Focused,
+            duration_ms: 0,
+        },
+    ];
+    for action in cases {
+        match policy.evaluate(action, &ctx(None)) {
+            PolicyDecision::Allow => {}
+            other => panic!("{action:?} should match its rule, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn secrets_floor_requires_approval_under_mutating_allow() {
+    // mutating = "allow" must NOT silently authorize secret-bearing
+    // routes — clipboard has its own sensitivity floor.
+    let toml = r#"
+[defaults]
+mutating = "allow"
+"#;
+    let dir = std::env::temp_dir().join(format!("dexter-pol-sec-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("policy.toml");
+    std::fs::write(&path, toml).unwrap();
+    let policy = Policy::load(&path).unwrap();
+
+    // A secrets-bearing route (what drivers declare for clipboard).
+    let route = ExecutionRoute {
+        action: Action::ReadClipboardText,
+        target: Default::default(),
+        mechanism: Some(dexter_core::Mechanism::Api),
+        intrusiveness: dexter_core::Intrusiveness::Background,
+        sensitivity: dexter_core::Sensitivity::Secrets,
+        requires_foreground: false,
+    };
+    match policy.evaluate_route(&route, &ctx(None)) {
+        PolicyDecision::RequireApproval { .. } => {}
+        other => panic!("secrets floor should require approval, got {other:?}"),
+    }
+
+    // An explicit clipboard rule still wins — the floor is a default,
+    // not a hard veto.
+    let toml2 = r#"
+[defaults]
+mutating = "deny"
+[[rule]]
+action = "clipboard_read"
+decision = "allow"
+"#;
+    std::fs::write(&path, toml2).unwrap();
+    let policy = Policy::load(&path).unwrap();
+    match policy.evaluate_route(&route, &ctx(None)) {
+        PolicyDecision::Allow => {}
+        other => panic!("explicit rule should win over the floor, got {other:?}"),
+    }
 }

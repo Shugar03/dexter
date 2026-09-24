@@ -19,6 +19,7 @@ fn click(target: SemanticTarget) -> Action {
     Action::Click {
         target: Target::Semantic(target),
         button: MouseButton::Left,
+        count: 1,
     }
 }
 
@@ -124,6 +125,7 @@ fn stale_element_target_refuses_before_any_side_effect() {
                     element: obs.elements[0].id,
                 },
                 button: MouseButton::Left,
+                count: 1,
             },
             &ActContext::default(),
         )
@@ -158,6 +160,7 @@ fn stale_element_target_refuses_before_any_side_effect() {
                 element: obs.elements[0].id,
             },
             button: MouseButton::Left,
+            count: 1,
         },
         &ActContext::default(),
     );

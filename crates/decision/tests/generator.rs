@@ -127,6 +127,7 @@ fn press_goal_prefers_button_over_pressable_field() {
         Action::Click {
             target: Target::Element { element, .. },
             button: MouseButton::Left,
+            count: 1,
         } => assert_eq!(element, &ElementId(2)),
         other => panic!("expected click on Search button, got {other:?}"),
     }
@@ -165,6 +166,7 @@ fn repeated_attempt_is_penalized() {
             ..Default::default()
         }),
         button: MouseButton::Left,
+        count: 1,
     });
     let cands = gen().generate(&o, "retry or cancel the upload", &hist);
     assert_eq!(cands.len(), 2);

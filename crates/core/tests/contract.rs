@@ -11,8 +11,13 @@ fn click_action_defaults_to_left_button() {
     let action: Action =
         serde_json::from_str(r#"{"type":"click","target":{"x":10.0,"y":20.0}}"#).unwrap();
     match action {
-        Action::Click { target, button } => {
+        Action::Click {
+            target,
+            button,
+            count,
+        } => {
             assert_eq!(button, MouseButton::Left);
+            assert_eq!(count, 1, "absent count defaults to a single click");
             assert_eq!(target, Target::Point { x: 10.0, y: 20.0 });
         }
         other => panic!("expected click, got {other:?}"),
@@ -100,10 +105,12 @@ fn intrusiveness_follows_the_target_not_the_verb() {
             ..Default::default()
         }),
         button: MouseButton::Left,
+        count: 1,
     };
     let coordinate = Action::Click {
         target: Target::Point { x: 100.0, y: 200.0 },
         button: MouseButton::Left,
+        count: 1,
     };
     assert_eq!(semantic.intrusiveness(), Intrusiveness::Background);
     assert_eq!(coordinate.intrusiveness(), Intrusiveness::Physical);
@@ -165,6 +172,7 @@ fn intrusiveness_covers_every_action() {
             Action::Click {
                 target: Target::Window { window_id: 1 },
                 button: MouseButton::Left,
+                count: 1,
             },
             Visual, // activate/raise — visible, captures nothing
         ),
@@ -172,6 +180,7 @@ fn intrusiveness_covers_every_action() {
             Action::Click {
                 target: Target::Focused,
                 button: MouseButton::Left,
+                count: 1,
             },
             Background,
         ),
@@ -310,4 +319,158 @@ fn classified_result_serializes_snake_case_and_omits_absent_fields() {
     assert!(pv.get("effect").is_none());
     assert!(pv.get("evidence").is_none());
     assert!(pv.get("escalation").is_none());
+}
+
+// ---------- desktop actions v2 ----------
+
+#[test]
+fn v2_actions_serde_roundtrip() {
+    use dexter_core::{AppSelector, WindowOperation};
+    let cases: &[Action] = &[
+        Action::Invoke {
+            target: Target::Focused,
+            action: "press".into(),
+        },
+        Action::LaunchApp {
+            app: AppSelector::Name("TextEdit".into()),
+            activate: true,
+        },
+        Action::LaunchApp {
+            app: AppSelector::BundleId("com.apple.TextEdit".into()),
+            activate: false,
+        },
+        Action::QuitApp {
+            app: AppSelector::Name("TextEdit".into()),
+        },
+        Action::Window {
+            window_id: Some(42),
+            operation: WindowOperation::Minimize,
+        },
+        Action::Window {
+            window_id: None,
+            operation: WindowOperation::Resize {
+                width: 800.0,
+                height: 600.0,
+            },
+        },
+        Action::ReadClipboardText,
+        Action::WriteClipboardText {
+            text: "secret".into(),
+        },
+        Action::Drag {
+            from: Target::Focused,
+            to: Target::Point { x: 1.0, y: 2.0 },
+            duration_ms: 300,
+        },
+    ];
+    for action in cases {
+        let json = serde_json::to_string(action).unwrap();
+        let back: Action = serde_json::from_str(&json).unwrap();
+        assert_eq!(&back, action, "{json}");
+    }
+    // Wire names are snake_case — the MCP/CLI surface.
+    let v = serde_json::to_value(&Action::Invoke {
+        target: Target::Focused,
+        action: "press".into(),
+    })
+    .unwrap();
+    assert_eq!(v["type"], "invoke");
+    let v = serde_json::to_value(&Action::Window {
+        window_id: None,
+        operation: WindowOperation::Move { x: 1.0, y: 2.0 },
+    })
+    .unwrap();
+    assert_eq!(v["type"], "window");
+    assert_eq!(v["operation"]["op"], "move");
+}
+
+#[test]
+fn click_count_serde_default_and_range() {
+    // v1 wire (no count) parses to a single click — compat preserved.
+    let a: Action =
+        serde_json::from_str(r#"{"type":"click","target":{"focused":true},"button":"left"}"#)
+            .unwrap();
+    match a {
+        Action::Click { count, .. } => assert_eq!(count, 1),
+        other => panic!("{other:?}"),
+    }
+    // Explicit count survives the round trip.
+    let a = Action::Click {
+        target: Target::Focused,
+        button: MouseButton::Left,
+        count: 2,
+    };
+    let back: Action = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();
+    assert_eq!(back, a);
+}
+
+#[test]
+fn element_shortcut_serializes_when_present() {
+    use dexter_core::{Element, ElementId};
+    let mut el = Element {
+        id: ElementId(1),
+        ..Default::default()
+    };
+    el.shortcut = Some(KeyChord::parse("cmd+shift+s").unwrap());
+    let v = serde_json::to_value(&el).unwrap();
+    assert_eq!(v["shortcut"]["key"], "s");
+    // Absent shortcut stays out of the wire.
+    let plain = serde_json::to_value(Element::default()).unwrap();
+    assert!(plain.get("shortcut").is_none());
+}
+
+#[test]
+fn v2_intrusiveness_tiers() {
+    use dexter_core::{AppSelector, WindowOperation};
+    use Intrusiveness::*;
+    let cases: &[(Action, Intrusiveness)] = &[
+        (
+            Action::LaunchApp {
+                app: AppSelector::Name("x".into()),
+                activate: true,
+            },
+            Visual,
+        ),
+        (
+            Action::QuitApp {
+                app: AppSelector::Name("x".into()),
+            },
+            Visual,
+        ),
+        (
+            Action::Window {
+                window_id: None,
+                operation: WindowOperation::Focus,
+            },
+            Visual,
+        ),
+        (Action::ReadClipboardText, Background),
+        (Action::WriteClipboardText { text: "x".into() }, Background),
+        (
+            Action::Invoke {
+                target: Target::Focused,
+                action: "press".into(),
+            },
+            Background,
+        ),
+        (
+            Action::Drag {
+                from: Target::Focused,
+                to: Target::Focused,
+                duration_ms: 0,
+            },
+            Background,
+        ),
+        (
+            Action::Drag {
+                from: Target::Focused,
+                to: Target::Point { x: 0.0, y: 0.0 },
+                duration_ms: 0,
+            },
+            Physical, // a coordinate endpoint forces the physical tier
+        ),
+    ];
+    for (action, expected) in cases {
+        assert_eq!(action.intrusiveness(), *expected, "{action:?}");
+    }
 }

@@ -207,9 +207,22 @@ async fn act_needs_approval_returns_grantable_fingerprint() {
     // Embedded policy -> mutation requires approval. The fingerprint the
     // agent receives is what a human grants out-of-band — opaque in v2.
     let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let sim = SimDriver::new(vec![save_button()]);
+    // The click must change the world — a no-op reports failed, not done.
+    sim.on_press(
+        dexter_core::SemanticTarget {
+            name: Some("Save".into()),
+            ..Default::default()
+        },
+        dexter_sim::Effect::Spawn(dexter_core::Element {
+            role: Some("static_text".into()),
+            name: Some("saved".into()),
+            ..Default::default()
+        }),
+    );
     let server = DexterMcp::new(
         Policy::from_toml("").unwrap(), // empty file = embedded default
-        Box::new(SimDriver::new(vec![save_button()])),
+        Box::new(sim),
     );
     tokio::spawn(async move {
         if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
@@ -673,6 +686,19 @@ async fn observe_element_id_round_trips_into_act() {
         ..Default::default()
     };
     let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let sim = SimDriver::new(vec![button]);
+    // The click must change the world — a no-op reports failed, not done.
+    sim.on_press(
+        dexter_core::SemanticTarget {
+            name: Some("Save".into()),
+            ..Default::default()
+        },
+        dexter_sim::Effect::Spawn(dexter_core::Element {
+            role: Some("static_text".into()),
+            name: Some("saved".into()),
+            ..Default::default()
+        }),
+    );
     let server = DexterMcp::new(
         Policy::from_toml(
             r#"
@@ -681,7 +707,7 @@ async fn observe_element_id_round_trips_into_act() {
             "#,
         )
         .unwrap(),
-        Box::new(SimDriver::new(vec![button])),
+        Box::new(sim),
     );
     tokio::spawn(async move {
         if let Ok(running) = server.serve(tokio::io::split(server_io)).await {

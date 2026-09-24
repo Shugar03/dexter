@@ -22,6 +22,7 @@ fn candidate(name: &str) -> CandidateAction {
                 ..Default::default()
             }),
             button: MouseButton::Left,
+            count: 1,
         },
         rationale: format!("button \"{name}\" matches goal"),
         prior: 0.8,

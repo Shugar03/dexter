@@ -84,8 +84,16 @@ impl TargetDescriptor {
         let target = match action {
             Action::Click { target, .. }
             | Action::Focus { target }
-            | Action::SetValue { target, .. } => Some(target),
+            | Action::SetValue { target, .. }
+            | Action::Invoke { target, .. } => Some(target),
             Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
+            Action::Drag { from, .. } => Some(from),
+            Action::Window { window_id, .. } => {
+                return Self {
+                    window_id: *window_id,
+                    ..Default::default()
+                };
+            }
             _ => None,
         };
         Self::from_target(target)

@@ -234,6 +234,36 @@ fn bool_attr(r: Result<CFBoolean, accessibility::Error>) -> Option<bool> {
     r.ok().map(|b| b == CFBoolean::true_value())
 }
 
+/// The shortcut a menu item advertises — `AXMenuItemCmdChar` plus the
+/// modifier bitmask, decoded into a `KeyChord` the `Key` planner can
+/// match against.
+fn read_menu_shortcut(el: &AXUIElement) -> Option<dexter_core::KeyChord> {
+    let raw_role = el.role().ok().map(|r| r.to_string());
+    if raw_role.as_deref() != Some("AXMenuItem") {
+        return None;
+    }
+    let cmd_char = {
+        let attr = AXAttribute::<CFType>::new(&CFString::new("AXMenuItemCmdChar"));
+        el.attribute(&attr)
+            .ok()
+            .and_then(|v| v.downcast::<CFString>().map(|s| s.to_string()))?
+    };
+    if cmd_char.is_empty() {
+        return None;
+    }
+    let mods = {
+        let attr = AXAttribute::<CFType>::new(&CFString::new("AXMenuItemCmdModifiers"));
+        el.attribute(&attr)
+            .ok()
+            .and_then(|v| v.downcast::<CFNumber>().and_then(|n| n.to_i64()))
+            .unwrap_or(0)
+    };
+    Some(dexter_core::KeyChord {
+        key: cmd_char.to_lowercase(),
+        modifiers: crate::v2::menu_modifiers(mods),
+    })
+}
+
 /// Semantic actions, normalized: "AXPress" -> "press".
 fn action_names(el: &AXUIElement) -> Vec<String> {
     el.action_names()
@@ -287,6 +317,9 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx) 
     let focused = bool_attr(el.focused()).unwrap_or(false);
     let bounds = element_bounds(el);
     let actions = action_names(el);
+    // Menu items advertise their shortcut — lets `Key` plan a semantic
+    // press instead of a physical chord.
+    let shortcut = read_menu_shortcut(el);
 
     let id = ElementId(ctx.next_id);
     ctx.next_id += 1;
@@ -312,6 +345,7 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx) 
         focused,
         actions,
         identifier,
+        shortcut,
         source: ElementSource::Accessibility,
     });
     ctx.nodes.push(el.clone());

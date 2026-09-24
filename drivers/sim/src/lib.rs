@@ -14,7 +14,7 @@ use dexter_core::{
     Intrusiveness, Mechanism, Observation, ObservationId, ObservationScope, SemanticTarget,
     Sensitivity, Target, TargetDescriptor, Window,
 };
-use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
+use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError, WakeHandle};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -56,6 +56,17 @@ struct SimState {
     next_element_id: u64,
     /// Audit trail — which elements were pressed, in order.
     pressed: Vec<ElementId>,
+    /// Click counts parallel to `pressed`.
+    counts: Vec<u8>,
+    /// `(element, action)` pairs performed through `Invoke`.
+    invoked: Vec<(ElementId, String)>,
+    /// `(from, to)` element pairs dragged, in order.
+    dragged: Vec<(ElementId, ElementId)>,
+    /// The simulated pasteboard — plain text only.
+    clipboard: String,
+    /// Names of running apps; launching spawns a window, quitting
+    /// removes them. The sim itself runs as "sim".
+    apps: Vec<String>,
     obs_cache: VecDeque<(ObservationId, Vec<Element>)>,
     rules: Vec<Rule>,
     /// Effects applied on every `observe()` — worlds that evolve while
@@ -93,6 +104,11 @@ impl SimDriver {
                 }],
                 next_element_id: next_id,
                 pressed: Vec::new(),
+                counts: Vec::new(),
+                invoked: Vec::new(),
+                dragged: Vec::new(),
+                clipboard: String::new(),
+                apps: vec!["sim".into()],
                 obs_cache: VecDeque::new(),
                 rules: Vec::new(),
                 ticks: Vec::new(),
@@ -130,6 +146,26 @@ impl SimDriver {
     /// Elements pressed so far — test observability hook.
     pub fn pressed(&self) -> Vec<ElementId> {
         self.state.lock().unwrap().pressed.clone()
+    }
+
+    /// Click counts parallel to `pressed` — test observability hook.
+    pub fn click_counts(&self) -> Vec<u8> {
+        self.state.lock().unwrap().counts.clone()
+    }
+
+    /// `(element, action)` pairs invoked — test observability hook.
+    pub fn invoked(&self) -> Vec<(ElementId, String)> {
+        self.state.lock().unwrap().invoked.clone()
+    }
+
+    /// `(from, to)` pairs dragged — test observability hook.
+    pub fn dragged(&self) -> Vec<(ElementId, ElementId)> {
+        self.state.lock().unwrap().dragged.clone()
+    }
+
+    /// Current pasteboard text — test observability hook.
+    pub fn clipboard(&self) -> String {
+        self.state.lock().unwrap().clipboard.clone()
     }
 
     /// Current world elements — test observability hook.
@@ -328,7 +364,7 @@ impl ComputerDriver for SimDriver {
                 Mechanism::Api,
                 Some(format!("navigated to {url}")),
             )),
-            Action::Click { target, .. } => {
+            Action::Click { target, count, .. } => {
                 if let Target::Point { x, y } = target {
                     if !ctx.allow_coordinates {
                         return Ok(ActionResult::failure(
@@ -339,18 +375,209 @@ impl ComputerDriver for SimDriver {
                     }
                     return Ok(ActionResult::success(
                         Mechanism::Coordinates,
-                        Some(format!("clicked at ({x},{y})")),
+                        Some(format!("clicked x{count} at ({x},{y})")),
                     ));
                 }
                 let id = self.resolve(target, ctx)?;
                 {
                     let mut s = self.state.lock().unwrap();
                     s.pressed.push(id);
+                    s.counts.push(*count);
                 }
                 self.apply_effects(id);
                 Ok(ActionResult::success(
                     Mechanism::Api,
-                    Some(format!("pressed {id}")),
+                    Some(format!("pressed {id} x{count}")),
+                ))
+            }
+            Action::Invoke { target, action } => {
+                let id = self.resolve(target, ctx)?;
+                {
+                    let mut s = self.state.lock().unwrap();
+                    let el = s
+                        .elements
+                        .iter()
+                        .find(|e| e.id == id)
+                        .ok_or_else(|| DriverError::NotFound(format!("element {id}")))?;
+                    if !el.actions.iter().any(|a| a == action) {
+                        return Ok(ActionResult::failure(
+                            ActionStatus::Unsupported,
+                            Mechanism::Accessibility,
+                            format!("element {id} does not advertise '{action}'"),
+                        ));
+                    }
+                    s.invoked.push((id, action.clone()));
+                }
+                self.apply_effects(id);
+                Ok(ActionResult::success(
+                    Mechanism::Accessibility,
+                    Some(format!("invoked '{action}' on {id}")),
+                ))
+            }
+            Action::LaunchApp { app, activate } => {
+                let name = match app {
+                    dexter_core::AppSelector::Name(n) => n.clone(),
+                    dexter_core::AppSelector::BundleId(b) => b.clone(),
+                    dexter_core::AppSelector::Pid(_) => {
+                        return Err(DriverError::Unsupported(
+                            "cannot launch an app by pid".into(),
+                        ));
+                    }
+                };
+                let mut s = self.state.lock().unwrap();
+                if !s.apps.iter().any(|a| a == &name) {
+                    s.apps.push(name.clone());
+                }
+                let id = s.windows.iter().map(|w| w.id).max().unwrap_or(0) + 1;
+                let win = Window {
+                    id,
+                    pid: (s.apps.len() + 1) as i32,
+                    app: name.clone(),
+                    title: Some(name.clone()),
+                    bounds: dexter_core::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 800.0,
+                        h: 600.0,
+                    },
+                    on_screen: true,
+                    layer: 0,
+                };
+                if *activate {
+                    s.windows.insert(0, win); // frontmost
+                } else {
+                    s.windows.push(win);
+                }
+                Ok(ActionResult::success(
+                    Mechanism::Api,
+                    Some(format!("launched {name}")),
+                ))
+            }
+            Action::QuitApp { app } => {
+                let name = match app {
+                    dexter_core::AppSelector::Name(n) => n.clone(),
+                    dexter_core::AppSelector::BundleId(b) => b.clone(),
+                    dexter_core::AppSelector::Pid(_) => {
+                        return Err(DriverError::Unsupported("cannot quit an app by pid".into()));
+                    }
+                };
+                let mut s = self.state.lock().unwrap();
+                if !s.apps.iter().any(|a| a == &name) {
+                    return Err(DriverError::NotFound(format!("app '{name}' not running")));
+                }
+                s.apps.retain(|a| a != &name);
+                s.windows.retain(|w| w.app != name);
+                Ok(ActionResult::success(
+                    Mechanism::Api,
+                    Some(format!("quit {name}")),
+                ))
+            }
+            Action::Window {
+                window_id,
+                operation,
+            } => {
+                use dexter_core::WindowOperation as Op;
+                let mut s = self.state.lock().unwrap();
+                match operation {
+                    Op::New => {
+                        let id = s.windows.iter().map(|w| w.id).max().unwrap_or(0) + 1;
+                        let app = s
+                            .windows
+                            .first()
+                            .map(|w| w.app.clone())
+                            .unwrap_or_else(|| "sim".into());
+                        s.windows.insert(
+                            0,
+                            Window {
+                                id,
+                                pid: 1,
+                                app: app.clone(),
+                                title: Some(format!("{app} {id}")),
+                                bounds: dexter_core::Rect {
+                                    x: 0.0,
+                                    y: 0.0,
+                                    w: 800.0,
+                                    h: 600.0,
+                                },
+                                on_screen: true,
+                                layer: 0,
+                            },
+                        );
+                    }
+                    op => {
+                        let pos = match window_id {
+                            Some(id) => s
+                                .windows
+                                .iter()
+                                .position(|w| w.id == *id)
+                                .ok_or_else(|| DriverError::NotFound(format!("window {id}")))?,
+                            None => 0,
+                        };
+                        match op {
+                            Op::Focus | Op::Raise => {
+                                let w = s.windows.remove(pos);
+                                s.windows.insert(0, w);
+                            }
+                            Op::Close => {
+                                s.windows.remove(pos);
+                            }
+                            Op::Minimize => s.windows[pos].on_screen = false,
+                            Op::Restore => s.windows[pos].on_screen = true,
+                            Op::Move { x, y } => {
+                                s.windows[pos].bounds.x = *x;
+                                s.windows[pos].bounds.y = *y;
+                            }
+                            Op::Resize { width, height } => {
+                                s.windows[pos].bounds.w = *width;
+                                s.windows[pos].bounds.h = *height;
+                            }
+                            Op::New => unreachable!(),
+                        }
+                    }
+                }
+                Ok(ActionResult::success(
+                    Mechanism::Accessibility,
+                    Some(format!("window {operation:?}")),
+                ))
+            }
+            Action::ReadClipboardText => {
+                let text = self.state.lock().unwrap().clipboard.clone();
+                Ok(ActionResult::success(
+                    Mechanism::Api,
+                    if text.is_empty() {
+                        Some("clipboard empty".into())
+                    } else {
+                        Some(text)
+                    },
+                ))
+            }
+            Action::WriteClipboardText { text } => {
+                if text.len() > 1024 * 1024 {
+                    return Err(DriverError::Unsupported("clipboard payload > 1 MiB".into()));
+                }
+                self.state.lock().unwrap().clipboard = text.clone();
+                Ok(ActionResult::success(
+                    Mechanism::Api,
+                    Some(format!("clipboard set ({} bytes)", text.len())),
+                ))
+            }
+            Action::Drag {
+                from,
+                to,
+                duration_ms,
+            } => {
+                let a = self.resolve(from, ctx)?;
+                let b = self.resolve(to, ctx)?;
+                {
+                    let mut s = self.state.lock().unwrap();
+                    s.dragged.push((a, b));
+                }
+                // The drop target receives the effect — the world's rule
+                // decides what a drop onto it means.
+                self.apply_effects(b);
+                Ok(ActionResult::success(
+                    Mechanism::Accessibility,
+                    Some(format!("dragged {a} onto {b} in {duration_ms}ms")),
                 ))
             }
             Action::TypeText { text, target } => {
@@ -362,7 +589,12 @@ impl ComputerDriver for SimDriver {
                     .iter_mut()
                     .find(|e| e.id == id)
                     .ok_or_else(|| DriverError::NotFound(format!("element {id}")))?;
-                el.value = Some(text.clone());
+                // v2 semantics: typing inserts/appends — `SetValue` is
+                // the replace verb.
+                match &mut el.value {
+                    Some(v) => v.push_str(text),
+                    None => el.value = Some(text.clone()),
+                }
                 Ok(ActionResult::success(
                     Mechanism::Api,
                     Some(format!("typed into {id}")),
@@ -380,6 +612,23 @@ impl ComputerDriver for SimDriver {
                 Ok(ActionResult::success(
                     Mechanism::Api,
                     Some(format!("set value on {id}")),
+                ))
+            }
+            Action::Focus {
+                target: Target::Window { window_id },
+            } => {
+                // v2 normalization: focusing a window is a window op.
+                let mut s = self.state.lock().unwrap();
+                let pos = s
+                    .windows
+                    .iter()
+                    .position(|w| w.id == *window_id)
+                    .ok_or_else(|| DriverError::NotFound(format!("window {window_id}")))?;
+                let w = s.windows.remove(pos);
+                s.windows.insert(0, w);
+                Ok(ActionResult::success(
+                    Mechanism::Accessibility,
+                    Some(format!("focused window {window_id}")),
                 ))
             }
             Action::Focus { target } => {
@@ -488,7 +737,44 @@ impl ComputerDriver for SimDriver {
             Action::SetValue { target, .. } | Action::Focus { target } if resolvable(target) => {
                 vec![api()]
             }
+            // `Focus` on a window target is a window op in v2 — AX-level,
+            // visible but not input-capturing.
+            Action::Focus {
+                target: Target::Window { .. },
+            }
+            | Action::Window { .. } => vec![route(
+                Mechanism::Accessibility,
+                Intrusiveness::Visual,
+                false,
+            )],
             Action::SetValue { .. } | Action::Focus { .. } => vec![],
+            Action::Invoke { target, .. } if resolvable(target) => vec![route(
+                Mechanism::Accessibility,
+                Intrusiveness::Background,
+                false,
+            )],
+            Action::Invoke { .. } => vec![],
+            Action::LaunchApp { .. } | Action::QuitApp { .. } => {
+                vec![route(Mechanism::Api, Intrusiveness::Visual, false)]
+            }
+            // Clipboard is semantic but secret-bearing — the sensitivity
+            // floor travels on the route so policy can gate it alone.
+            Action::ReadClipboardText | Action::WriteClipboardText { .. } => {
+                let mut r = route(Mechanism::Api, Intrusiveness::Background, false);
+                r.sensitivity = Sensitivity::Secrets;
+                vec![r]
+            }
+            Action::Drag { from, to, .. } => {
+                if resolvable(from) && resolvable(to) {
+                    vec![route(
+                        Mechanism::Accessibility,
+                        Intrusiveness::Background,
+                        false,
+                    )]
+                } else {
+                    vec![]
+                }
+            }
             Action::Observe => return Ok(ExecutionPlan::legacy(action)),
         };
         Ok(ExecutionPlan {
@@ -505,5 +791,39 @@ impl ComputerDriver for SimDriver {
         ctx: &ActContext,
     ) -> Result<ActionResult, DriverError> {
         self.act(&route.action, ctx)
+    }
+
+    /// Wake means "the app is on stage": like the real driver, a
+    /// stopped app gains a window. Sim has no focus to restore, so the
+    /// handle stays inert.
+    fn wake(&self, app: &dexter_core::AppSelector) -> Result<WakeHandle, DriverError> {
+        let name = match app {
+            dexter_core::AppSelector::Name(n) | dexter_core::AppSelector::BundleId(n) => n.clone(),
+            dexter_core::AppSelector::Pid(_) => return Ok(WakeHandle::default()),
+        };
+        let mut s = self.state.lock().unwrap();
+        if !s.apps.iter().any(|a| a == &name) {
+            let id = s.windows.iter().map(|w| w.id).max().unwrap_or(0) + 1;
+            let pid = (s.apps.len() + 2) as i32;
+            s.apps.push(name.clone());
+            s.windows.insert(
+                0,
+                Window {
+                    id,
+                    pid,
+                    app: name.clone(),
+                    title: Some(name),
+                    bounds: dexter_core::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 800.0,
+                        h: 600.0,
+                    },
+                    on_screen: true,
+                    layer: 0,
+                },
+            );
+        }
+        Ok(WakeHandle::default())
     }
 }

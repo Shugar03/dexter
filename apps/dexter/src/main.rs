@@ -107,6 +107,10 @@ enum Command {
         /// Mouse button: left (default), right, middle.
         #[arg(long, default_value = "left")]
         button: String,
+        /// Click count 1-3. Count ≥2 prefers the element's advertised
+        /// `open` action; physical multi-click needs --coords.
+        #[arg(long, default_value = "1")]
+        count: u8,
     },
     /// Type text into an element (AXValue first; keyboard fallback needs
     /// --coords and the app being frontmost).
@@ -145,6 +149,83 @@ enum Command {
         args: ActionArgs,
         #[arg(long)]
         value: String,
+    },
+    /// Launch an application (`/usr/bin/open`; normal activation).
+    Launch {
+        /// App name or `com.bundle.id` — never a pid.
+        #[arg(value_name = "APP")]
+        name: String,
+        /// Don't bring the app to the foreground.
+        #[arg(long)]
+        background: bool,
+        #[command(flatten)]
+        args: ActionArgs,
+    },
+    /// Ask an application to quit normally (NSRunningApplication
+    /// terminate — apps with unsaved state may refuse).
+    Quit {
+        /// App name or `com.bundle.id`.
+        #[arg(value_name = "APP")]
+        name: String,
+        #[command(flatten)]
+        args: ActionArgs,
+    },
+    /// Perform an action the element advertises (`open`, `confirm`,
+    /// `cancel`, `pick`...). Discovery: `dexter observe` shows the
+    /// element's `actions` list.
+    Invoke {
+        #[command(flatten)]
+        args: ActionArgs,
+        /// The advertised action name.
+        #[arg(long)]
+        action: String,
+    },
+    /// Window operation: new | focus | raise | close | minimize |
+    /// restore | move | resize. Targets the scoped app's frontmost
+    /// window unless --window is given.
+    WindowOp {
+        /// The operation name.
+        op: String,
+        /// Window id (`dexter windows`).
+        #[arg(long)]
+        window: Option<u32>,
+        /// move/resize geometry.
+        #[arg(long)]
+        x: Option<f64>,
+        #[arg(long)]
+        y: Option<f64>,
+        #[arg(long)]
+        w: Option<f64>,
+        #[arg(long)]
+        h: Option<f64>,
+        #[command(flatten)]
+        args: ActionArgs,
+    },
+    /// Clipboard access — reads return text on stdout; the journal
+    /// never records the content (secrets tier).
+    Clipboard {
+        /// `read` prints the text; `write` sets it.
+        op: String,
+        /// Text for `write`.
+        #[arg(long)]
+        text: Option<String>,
+        #[command(flatten)]
+        args: ActionArgs,
+    },
+    /// Drag between two elements. Both targets resolve and validate
+    /// before the pointer moves — a stale endpoint aborts cleanly.
+    Drag {
+        /// Start target (same syntax as --target).
+        #[arg(long)]
+        from: String,
+        /// End target.
+        #[arg(long)]
+        to: String,
+        /// Gesture duration in ms.
+        #[arg(long, default_value = "300")]
+        duration_ms: u64,
+        #[command(flatten)]
+        args: ActionArgs,
     },
     /// Run a goal in closed loop: observe → candidates → decision engine
     /// → act → re-check, until `--done` verifies or bounds hit.
@@ -556,7 +637,11 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&map)?);
             Ok(())
         }
-        Command::Click { args, button } => {
+        Command::Click {
+            args,
+            button,
+            count,
+        } => {
             let button = match button.as_str() {
                 "left" => MouseButton::Left,
                 "right" => MouseButton::Right,
@@ -564,7 +649,15 @@ fn run() -> Result<()> {
                 other => anyhow::bail!("unknown button '{other}' (left|right|middle)"),
             };
             let target = resolve_target(engine.driver(), &args)?;
-            run_action(&mut engine, &args, Action::Click { target, button })
+            run_action(
+                &mut engine,
+                &args,
+                Action::Click {
+                    target,
+                    button,
+                    count,
+                },
+            )
         }
         Command::Type { args, text } => {
             let target = args
@@ -600,6 +693,97 @@ fn run() -> Result<()> {
         Command::SetValue { args, value } => {
             let target = resolve_target(engine.driver(), &args)?;
             run_action(&mut engine, &args, Action::SetValue { target, value })
+        }
+        Command::Launch {
+            name,
+            background,
+            args,
+        } => run_action(
+            &mut engine,
+            &args,
+            Action::LaunchApp {
+                app: AppSelector::parse(&name),
+                activate: !background,
+            },
+        ),
+        Command::Quit { name, args } => run_action(
+            &mut engine,
+            &args,
+            Action::QuitApp {
+                app: AppSelector::parse(&name),
+            },
+        ),
+        Command::Invoke { args, action } => {
+            let target = resolve_target(engine.driver(), &args)?;
+            run_action(&mut engine, &args, Action::Invoke { target, action })
+        }
+        Command::WindowOp {
+            op,
+            window,
+            x,
+            y,
+            w,
+            h,
+            args,
+        } => {
+            use dexter_core::WindowOperation as Op;
+            let operation = match op.as_str() {
+                "new" => Op::New,
+                "focus" => Op::Focus,
+                "raise" => Op::Raise,
+                "close" => Op::Close,
+                "minimize" => Op::Minimize,
+                "restore" => Op::Restore,
+                "move" => Op::Move {
+                    x: x.context("--x required for move")?,
+                    y: y.context("--y required for move")?,
+                },
+                "resize" => Op::Resize {
+                    width: w.context("--w required for resize")?,
+                    height: h.context("--h required for resize")?,
+                },
+                other => anyhow::bail!(
+                    "unknown window op '{other}' (new|focus|raise|close|minimize|restore|move|resize)"
+                ),
+            };
+            run_action(
+                &mut engine,
+                &args,
+                Action::Window {
+                    window_id: window,
+                    operation,
+                },
+            )
+        }
+        Command::Clipboard { op, text, args } => match op.as_str() {
+            "read" => run_action(&mut engine, &args, Action::ReadClipboardText),
+            "write" => run_action(
+                &mut engine,
+                &args,
+                Action::WriteClipboardText {
+                    text: text.context("--text required for clipboard write")?,
+                },
+            ),
+            other => anyhow::bail!("unknown clipboard op '{other}' (read|write)"),
+        },
+        Command::Drag {
+            from,
+            to,
+            duration_ms,
+            args,
+        } => {
+            let app = args.app.as_deref();
+            let from = resolve_raw_target(engine.driver(), app, &from)?;
+            let to = resolve_raw_target(engine.driver(), app, &to)?;
+            run_action(
+                &mut engine,
+                &args,
+                Action::Drag {
+                    from,
+                    to,
+                    duration_ms,
+                },
+            )
         }
         Command::Run {
             path,
@@ -726,12 +910,18 @@ fn resolve_target(driver: &dyn ComputerDriver, args: &ActionArgs) -> Result<Targ
         .target
         .as_deref()
         .context("this command requires --target")?;
+    resolve_raw_target(driver, args.app.as_deref(), raw)
+}
+
+/// One raw target string → `Target`. Shared by `--target`, `--from`
+/// and `--to` — the syntax is identical everywhere.
+fn resolve_raw_target(driver: &dyn ComputerDriver, app: Option<&str>, raw: &str) -> Result<Target> {
     if let Some(rest) = raw.strip_prefix("element:") {
         let n: u64 = rest
             .parse()
             .with_context(|| format!("invalid element id '{rest}'"))?;
         let scope = ObservationScope {
-            app: args.app.as_deref().map(AppSelector::parse),
+            app: app.map(AppSelector::parse),
             ..Default::default()
         };
         let obs = driver
@@ -766,7 +956,7 @@ fn resolve_target(driver: &dyn ComputerDriver, args: &ActionArgs) -> Result<Targ
         return Ok(Target::Semantic(t));
     }
     anyhow::bail!(
-        "invalid --target '{raw}' — use a semantic JSON object, `element:N`, \
+        "invalid target '{raw}' — use a semantic JSON object, `element:N`, \
          `window:N`, `focused` or `point:x,y`"
     )
 }

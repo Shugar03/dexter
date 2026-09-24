@@ -261,6 +261,13 @@ fn describe_candidate(i: usize, c: &CandidateAction) -> String {
         Action::Focus { .. } => "focus",
         Action::SetValue { .. } => "set value",
         Action::Navigate { .. } => "navigate",
+        Action::Invoke { .. } => "invoke",
+        Action::LaunchApp { .. } => "launch app",
+        Action::QuitApp { .. } => "quit app",
+        Action::Window { .. } => "window",
+        Action::ReadClipboardText => "read clipboard",
+        Action::WriteClipboardText { .. } => "write clipboard",
+        Action::Drag { .. } => "drag",
         Action::Observe => "observe",
         Action::Wait { .. } => "wait",
     };
@@ -393,7 +400,7 @@ impl DecisionEngine for LayaEngine {
                 .map(|c| format!(" (confidence {c:.2})"))
                 .unwrap_or_default();
             return Ok(Decision::Act {
-                action: c.action.clone(),
+                action: Box::new(c.action.clone()),
                 candidate_index: Some(idx),
                 rationale: format!("laya picked candidate {idx}{conf}: {}", c.rationale),
             });

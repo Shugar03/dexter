@@ -31,6 +31,7 @@ fn press(name: &str) -> Action {
             ..Default::default()
         }),
         button: dexter_core::MouseButton::Left,
+        count: 1,
     }
 }
 

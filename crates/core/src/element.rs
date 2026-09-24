@@ -109,6 +109,11 @@ pub struct Element {
     pub actions: Vec<String>,
     /// Stable-ish platform identifier (AXIdentifier, DOM id) when present.
     pub identifier: Option<String>,
+    /// The keyboard shortcut a menu item advertises (AXMenuItemCmdChar +
+    /// modifiers, DOM accesskey). Lets a `Key` request plan a semantic
+    /// press on the item instead of a physical chord.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut: Option<crate::KeyChord>,
     pub source: ElementSource,
 }
 
@@ -129,6 +134,7 @@ impl Default for Element {
             focused: false,
             actions: Vec::new(),
             identifier: None,
+            shortcut: None,
             source: ElementSource::Accessibility,
         }
     }

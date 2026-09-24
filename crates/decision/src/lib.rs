@@ -76,9 +76,11 @@ pub struct DecisionContext {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Decision {
     /// Execute this action — index into `ctx.candidates` when it came
-    /// from the generator (`None` = engine invented it).
+    /// from the generator (`None` = engine invented it). `Action` grew
+    /// with the v2 variants; boxing keeps `Decision` small — serde is
+    /// transparent to the indirection.
     Act {
-        action: Action,
+        action: Box<Action>,
         candidate_index: Option<usize>,
         /// Journal-visible explanation (never trusted by policy).
         rationale: String,
@@ -674,6 +676,7 @@ fn expr_next_candidate(
         action: Action::Click {
             target: element_target(obs, el),
             button: MouseButton::Left,
+            count: 1,
         },
         rationale: format!(
             "expression sequence: next keypad step {} of {}",
@@ -994,10 +997,25 @@ impl CandidateGenerator for HeuristicGenerator {
                     });
                 }
             } else if pressable {
+                // v2: an element advertising `open` under an open-goal
+                // gets the semantic invoke — the proven affordance, not
+                // just a generic press.
+                let openable = el.actions.iter().any(|a| a == "open") && terms.contains(&"open");
+                if openable {
+                    out.push(CandidateAction {
+                        action: Action::Invoke {
+                            target: target.clone(),
+                            action: "open".into(),
+                        },
+                        rationale: format!("{base}; element advertises 'open'"),
+                        prior: (prior * 1.05).min(1.0),
+                    });
+                }
                 out.push(CandidateAction {
                     action: Action::Click {
                         target,
                         button: MouseButton::Left,
+                        count: 1,
                     },
                     rationale: base,
                     prior,
@@ -1056,7 +1074,7 @@ impl DecisionEngine for RuleBased {
             // honest move is to abstain, not to click the best bad guess.
             if first.prior >= self.act_threshold {
                 return Ok(Decision::Act {
-                    action: first.action.clone(),
+                    action: Box::new(first.action.clone()),
                     candidate_index: Some(0),
                     rationale: format!("top candidate: {}", first.rationale),
                 });

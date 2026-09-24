@@ -1,0 +1,36 @@
+# open-semantic — a file row advertising an `open` affordance. The
+# generator emits the semantic Invoke over the generic click, and the
+# loop credits it only because the world actually changes (a document
+# window appears). The desktop-v2 acceptance case at goal level.
+[scenario]
+id = "open-semantic"
+goal = "abrir report.pdf"
+optimal_steps = 1
+app = "Archivos"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "Documento" } }
+max_steps = 4
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Archivos"
+
+[[world.element]]
+id = 2
+role = "row"
+name = "report.pdf"
+actions = ["open", "press"]
+enabled = true
+
+[[world.element]]
+id = 3
+role = "row"
+name = "notas.txt"
+actions = ["open", "press"]
+enabled = true
+
+[[world.rule]]
+when = { name = "report.pdf" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Documento: report.pdf" } }

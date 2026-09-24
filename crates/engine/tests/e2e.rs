@@ -61,6 +61,7 @@ fn click_verifies_spawned_element() {
                 ..Default::default()
             }),
             button: MouseButton::Left,
+            count: 1,
         },
         expect: Some(ExpectedState::ElementExists {
             target: SemanticTarget {
@@ -103,6 +104,7 @@ fn unverifiable_expectation_fails_after_bounded_attempts() {
                 ..Default::default()
             }),
             button: MouseButton::Left,
+            count: 1,
         },
         expect: Some(ExpectedState::ElementExists {
             target: SemanticTarget {
@@ -140,6 +142,7 @@ fn policy_deny_blocks_action() {
                 ..Default::default()
             }),
             button: MouseButton::Left,
+            count: 1,
         },
         expect: None,
         max_attempts: None,
@@ -156,6 +159,14 @@ fn policy_deny_blocks_action() {
 #[test]
 fn approval_flow_bound_single_use() {
     let sim = SimDriver::new(vec![el(1, "button", "Guardar")]);
+    // The click must change the world — a no-op is no longer credited.
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "ok")),
+    );
     let mut engine = Engine::new(sim, Policy::embedded(), Duration::from_secs(60));
     let step = Step {
         note: None,
@@ -165,6 +176,7 @@ fn approval_flow_bound_single_use() {
                 ..Default::default()
             }),
             button: MouseButton::Left,
+            count: 1,
         },
         expect: None,
         max_attempts: None,
@@ -189,6 +201,16 @@ fn approval_flow_bound_single_use() {
 #[test]
 fn scenario_stops_at_first_failure() {
     let sim = SimDriver::new(vec![el(1, "button", "A"), el(2, "button", "B")]);
+    // Both clicks land real effects — no-ops are no longer credited.
+    for name in ["A", "B"] {
+        sim.on_press(
+            SemanticTarget {
+                name: Some(name.into()),
+                ..Default::default()
+            },
+            Effect::Spawn(el(0, "static_text", name)),
+        );
+    }
     let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
     let mk = |name: &str, expect_name: Option<&str>| Step {
         note: None,
@@ -198,6 +220,7 @@ fn scenario_stops_at_first_failure() {
                 ..Default::default()
             }),
             button: MouseButton::Left,
+            count: 1,
         },
         expect: expect_name.map(|n| ExpectedState::ElementExists {
             target: SemanticTarget {
@@ -231,6 +254,7 @@ fn fingerprint_matches_policy_binding() {
             ..Default::default()
         }),
         button: MouseButton::Left,
+        count: 1,
     };
     let ctx = ActionContext {
         app: Some(AppSelector::Name("Sim".into())),
@@ -354,6 +378,7 @@ fn physical_action_denied_before_touching_driver() {
         action: Action::Click {
             target: Target::Point { x: 5.0, y: 5.0 },
             button: MouseButton::Left,
+            count: 1,
         },
         expect: None,
         max_attempts: None,
@@ -833,4 +858,342 @@ fn goal_act_verified_carries_evidence() {
         kinds.contains(&EventKind::VerificationPassed),
         "goal-flow acts must be verified, not trusted: {kinds:?}"
     );
+}
+
+// ---------- desktop actions v2 ----------
+
+#[test]
+fn launch_app_verified_by_window_observation() {
+    // LaunchApp derives AppRunning — the world must show the app's
+    // window before the step is credited.
+    let sim = SimDriver::new(vec![]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::LaunchApp {
+            app: AppSelector::Name("Calc".into()),
+            activate: true,
+        },
+        expect: None, // derived: AppRunning("Calc")
+        max_attempts: None,
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { verification, .. } => {
+            let v = verification.expect("launch must carry a verdict");
+            assert_eq!(v.status, VerificationStatus::Verified);
+        }
+        other => panic!("launch should complete verified, got {other:?}"),
+    }
+}
+
+#[test]
+fn quit_app_verified_by_window_removal() {
+    let sim = SimDriver::new(vec![]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    // The sim itself runs as "sim" — quitting it removes its window.
+    let step = Step {
+        note: None,
+        action: Action::QuitApp {
+            app: AppSelector::Name("sim".into()),
+        },
+        expect: None, // derived: Not(AppRunning("sim"))
+        max_attempts: None,
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { verification, .. } => {
+            assert_eq!(
+                verification.expect("quit must carry a verdict").status,
+                VerificationStatus::Verified
+            );
+        }
+        other => panic!("quit should complete verified, got {other:?}"),
+    }
+}
+
+#[test]
+fn launch_of_pid_selector_is_invalid() {
+    // A pid selector names a running process — it can't be launched.
+    // The failure is honest, not a simulated success.
+    let sim = SimDriver::new(vec![]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::LaunchApp {
+            app: AppSelector::Pid(9999),
+            activate: true,
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { .. } | StepStatus::Errored { .. } => {}
+        other => panic!("pid launch should error or fail, got {other:?}"),
+    }
+}
+
+#[test]
+fn invoke_verified_via_world_changed() {
+    // Invoke derives WorldChanged — the press must actually do
+    // something observable, not just return success.
+    let sim = SimDriver::new(vec![el(1, "button", "Go")]);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Go".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "started")),
+    );
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Invoke {
+            target: Target::Semantic(SemanticTarget {
+                name: Some("Go".into()),
+                ..Default::default()
+            }),
+            action: "press".into(),
+        },
+        expect: None, // derived: WorldChanged
+        max_attempts: None,
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { verification, .. } => {
+            assert_eq!(
+                verification.expect("invoke must carry a verdict").status,
+                VerificationStatus::Verified
+            );
+        }
+        other => panic!("invoke should complete verified, got {other:?}"),
+    }
+}
+
+#[test]
+fn invoke_unadvertised_action_is_not_credited() {
+    // Element doesn't advertise the requested action — honest
+    // Unsupported, never a fake press.
+    let sim = SimDriver::new(vec![el(1, "button", "Go")]); // advertises "press"
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Invoke {
+            target: Target::Semantic(SemanticTarget {
+                name: Some("Go".into()),
+                ..Default::default()
+            }),
+            action: "explode".into(),
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { .. } => panic!("unadvertised invoke must not succeed"),
+        StepStatus::Failed { .. } | StepStatus::Errored { .. } | StepStatus::Denied { .. } => {}
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn clipboard_write_then_read_via_engine() {
+    // Clipboard routes carry the secrets floor — under allow-all rules
+    // they still execute; the content returns in the result, and the
+    // journal must never show it.
+    let sentinel = "CLIPBOARD_SENTINEL_9x2";
+    let toml = r#"
+        [[rule]]
+        action = "clipboard_write"
+        decision = "allow"
+        [[rule]]
+        action = "clipboard_read"
+        decision = "allow"
+    "#;
+    let policy = Policy::from_toml(toml).unwrap();
+    let sim = SimDriver::new(vec![]);
+    let mut engine = Engine::new(sim, policy, Duration::from_secs(60));
+    let write = Step {
+        note: None,
+        action: Action::WriteClipboardText {
+            text: sentinel.into(),
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    assert!(engine.run_step(&write, &cfg()).done());
+
+    // Read returns content in the result — and the journal redacts it.
+    let read = Step {
+        note: None,
+        action: Action::ReadClipboardText,
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&read, &cfg()) {
+        StepStatus::Done { result, .. } => {
+            assert_eq!(result.detail.as_deref(), Some(sentinel));
+        }
+        other => panic!("clipboard read should succeed, got {other:?}"),
+    }
+    let journal: Vec<String> = engine
+        .events()
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap())
+        .collect();
+    assert!(
+        !journal.iter().any(|l| l.contains(sentinel)),
+        "clipboard content must never reach the journal"
+    );
+}
+
+#[test]
+fn clipboard_write_needs_approval_under_default_policy() {
+    // The secrets floor: no matching rule → approval required, even
+    // though clipboard is a semantic (background) action.
+    let policy = Policy::embedded();
+    let sim = SimDriver::new(vec![]);
+    let mut engine = Engine::new(sim, policy, Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::WriteClipboardText { text: "x".into() },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::NeedsApproval { .. } => {}
+        other => panic!("clipboard write should need approval, got {other:?}"),
+    }
+}
+
+#[test]
+fn drag_stale_endpoint_never_reaches_the_world() {
+    // A stale `to` fails the drag before anything moves — no partial
+    // gesture, no pressed state.
+    let sim = SimDriver::new(vec![el(1, "row", "file"), el(2, "row", "folder")]);
+    let obs = sim
+        .observe(&dexter_core::ObservationScope::default())
+        .unwrap();
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Drag {
+            from: Target::Semantic(SemanticTarget {
+                name: Some("file".into()),
+                ..Default::default()
+            }),
+            to: Target::Element {
+                observation: obs.id,
+                element: ElementId(999), // vanished — never existed
+            },
+            duration_ms: 10,
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { .. } => panic!("stale drag must not succeed"),
+        StepStatus::Failed { .. } | StepStatus::Errored { .. } => {}
+        other => panic!("got {other:?}"),
+    }
+    assert!(engine.driver().dragged().is_empty());
+}
+
+#[test]
+fn window_ops_verified_or_honestly_unsupported() {
+    use dexter_core::WindowOperation as Op;
+    let sim = SimDriver::new(vec![]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    // New spawns a window — the world signature shifts.
+    let step = Step {
+        note: None,
+        action: Action::Window {
+            window_id: None,
+            operation: Op::New,
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { .. } => {}
+        other => panic!("window new should succeed in sim, got {other:?}"),
+    }
+    // Focus on a window target normalizes to the window op.
+    let wins = engine
+        .driver()
+        .observe(&ObservationScope::default())
+        .unwrap();
+    let step = Step {
+        note: None,
+        action: Action::Focus {
+            target: Target::Window {
+                window_id: wins.windows[0].id,
+            },
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { .. } => {}
+        other => panic!("window focus should succeed, got {other:?}"),
+    }
+}
+
+#[test]
+fn goal_flow_open_affordance_yields_invoke() {
+    // The acceptance case: an element advertising `open` under an
+    // open-goal generates the semantic invoke, and the engine picks it
+    // over the generic click (higher prior for the proven affordance).
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    let file = Element {
+        id: ElementId(1),
+        role: Some("row".into()),
+        name: Some("report.pdf".into()),
+        actions: vec!["open".into(), "press".into()],
+        enabled: Some(true),
+        ..Default::default()
+    };
+    let sim = SimDriver::new(vec![file]);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("report.pdf".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "opened")),
+    );
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let outcome = engine.run_task(
+        "open report.pdf",
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 5,
+            max_duration: None,
+            cancel: None,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("opened".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    assert!(matches!(outcome, TaskOutcome::Completed { .. }));
+    // The journal shows the semantic invoke ran — not a raw click.
+    let invoked = engine.events().iter().any(|e| {
+        serde_json::to_string(e)
+            .map(|s| s.contains("\"invoke\""))
+            .unwrap_or(false)
+    });
+    assert!(invoked, "open-affordance should route through Invoke");
 }

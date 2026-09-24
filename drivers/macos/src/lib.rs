@@ -15,6 +15,7 @@ mod ax;
 mod ffi;
 mod keymap;
 mod screenshot;
+mod v2;
 mod vision;
 mod windows;
 
@@ -62,7 +63,25 @@ impl ComputerDriver for MacOsDriver {
 
     fn wake(&self, app: &dexter_core::AppSelector) -> Result<WakeHandle, DriverError> {
         let previous = apps::frontmost_pid();
-        let pid = apps::resolve_pid(app)?;
+        // Wake means "the app is on stage": a running app activates; a
+        // stopped one launches first — `open` both starts and activates.
+        let pid = match apps::resolve_pid(app) {
+            Ok(pid) => pid,
+            Err(e) => {
+                apps::launch(app, true)?;
+                // `open` returns before the process registers — poll
+                // briefly rather than fail closed on a slow launch.
+                let mut pid = None;
+                for _ in 0..20 {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    if let Ok(p) = apps::resolve_pid(app) {
+                        pid = Some(p);
+                        break;
+                    }
+                }
+                pid.ok_or(e)?
+            }
+        };
         if Some(pid) == previous {
             // Already frontmost — no activation, nothing to restore.
             return Ok(WakeHandle::default());

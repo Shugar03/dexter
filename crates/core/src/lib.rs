@@ -13,7 +13,7 @@ mod observation;
 mod result;
 mod target;
 
-pub use action::{Action, Intrusiveness, KeyChord, MouseButton, ScrollDelta};
+pub use action::{Action, Intrusiveness, KeyChord, MouseButton, ScrollDelta, WindowOperation};
 pub use element::{Element, ElementId, ElementSource, Rect};
 pub use error::DexterError;
 pub use event::{Event, EventKind};

@@ -20,7 +20,7 @@ use dexter_world_model::normalize_ax_role;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use crate::{apps, ax, ffi, keymap, permissions};
+use crate::{apps, ax, ffi, keymap, permissions, v2};
 
 const ACTION_WALK_DEPTH: u32 = 40;
 const ACTION_WALK_MAX: usize = 4_000;
@@ -216,39 +216,6 @@ fn ax_value_settable(r: &Resolved) -> bool {
         .unwrap_or(false)
 }
 
-fn cg_mouse_click(x: f64, y: f64, button: MouseButton) -> Result<(), DriverError> {
-    let (down, up, btn) = match button {
-        MouseButton::Left => (
-            ffi::K_CG_EVENT_LEFT_DOWN,
-            ffi::K_CG_EVENT_LEFT_UP,
-            ffi::K_CG_MOUSE_LEFT,
-        ),
-        MouseButton::Right => (
-            ffi::K_CG_EVENT_RIGHT_DOWN,
-            ffi::K_CG_EVENT_RIGHT_UP,
-            ffi::K_CG_MOUSE_RIGHT,
-        ),
-        MouseButton::Middle => (
-            ffi::K_CG_EVENT_MIDDLE_DOWN,
-            ffi::K_CG_EVENT_MIDDLE_UP,
-            ffi::K_CG_MOUSE_MIDDLE,
-        ),
-    };
-    let p = ffi::CGPoint { x, y };
-    unsafe {
-        let d = ffi::CGEventCreateMouseEvent(std::ptr::null(), down, p, btn);
-        let u = ffi::CGEventCreateMouseEvent(std::ptr::null(), up, p, btn);
-        if d.is_null() || u.is_null() {
-            return Err(DriverError::Platform("CGEventCreateMouseEvent null".into()));
-        }
-        ffi::CGEventPost(ffi::K_CG_HID_EVENT_TAP, d);
-        ffi::CGEventPost(ffi::K_CG_HID_EVENT_TAP, u);
-        ffi::CFRelease(d);
-        ffi::CFRelease(u);
-    }
-    Ok(())
-}
-
 fn cg_scroll(dx: i32, dy: i32) -> Result<(), DriverError> {
     unsafe {
         let ev = ffi::CGEventCreateScrollWheelEvent(
@@ -335,12 +302,29 @@ fn is_frontmost(pid: i32) -> bool {
     apps::frontmost_pid() == Some(pid)
 }
 
+/// Actions that need the accessibility grant — everything that touches
+/// the AX tree. Lifecycle, clipboard, navigation and waits work without
+/// it; the grant check lives here so a missing AX permission never
+/// blocks an action that doesn't need it.
+fn needs_ax(action: &Action) -> bool {
+    !matches!(
+        action,
+        Action::Wait { .. }
+            | Action::Navigate { .. }
+            | Action::LaunchApp { .. }
+            | Action::QuitApp { .. }
+            | Action::ReadClipboardText
+            | Action::WriteClipboardText { .. }
+            | Action::Observe
+    )
+}
+
 pub fn act(
     action: &Action,
     ctx: &ActContext,
     cache: &ObsCache,
 ) -> Result<ActionResult, DriverError> {
-    if !permissions::accessibility_trusted() {
+    if needs_ax(action) && !permissions::accessibility_trusted() {
         return Ok(ActionResult::failure(
             ActionStatus::PermissionDenied,
             Mechanism::Accessibility,
@@ -376,45 +360,106 @@ pub fn act(
                 ))
             }
         }
-        Action::Click { target, button } => match target {
-            Target::Point { x, y } => {
-                if !ctx.allow_coordinates {
-                    return Ok(ActionResult::failure(
-                        ActionStatus::Unsupported,
+        Action::Click {
+            target,
+            button,
+            count,
+        } => {
+            if *count > 3 || *count == 0 {
+                return Ok(ActionResult::failure(
+                    ActionStatus::Failed,
+                    Mechanism::Accessibility,
+                    format!("click count {count} out of range 1..=3"),
+                ));
+            }
+            match target {
+                Target::Point { x, y } => {
+                    if !ctx.allow_coordinates {
+                        return Ok(ActionResult::failure(
+                            ActionStatus::Unsupported,
+                            Mechanism::Coordinates,
+                            "coordinate input disabled — pass the explicit coords flag",
+                        ));
+                    }
+                    v2::cg_multi_click(*x, *y, *button, *count)?;
+                    Ok(ActionResult::success(
                         Mechanism::Coordinates,
-                        "coordinate input disabled — pass the explicit coords flag",
-                    ));
+                        Some(format!("clicked x{count} at ({x},{y})")),
+                    ))
                 }
-                cg_mouse_click(*x, *y, *button)?;
-                Ok(ActionResult::success(
-                    Mechanism::Coordinates,
-                    Some(format!("clicked at ({x},{y})")),
-                ))
-            }
-            Target::Window { .. } => Ok(ActionResult::failure(
-                ActionStatus::Unsupported,
-                Mechanism::Accessibility,
-                "window targets not implemented — use semantic or element targets",
-            )),
-            _ => {
-                let r = resolve_element(target, ctx, cache)?;
-                match button {
-                    MouseButton::Left => ax_press(&r),
-                    _ => ax_show_menu(&r),
+                Target::Window { .. } => Ok(ActionResult::failure(
+                    ActionStatus::Unsupported,
+                    Mechanism::Accessibility,
+                    "window targets not implemented — use semantic or element targets",
+                )),
+                _ => {
+                    let r = resolve_element(target, ctx, cache)?;
+                    // v2: a multi-click on an element advertising `open`
+                    // is a semantic open — never a physical double-click.
+                    if *count >= 2 && *button == MouseButton::Left {
+                        if let Ok(raw) = v2::invoke(&r.el, "open") {
+                            return Ok(ActionResult::success(
+                                Mechanism::Accessibility,
+                                Some(format!("{raw} on {}", r.detail)),
+                            ));
+                        }
+                        // Element doesn't advertise open — a physical
+                        // multi-click is the only way, gated hard.
+                        if !ctx.allow_coordinates {
+                            return Ok(ActionResult::failure(
+                                ActionStatus::Unsupported,
+                                Mechanism::Accessibility,
+                                format!(
+                                    "{} does not advertise 'open' — enable coords for a physical {count}-click",
+                                    r.detail
+                                ),
+                            ));
+                        }
+                        let (pid, _) = resolve_app(ctx)?;
+                        if !is_frontmost(pid) {
+                            return Ok(ActionResult::failure(
+                                ActionStatus::ForegroundRequired,
+                                Mechanism::Coordinates,
+                                "physical clicks need the target app frontmost",
+                            ));
+                        }
+                        let bounds = v2::ax_bounds(&r.el).ok_or_else(|| {
+                            DriverError::NotFound(format!("{} has no bounds", r.detail))
+                        })?;
+                        let (cx, cy) = v2::center(&bounds);
+                        v2::cg_multi_click(cx, cy, *button, *count)?;
+                        return Ok(ActionResult::success(
+                            Mechanism::Coordinates,
+                            Some(format!("clicked x{count} on {}", r.detail)),
+                        ));
+                    }
+                    match button {
+                        MouseButton::Left => ax_press(&r),
+                        _ => ax_show_menu(&r),
+                    }
                 }
             }
-        },
+        }
         Action::TypeText { text, target } => {
             let t = target.clone().unwrap_or(Target::Focused);
             let r = resolve_element(&t, ctx, cache)?;
-            // Semantic-first: prefer AXValue set; physical typing only when
-            // enabled AND the app is frontmost.
+            // v2 semantics: TypeText *appends* — read the scalar value,
+            // concatenate, set. A value we can't read back (rich text,
+            // attributed content) never gets silently replaced: the
+            // physical route types at the caret instead.
             if ax_value_settable(&r) {
-                ax_set_value(&r, text)?;
-                return Ok(ActionResult::success(
-                    Mechanism::Accessibility,
-                    Some(format!("set value on {}", r.detail)),
-                ));
+                let current =
+                    r.el.value()
+                        .ok()
+                        .and_then(|v| v.downcast::<CFString>().map(|s| s.to_string()));
+                if let Some(cur) = current {
+                    ax_set_value(&r, &format!("{cur}{text}"))?;
+                    return Ok(ActionResult::success(
+                        Mechanism::Accessibility,
+                        Some(format!("appended on {}", r.detail)),
+                    ));
+                }
+                // Rich/unreadable value — fall through to physical typing.
             }
             if !ctx.allow_coordinates {
                 return Ok(ActionResult::failure(
@@ -441,15 +486,29 @@ pub fn act(
             ))
         }
         Action::Key { chord } => {
-            if !ctx.allow_coordinates {
-                return Ok(ActionResult::failure(
-                    ActionStatus::Unsupported,
-                    Mechanism::Coordinates,
-                    "key chords require physical input — pass the explicit coords flag",
-                ));
-            }
+            // v2 semantic route first: a chord a menu item advertises
+            // becomes an AXPress on that item — no physical input, no
+            // foreground requirement. Ambiguity fails closed.
             if let Some(sel) = &ctx.app {
                 let pid = apps::resolve_pid(sel)?;
+                if let Some(item) = v2::menu_item_for_chord(pid, chord)? {
+                    item.perform_action(&CFString::new("AXPress"))
+                        .map_err(|e| {
+                            DriverError::Platform(format!("menu AXPress failed: {e:?}"))
+                        })?;
+                    return Ok(ActionResult::success(
+                        Mechanism::Accessibility,
+                        Some(format!("pressed menu item for {}", describe_chord(chord))),
+                    ));
+                }
+                // No menu claim — physical keys need the app frontmost.
+                if !ctx.allow_coordinates {
+                    return Ok(ActionResult::failure(
+                        ActionStatus::Unsupported,
+                        Mechanism::Coordinates,
+                        "no menu item advertises this chord and physical input is disabled",
+                    ));
+                }
                 if !is_frontmost(pid) {
                     return Ok(ActionResult::failure(
                         ActionStatus::ForegroundRequired,
@@ -457,6 +516,14 @@ pub fn act(
                         "key chords go to the frontmost app — target app is not frontmost",
                     ));
                 }
+                return cg_key_chord(chord);
+            }
+            if !ctx.allow_coordinates {
+                return Ok(ActionResult::failure(
+                    ActionStatus::Unsupported,
+                    Mechanism::Coordinates,
+                    "key chords require physical input — pass the explicit coords flag",
+                ));
             }
             cg_key_chord(chord)
         }
@@ -486,11 +553,17 @@ pub fn act(
             ))
         }
         Action::Focus { target } => match target {
-            Target::Window { .. } => Ok(ActionResult::failure(
-                ActionStatus::Unsupported,
-                Mechanism::Accessibility,
-                "window focus not implemented",
-            )),
+            // v2: window focus normalizes to the window op — AXRaise +
+            // app activation, resolved fresh by bounds.
+            Target::Window { window_id } => {
+                let pid = ctx.app.as_ref().map(apps::resolve_pid).transpose()?;
+                let (wpid, win) = v2::resolve_window(Some(*window_id), pid)?;
+                let what = v2::window_op(wpid, &win, &dexter_core::WindowOperation::Focus)?;
+                Ok(ActionResult::success(
+                    Mechanism::Accessibility,
+                    Some(format!("{what} window {window_id}")),
+                ))
+            }
             Target::Point { .. } => Ok(ActionResult::failure(
                 ActionStatus::Unsupported,
                 Mechanism::Accessibility,
@@ -511,6 +584,93 @@ pub fn act(
             Ok(ActionResult::success(
                 Mechanism::Accessibility,
                 Some(format!("set value on {}", r.detail)),
+            ))
+        }
+        Action::Invoke { target, action } => {
+            let r = resolve_element(target, ctx, cache)?;
+            let raw = v2::invoke(&r.el, action)?;
+            Ok(ActionResult::success(
+                Mechanism::Accessibility,
+                Some(format!("{raw} on {}", r.detail)),
+            ))
+        }
+        Action::LaunchApp { app, activate } => {
+            apps::launch(app, *activate)?;
+            Ok(ActionResult::success(
+                Mechanism::Api,
+                Some(format!("launched {app:?}")),
+            ))
+        }
+        Action::QuitApp { app } => {
+            apps::terminate(app)?;
+            Ok(ActionResult::success(
+                Mechanism::Api,
+                Some(format!("quit {app:?}")),
+            ))
+        }
+        Action::Window {
+            window_id,
+            operation,
+        } => {
+            let pid = ctx.app.as_ref().map(apps::resolve_pid).transpose()?;
+            let (wpid, win) = v2::resolve_window(*window_id, pid)?;
+            let what = v2::window_op(wpid, &win, operation)?;
+            Ok(ActionResult::success(
+                Mechanism::Accessibility,
+                Some(format!("{what} (pid {wpid})")),
+            ))
+        }
+        Action::ReadClipboardText => {
+            // The text is returned only inside the ActionResult — it is
+            // never journaled, fingerprinted or shown in the overlay.
+            let text = v2::clipboard_read(None)?;
+            Ok(ActionResult::success(
+                Mechanism::Api,
+                Some(text.unwrap_or_else(|| "clipboard empty".into())),
+            ))
+        }
+        Action::WriteClipboardText { text } => {
+            v2::clipboard_write(None, text)?;
+            Ok(ActionResult::success(
+                Mechanism::Api,
+                Some(format!("clipboard set ({} bytes)", text.len())),
+            ))
+        }
+        Action::Drag {
+            from,
+            to,
+            duration_ms,
+        } => {
+            // Resolve and revalidate both endpoints *before* the button
+            // goes down — a stale target discovered mid-drag would
+            // strand the pointer.
+            if !ctx.allow_coordinates {
+                return Ok(ActionResult::failure(
+                    ActionStatus::Unsupported,
+                    Mechanism::Coordinates,
+                    "drag requires physical input — pass the explicit coords flag",
+                ));
+            }
+            let a = resolve_element(from, ctx, cache)?;
+            let b = resolve_element(to, ctx, cache)?;
+            let ab = v2::ax_bounds(&a.el)
+                .ok_or_else(|| DriverError::NotFound(format!("{} has no bounds", a.detail)))?;
+            let bb = v2::ax_bounds(&b.el)
+                .ok_or_else(|| DriverError::NotFound(format!("{} has no bounds", b.detail)))?;
+            let (pid, _) = resolve_app(ctx)?;
+            if !is_frontmost(pid) {
+                return Ok(ActionResult::failure(
+                    ActionStatus::ForegroundRequired,
+                    Mechanism::Coordinates,
+                    "drag moves the real pointer — target app is not frontmost",
+                ));
+            }
+            let (x1, y1) = v2::center(&ab);
+            let (x2, y2) = v2::center(&bb);
+            v2::cg_drag(x1, y1, x2, y2, *duration_ms)?;
+            Ok(ActionResult::success(
+                Mechanism::Coordinates,
+                Some(format!("dragged {} onto {}", a.detail, b.detail)),
             ))
         }
     }
@@ -650,7 +810,7 @@ pub fn plan(
         // act() rejects Observe as an engine directive — the legacy
         // route keeps that Unsupported verdict.
         Action::Observe => ExecutionPlan::legacy(action),
-        Action::Click { target, .. } => match target {
+        Action::Click { target, count, .. } => match target {
             // A point can only be reached with real input events.
             Target::Point { .. } => {
                 if ctx.allow_coordinates {
@@ -668,7 +828,38 @@ pub fn plan(
             }
             // act() refuses window clicks — legacy keeps the verdict.
             Target::Window { .. } => ExecutionPlan::legacy(action),
-            _ => element_plan(action, target, ctx, cache)?,
+            _ => {
+                // v2: a multi-click is semantic when the element
+                // advertises `open`, physical otherwise — declare the
+                // route act() will actually take.
+                if *count >= 2 {
+                    let r = resolve_element(target, ctx, cache)?;
+                    let advertises_open =
+                        r.el.action_names()
+                            .map(|names| {
+                                names
+                                    .iter()
+                                    .any(|n| normalize_ax_role(&n.to_string()) == "open")
+                            })
+                            .unwrap_or(false);
+                    if advertises_open {
+                        ExecutionPlan::single(action, ax_route(action, Some(target), &r))
+                    } else if ctx.allow_coordinates {
+                        ExecutionPlan::single(
+                            action,
+                            cg_route(
+                                action,
+                                resolved_target(Some(target), &r),
+                                sensitivity_of(&r),
+                            ),
+                        )
+                    } else {
+                        empty_plan(action)
+                    }
+                } else {
+                    element_plan(action, target, ctx, cache)?
+                }
+            }
         },
         Action::TypeText { target, .. } => {
             // Same resolution and AXValue-settability check act()
@@ -686,8 +877,26 @@ pub fn plan(
             };
             ExecutionPlan::single(action, route)
         }
-        // Key chords are physical input: no semantic equivalent exists.
-        Action::Key { .. } => {
+        // v2: a chord the menu bar advertises is an AX press — declare
+        // the semantic route when the menu claims it, physical only as
+        // the last resort. Ambiguity fails closed at plan time.
+        Action::Key { chord } => {
+            if let Some(sel) = &ctx.app {
+                let pid = apps::resolve_pid(sel)?;
+                if v2::menu_item_for_chord(pid, chord)?.is_some() {
+                    return Ok(ExecutionPlan::single(
+                        action,
+                        ExecutionRoute {
+                            action: action.clone(),
+                            target: TargetDescriptor::from_action(action),
+                            mechanism: Some(Mechanism::Accessibility),
+                            intrusiveness: Intrusiveness::Background,
+                            sensitivity: Sensitivity::Standard,
+                            requires_foreground: false,
+                        },
+                    ));
+                }
+            }
             if ctx.allow_coordinates {
                 ExecutionPlan::single(
                     action,
@@ -720,12 +929,77 @@ pub fn plan(
             }
         },
         Action::Focus { target } => match target {
-            // act() refuses window and point focus — legacy keeps the
-            // Unsupported verdict.
-            Target::Window { .. } | Target::Point { .. } => ExecutionPlan::legacy(action),
+            // v2: window focus is a real window op — AX, visual tier.
+            Target::Window { .. } => ExecutionPlan::single(
+                action,
+                ExecutionRoute {
+                    action: action.clone(),
+                    target: TargetDescriptor::from_action(action),
+                    mechanism: Some(Mechanism::Accessibility),
+                    intrusiveness: Intrusiveness::Visual,
+                    sensitivity: Sensitivity::Standard,
+                    requires_foreground: false,
+                },
+            ),
+            Target::Point { .. } => ExecutionPlan::legacy(action),
             _ => element_plan(action, target, ctx, cache)?,
         },
         Action::SetValue { target, .. } => element_plan(action, target, ctx, cache)?,
+        Action::Invoke { target, .. } => element_plan(action, target, ctx, cache)?,
+        // Lifecycle runs through LaunchServices/NSRunningApplication —
+        // the API mechanism, visible but not input-capturing, and it
+        // does not need the AX grant (act() exempts it).
+        Action::LaunchApp { .. } | Action::QuitApp { .. } => ExecutionPlan::single(
+            action,
+            ExecutionRoute {
+                action: action.clone(),
+                target: TargetDescriptor::from_action(action),
+                mechanism: Some(Mechanism::Api),
+                intrusiveness: Intrusiveness::Visual,
+                sensitivity: Sensitivity::Standard,
+                requires_foreground: false,
+            },
+        ),
+        Action::Window { .. } => ExecutionPlan::single(
+            action,
+            ExecutionRoute {
+                action: action.clone(),
+                target: TargetDescriptor::from_action(action),
+                mechanism: Some(Mechanism::Accessibility),
+                intrusiveness: Intrusiveness::Visual,
+                sensitivity: Sensitivity::Standard,
+                requires_foreground: false,
+            },
+        ),
+        // Clipboard is semantic but secret-bearing — the sensitivity
+        // floor travels on the route so policy gates it independently.
+        Action::ReadClipboardText | Action::WriteClipboardText { .. } => ExecutionPlan::single(
+            action,
+            ExecutionRoute {
+                action: action.clone(),
+                target: TargetDescriptor::from_action(action),
+                mechanism: Some(Mechanism::Api),
+                intrusiveness: Intrusiveness::Background,
+                sensitivity: Sensitivity::Secrets,
+                requires_foreground: false,
+            },
+        ),
+        // A drag is physical wherever it lands — element resolution is
+        // AX, but the gesture itself moves the real pointer.
+        Action::Drag { .. } => {
+            if ctx.allow_coordinates {
+                ExecutionPlan::single(
+                    action,
+                    cg_route(
+                        action,
+                        TargetDescriptor::from_action(action),
+                        Sensitivity::Standard,
+                    ),
+                )
+            } else {
+                empty_plan(action)
+            }
+        }
     };
     Ok(plan)
 }

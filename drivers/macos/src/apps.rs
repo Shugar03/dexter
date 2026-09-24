@@ -79,6 +79,72 @@ pub fn frontmost_pid() -> Option<i32> {
     }
 }
 
+/// Launch an app through `/usr/bin/open` — argument array, never a
+/// shell. `activate: false` passes `-g` (open in background). Returns
+/// once `open` exits; the app's windows appear asynchronously — the
+/// caller verifies through observation.
+pub fn launch(selector: &AppSelector, activate: bool) -> Result<(), DriverError> {
+    let mut args: Vec<String> = Vec::new();
+    if !activate {
+        args.push("-g".into());
+    }
+    match selector {
+        AppSelector::Name(n) => {
+            args.push("-a".into());
+            args.push(n.clone());
+        }
+        AppSelector::BundleId(b) => {
+            args.push("-b".into());
+            args.push(b.clone());
+        }
+        AppSelector::Pid(_) => {
+            return Err(DriverError::Unsupported(
+                "cannot launch an app by pid — it must already be running".into(),
+            ));
+        }
+    }
+    let status = std::process::Command::new("/usr/bin/open")
+        .args(&args)
+        .status()
+        .map_err(|e| DriverError::Platform(format!("spawn /usr/bin/open: {e}")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(DriverError::AppNotFound(format!(
+            "/usr/bin/open {:?} exited {status}",
+            args
+        )))
+    }
+}
+
+/// Ask the app to terminate normally (NSRunningApplication::terminate —
+/// the same path as ⌘Q; no force-quit).
+pub fn terminate(selector: &AppSelector) -> Result<(), DriverError> {
+    // resolve_pid gives AppNotFound/Ambiguous for free on names.
+    let pid = resolve_pid(selector)?;
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let app: id = msg_send![
+            class!(NSRunningApplication),
+            runningApplicationWithProcessIdentifier: pid
+        ];
+        let ok = if app == nil {
+            false
+        } else {
+            let terminated: bool = msg_send![app, terminate];
+            terminated
+        };
+        pool.drain();
+        if ok {
+            Ok(())
+        } else {
+            Err(DriverError::Platform(format!(
+                "NSRunningApplication::terminate refused for pid {pid}"
+            )))
+        }
+    }
+}
+
 fn pid_for_name(name: &str) -> Result<i32, DriverError> {
     unsafe {
         let pool = NSAutoreleasePool::new(nil);

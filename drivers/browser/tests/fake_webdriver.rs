@@ -255,6 +255,7 @@ fn semantic_click_dispatches_dom_click() {
             &Action::Click {
                 target,
                 button: MouseButton::Left,
+                count: 1,
             },
             &ActContext::default(),
         )
@@ -316,6 +317,7 @@ fn ambiguous_semantic_target_fails_closed() {
             &Action::Click {
                 target,
                 button: MouseButton::Left,
+                count: 1,
             },
             &ActContext::default(),
         )
@@ -342,6 +344,7 @@ fn element_target_rejects_stale_dom() {
                     element: pay_id,
                 },
                 button: MouseButton::Left,
+                count: 1,
             },
             &ActContext::default(),
         )
@@ -359,6 +362,7 @@ fn point_targets_are_unsupported() {
             &Action::Click {
                 target: Target::Point { x: 10.0, y: 20.0 },
                 button: MouseButton::Left,
+                count: 1,
             },
             &ActContext::default(),
         )
@@ -501,6 +505,7 @@ fn element_from_other_tab_is_stale() {
                     element: pay_id,
                 },
                 button: MouseButton::Left,
+                count: 1,
             },
             &ActContext::default(),
         )
@@ -526,6 +531,7 @@ fn element_from_other_tab_is_stale() {
                     element: pay_id,
                 },
                 button: MouseButton::Left,
+                count: 1,
             },
             &ActContext::default(),
         )

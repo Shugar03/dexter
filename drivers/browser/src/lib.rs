@@ -138,6 +138,16 @@ impl BrowserDriver {
     /// repopulates on every walk — callers must have a current
     /// observation.
     fn exec_on(&self, id: ElementId, script: &str) -> Result<serde_json::Value, DriverError> {
+        self.exec_on_args(id, script, vec![])
+    }
+
+    /// `exec_on` with extra `arguments[]` after the bound element.
+    fn exec_on_args(
+        &self,
+        id: ElementId,
+        script: &str,
+        args: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value, DriverError> {
         self.client.lock().unwrap().execute(
             &format!(
                 "return (() => {{ const el = window.__dexterNodes?.[{}]; \
@@ -145,8 +155,20 @@ impl BrowserDriver {
                  return (function(el) {{ {} }})(el); }})()",
                 id.0, script
             ),
-            vec![],
+            args,
         )
+    }
+
+    /// The actions the live element currently advertises — the
+    /// fail-closed check `Invoke` shares with the AX path.
+    fn element_actions(&self, id: ElementId) -> Result<Vec<String>, DriverError> {
+        let obs = self.obs_cache.lock().unwrap();
+        Ok(obs
+            .iter()
+            .flat_map(|(_, els, _)| els.iter())
+            .find(|e| e.id == id)
+            .map(|e| e.actions.clone())
+            .unwrap_or_default())
     }
 
     fn cache_observation(&self, obs: &Observation, tab: &str) {
@@ -372,6 +394,30 @@ impl ComputerDriver for BrowserDriver {
             Action::Key { .. } | Action::Scroll { .. } => {
                 dom(TargetDescriptor::from_action(action))
             }
+            Action::Invoke { .. } => dom(TargetDescriptor::from_action(action)),
+            // act() reports Unsupported — no honest route exists.
+            Action::LaunchApp { .. }
+            | Action::QuitApp { .. }
+            | Action::ReadClipboardText
+            | Action::WriteClipboardText { .. } => ExecutionPlan {
+                requested: action.clone(),
+                routes: vec![],
+            },
+            Action::Window { operation, .. } => {
+                use dexter_core::WindowOperation as Op;
+                match operation {
+                    Op::New | Op::Focus | Op::Close => single(
+                        Mechanism::Api,
+                        Intrusiveness::Visual,
+                        TargetDescriptor::from_action(action),
+                    ),
+                    _ => ExecutionPlan {
+                        requested: action.clone(),
+                        routes: vec![],
+                    },
+                }
+            }
+            Action::Drag { .. } => dom(TargetDescriptor::from_action(action)),
             Action::Observe => ExecutionPlan::legacy(action),
         };
         Ok(plan)
@@ -396,7 +442,11 @@ impl ComputerDriver for BrowserDriver {
                     Some(format!("navigated to {url}")),
                 ))
             }
-            Action::Click { target, button } => {
+            Action::Click {
+                target,
+                button,
+                count,
+            } => {
                 if let Target::Point { .. } = target {
                     return Ok(ActionResult::failure(
                         ActionStatus::Unsupported,
@@ -404,20 +454,169 @@ impl ComputerDriver for BrowserDriver {
                         "browser driver never uses coordinates — target elements",
                     ));
                 }
+                if *count == 0 || *count > 3 {
+                    return Ok(ActionResult::failure(
+                        ActionStatus::Failed,
+                        Mechanism::Dom,
+                        format!("click count {count} out of range 1..=3"),
+                    ));
+                }
                 let id = self.resolve(target)?;
-                let js = match button {
-                    dexter_core::MouseButton::Right => {
+                let js = match (button, *count) {
+                    (dexter_core::MouseButton::Right, _) => {
                         "el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true})); 'right-clicked'"
+                    }
+                    (_, 1) => "el.click(); 'clicked'",
+                    // A real double-click sequence: mousedown/up pairs
+                    // plus the dblclick event apps listen for.
+                    (_, 2..=3) => {
+                        "for(let i=0;i<arguments[0];i++){el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));el.click();}\
+                         el.dispatchEvent(new MouseEvent('dblclick',{bubbles:true})); 'multi-clicked'"
                     }
                     _ => "el.click(); 'clicked'",
                 };
+                let resp = self.exec_on_args(id, js, vec![json!(count)])?;
+                if resp["__dexter_err"].is_string() {
+                    return Err(DriverError::StaleReference("stale node".into()));
+                }
+                Ok(ActionResult::success(
+                    Mechanism::Dom,
+                    Some(format!("clicked element {id} x{count}")),
+                ))
+            }
+            Action::Invoke { target, action } => {
+                let id = self.resolve(target)?;
+                // DOM/API mapping — only names the element advertises.
+                let js = match action.as_str() {
+                    "press" | "open" => "el.click(); 'invoked'",
+                    "show_menu" => {
+                        "el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true})); 'menu'"
+                    }
+                    "focus" => "el.focus(); 'focused'",
+                    "scroll_to_visible" => "el.scrollIntoView({block:'center'}); 'scrolled'",
+                    _ => {
+                        return Ok(ActionResult::failure(
+                            ActionStatus::Unsupported,
+                            Mechanism::Dom,
+                            format!("no DOM mapping for invoke '{action}'"),
+                        ));
+                    }
+                };
+                // The element must still advertise the action — same
+                // fail-closed contract as AX.
+                let advertised = self.element_actions(id)?;
+                if !advertised.iter().any(|a| a == action) {
+                    return Ok(ActionResult::failure(
+                        ActionStatus::Unsupported,
+                        Mechanism::Dom,
+                        format!("element {id} does not advertise '{action}'"),
+                    ));
+                }
                 let resp = self.exec_on(id, js)?;
                 if resp["__dexter_err"].is_string() {
                     return Err(DriverError::StaleReference("stale node".into()));
                 }
                 Ok(ActionResult::success(
                     Mechanism::Dom,
-                    Some(format!("clicked element {id}")),
+                    Some(format!("invoked '{action}' on element {id}")),
+                ))
+            }
+            Action::LaunchApp { .. } | Action::QuitApp { .. } => Ok(ActionResult::failure(
+                ActionStatus::Unsupported,
+                Mechanism::Dom,
+                "browser driver cannot manage application lifecycle",
+            )),
+            Action::Window {
+                window_id,
+                operation,
+            } => {
+                use dexter_core::WindowOperation as Op;
+                match operation {
+                    Op::New => {
+                        let handle = self.client.lock().unwrap().new_window()?;
+                        Ok(ActionResult::success(
+                            Mechanism::Api,
+                            Some(format!("opened tab {handle}")),
+                        ))
+                    }
+                    Op::Focus => {
+                        let id = window_id.ok_or_else(|| {
+                            DriverError::NotFound("browser window focus needs a window_id".into())
+                        })?;
+                        let handle = self.handle_for_id(id).ok_or_else(|| {
+                            DriverError::NotFound(format!("window {id} — not a live tab"))
+                        })?;
+                        self.client.lock().unwrap().switch_to_window(&handle)?;
+                        Ok(ActionResult::success(
+                            Mechanism::Api,
+                            Some(format!("switched to tab (window {id})")),
+                        ))
+                    }
+                    Op::Close => {
+                        if let Some(id) = window_id {
+                            let handle = self.handle_for_id(*id).ok_or_else(|| {
+                                DriverError::NotFound(format!("window {id} — not a live tab"))
+                            })?;
+                            self.client.lock().unwrap().switch_to_window(&handle)?;
+                        }
+                        self.client.lock().unwrap().close_window()?;
+                        Ok(ActionResult::success(
+                            Mechanism::Api,
+                            Some(format!("closed tab {window_id:?}")),
+                        ))
+                    }
+                    _ => Ok(ActionResult::failure(
+                        ActionStatus::Unsupported,
+                        Mechanism::Dom,
+                        format!("window op {operation:?} has no browser mapping"),
+                    )),
+                }
+            }
+            Action::ReadClipboardText | Action::WriteClipboardText { .. } => {
+                Ok(ActionResult::failure(
+                    ActionStatus::Unsupported,
+                    Mechanism::Dom,
+                    "WebDriver has no clipboard API — clipboard is unsupported here",
+                ))
+            }
+            Action::Drag {
+                from,
+                to,
+                duration_ms,
+            } => {
+                // DOM event synthesis — never moves the OS cursor.
+                let a = self.resolve(from)?;
+                let b = self.resolve(to)?;
+                let resp = self.exec_on_args(
+                    a,
+                    "const to = window.__dexterNodes?.[arguments[0]]; \
+                     if (!to) return {__dexter_err: 'stale node'}; \
+                     const f = el.getBoundingClientRect(), t = to.getBoundingClientRect(); \
+                     const [x1,y1,x2,y2] = [f.x+f.width/2, f.y+f.height/2, t.x+t.width/2, t.y+t.height/2]; \
+                     const o = {bubbles:true, clientX:x1, clientY:y1, button:0}; \
+                     el.dispatchEvent(new PointerEvent('pointerdown', o)); \
+                     el.dispatchEvent(new MouseEvent('mousedown', o)); \
+                     el.dispatchEvent(new DragEvent('dragstart', o)); \
+                     const steps = 6; \
+                     for(let i=1;i<=steps;i++){ \
+                       const x = x1+(x2-x1)*i/steps, y = y1+(y2-y1)*i/steps; \
+                       to.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:x,clientY:y})); \
+                       to.dispatchEvent(new DragEvent('dragover',{bubbles:true,clientX:x,clientY:y})); \
+                     } \
+                     const d = {bubbles:true, clientX:x2, clientY:y2, button:0}; \
+                     to.dispatchEvent(new DragEvent('drop', d)); \
+                     to.dispatchEvent(new PointerEvent('pointerup', d)); \
+                     to.dispatchEvent(new MouseEvent('mouseup', d)); \
+                     el.dispatchEvent(new DragEvent('dragend', d)); \
+                     'dragged'",
+                    vec![json!(a.0), json!(b.0), json!(duration_ms)],
+                )?;
+                if resp["__dexter_err"].is_string() {
+                    return Err(DriverError::StaleReference("stale node".into()));
+                }
+                Ok(ActionResult::success(
+                    Mechanism::Dom,
+                    Some(format!("dragged element {a} onto {b}")),
                 ))
             }
             Action::Focus { target } => {

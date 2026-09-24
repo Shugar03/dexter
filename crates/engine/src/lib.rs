@@ -257,9 +257,11 @@ impl<D: ComputerDriver> Engine<D> {
     pub fn run_step(&mut self, step: &Step, cfg: &RunConfig) -> StepStatus {
         // The journal carries the target's on-screen bounds so the
         // presence overlay can draw the cursor where the act lands.
-        // run_plan already holds a live observation; single steps take
-        // one here — cosmetic only, a failed observe never blocks the act.
-        let mut obs = if bounds_need_observation(&step.action) {
+        // A mutating action without an explicit expect also needs the
+        // pre-act world — its derived expectation verifies the effect.
+        let needs_obs = bounds_need_observation(&step.action)
+            || (step.expect.is_none() && derives(&step.action));
+        let mut obs = if needs_obs {
             let scope = ObservationScope {
                 app: step.app.clone().or_else(|| cfg.app.clone()),
                 max_elements: cfg.observe_max_elements,
@@ -280,6 +282,21 @@ impl<D: ComputerDriver> Engine<D> {
             ..Default::default()
         };
         let wake = self.maybe_wake(app.as_ref(), &mut obs, &scope);
+        // An explicit expect wins; otherwise mutating actions verify
+        // their effect by derivation — the same contract goal flow has.
+        let derived;
+        let step = if step.expect.is_none() {
+            derived = obs
+                .as_ref()
+                .and_then(|o| derive_expect(&step.action, o))
+                .map(|e| Step {
+                    expect: Some(e),
+                    ..step.clone()
+                });
+            derived.as_ref().unwrap_or(step)
+        } else {
+            step
+        };
         let status = self.run_step_inner(step, cfg, obs.as_ref());
         if let Some(h) = wake {
             self.driver.restore(&h);
@@ -445,12 +462,22 @@ impl<D: ComputerDriver> Engine<D> {
                     return StepStatus::Errored { error: e };
                 }
             };
+            // Clipboard content rides `detail` to the caller — it never
+            // reaches the journal, in any trace mode.
+            let detail: &str = if matches!(
+                route.action,
+                Action::ReadClipboardText | Action::WriteClipboardText { .. }
+            ) {
+                "<redacted>"
+            } else {
+                result.detail.as_deref().unwrap_or("")
+            };
             self.journal(
                 EventKind::ActionExecuted,
                 serde_json::json!({
                     "status": format!("{:?}", result.status),
                     "mechanism": format!("{:?}", result.mechanism),
-                    "detail": &result.detail,
+                    "detail": detail,
                     "route": index,
                 }),
             );
@@ -908,7 +935,7 @@ impl<D: ComputerDriver> Engine<D> {
                 } => {
                     let mutating = is_mutating(&action);
                     hist.attempt_names.push(attempt_label(&action, &obs));
-                    hist.attempts.push(action.clone());
+                    hist.attempts.push((*action).clone());
                     // Every mutating act earns a derived expectation —
                     // progress is judged by done_when AND by evidence the
                     // act itself landed. Acts the model can't express an
@@ -917,7 +944,7 @@ impl<D: ComputerDriver> Engine<D> {
                     let status = self.run_step_inner(
                         &Step {
                             note: Some(rationale),
-                            action,
+                            action: *action,
                             expect,
                             max_attempts: Some(3),
                             app: cfg.run.app.clone(),
@@ -1043,8 +1070,12 @@ pub(crate) mod audit {
             })
         };
         match action {
-            Action::Click { target, button } => {
-                serde_json::json!({"type": "click", "target": target, "button": button})
+            Action::Click {
+                target,
+                button,
+                count,
+            } => {
+                serde_json::json!({"type": "click", "target": target, "button": button, "count": count})
             }
             Action::TypeText { text, target } => serde_json::json!({
                 "type": "type_text",
@@ -1066,6 +1097,37 @@ pub(crate) mod audit {
             Action::Observe => serde_json::json!({"type": "observe"}),
             Action::Wait { millis } => serde_json::json!({"type": "wait", "millis": millis}),
             Action::Navigate { url } => serde_json::json!({"type": "navigate", "url": url}),
+            Action::Invoke { target, action } => {
+                serde_json::json!({"type": "invoke", "target": target, "action": action})
+            }
+            Action::LaunchApp { app, activate } => {
+                serde_json::json!({"type": "launch_app", "app": app, "activate": activate})
+            }
+            Action::QuitApp { app } => serde_json::json!({"type": "quit_app", "app": app}),
+            Action::Window {
+                window_id,
+                operation,
+            } => serde_json::json!({
+                "type": "window",
+                "window_id": window_id,
+                "operation": operation,
+            }),
+            Action::ReadClipboardText => serde_json::json!({"type": "clipboard_read"}),
+            // The payload is a secret in flight — digested, never plain.
+            Action::WriteClipboardText { text } => serde_json::json!({
+                "type": "clipboard_write",
+                "payload": payload("text", text),
+            }),
+            Action::Drag {
+                from,
+                to,
+                duration_ms,
+            } => serde_json::json!({
+                "type": "drag",
+                "from": from,
+                "to": to,
+                "duration_ms": duration_ms,
+            }),
         }
     }
 
@@ -1270,6 +1332,23 @@ fn attempt_label(action: &Action, obs: &Observation) -> Option<String> {
         .and_then(|e| e.label().map(str::to_string))
 }
 
+/// Actions whose effect is derivable — the subset of mutating actions
+/// `derive_expect` can express. Used to decide when a pre-act
+/// observation is worth taking.
+fn derives(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Click { .. }
+            | Action::SetValue { .. }
+            | Action::TypeText { .. }
+            | Action::Focus { .. }
+            | Action::Invoke { .. }
+            | Action::Drag { .. }
+            | Action::LaunchApp { .. }
+            | Action::QuitApp { .. }
+    )
+}
+
 /// Does this action mutate the world (as opposed to observing or
 /// positioning)? Auto-completion only credits mutating acts.
 fn is_mutating(action: &Action) -> bool {
@@ -1280,6 +1359,12 @@ fn is_mutating(action: &Action) -> bool {
             | Action::TypeText { .. }
             | Action::Key { .. }
             | Action::Navigate { .. }
+            | Action::Invoke { .. }
+            | Action::LaunchApp { .. }
+            | Action::QuitApp { .. }
+            | Action::Window { .. }
+            | Action::WriteClipboardText { .. }
+            | Action::Drag { .. }
     )
 }
 
@@ -1344,6 +1429,49 @@ fn derive_expect(action: &Action, obs: &Observation) -> Option<ExpectedState> {
         Action::Focus { target } => {
             semantic_for(target, obs).map(|st| ExpectedState::FocusedElement { target: st })
         }
+        // Invoke/Drag: effect unpredictable — the world must change.
+        Action::Invoke { .. } | Action::Drag { .. } => Some(ExpectedState::WorldChanged {
+            from: dexter_world_model::signature(obs),
+        }),
+        // AppRunning checks window *names* — a bundle/pid selector can't
+        // match them, so non-name launches verify by the signature
+        // (a new window changes the title set; a quit removes one).
+        Action::LaunchApp { app, .. } => match app {
+            // "Launched" = a window owned by the requested name OR the
+            // world changed at all — `open -a Calculator` may surface
+            // the localized name ("Calculadora"), so a pure name match
+            // would false-fail a real launch.
+            AppSelector::Name(name) => Some(ExpectedState::Any {
+                any: vec![
+                    ExpectedState::AppRunning { name: name.clone() },
+                    ExpectedState::WorldChanged {
+                        from: dexter_world_model::signature(obs),
+                    },
+                ],
+            }),
+            _ => Some(ExpectedState::WorldChanged {
+                from: dexter_world_model::signature(obs),
+            }),
+        },
+        Action::QuitApp { app } => match app {
+            // "Quit" = its windows are gone OR the world changed (a
+            // window closed). Same localized-name gap as launch.
+            AppSelector::Name(name) => Some(ExpectedState::Any {
+                any: vec![
+                    ExpectedState::Not {
+                        not: Box::new(ExpectedState::AppRunning { name: name.clone() }),
+                    },
+                    ExpectedState::WorldChanged {
+                        from: dexter_world_model::signature(obs),
+                    },
+                ],
+            }),
+            _ => Some(ExpectedState::WorldChanged {
+                from: dexter_world_model::signature(obs),
+            }),
+        },
+        // Window ops / clipboard / read: the world model can't express
+        // their effect — honestly unverified.
         _ => None,
     }
 }

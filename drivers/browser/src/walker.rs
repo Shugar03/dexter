@@ -249,6 +249,9 @@ pub fn parse_elements(raw: serde_json::Value) -> (Vec<Element>, u32) {
             focused: r.focused,
             actions: r.actions,
             identifier: r.identifier,
+            // DOM accesskey modifiers are platform-dependent and not
+            // reliably mappable to a KeyChord — left unset.
+            shortcut: None,
             source: ElementSource::Dom,
         })
         .collect();

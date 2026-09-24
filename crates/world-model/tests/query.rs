@@ -21,6 +21,7 @@ fn el(id: u64, role: &str, name: Option<&str>, depth: u32) -> Element {
         focused: false,
         actions: vec![],
         identifier: None,
+        shortcut: None,
         source: ElementSource::Accessibility,
     }
 }
