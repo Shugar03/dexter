@@ -1,0 +1,43 @@
+# duplicate-labels — two buttons named "Guardar"; only the second one
+# works. Element-bound candidates enumerate both (e_2 then e_3, tree
+# order): the engine presses the first, verification proves the no-op,
+# the penalized candidate drops, and the next step presses the other.
+# Duplicates aren't ambiguous at element level — but a wrong first
+# pick must recover, not loop.
+[scenario]
+id = "duplicate-labels"
+goal = "guardar"
+optimal_steps = 2
+app = "Editor"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "Guardado" } }
+expect_verify_fails = 3
+max_steps = 6
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Documento"
+
+[[world.element]]
+id = 2
+role = "button"
+name = "Guardar"
+value = "preview"
+actions = ["press"]
+enabled = true
+
+[[world.element]]
+id = 3
+role = "button"
+name = "Guardar"
+value = "main"
+actions = ["press"]
+enabled = true
+
+# Only the "main" Guardar produces the effect — pressing "preview" is
+# a verified no-op, so the loop must move to the sibling.
+[[world.rule]]
+when = { name = "Guardar", value_contains = "main" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Guardado" } }

@@ -1,0 +1,30 @@
+# disabled-target — the only control matching the goal is disabled.
+# The generator skips disabled elements entirely, so there is nothing
+# to act on: abstain is the correct, honest outcome. Not a failure —
+# pressing a disabled control can't produce the effect anyway.
+[scenario]
+id = "disabled-target"
+goal = "guardar el documento"
+optimal_steps = 0
+app = "Editor"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "Guardado" } }
+expected = "abstained"
+max_steps = 4
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Documento"
+
+[[world.element]]
+id = 2
+role = "button"
+name = "Guardar"
+actions = ["press"]
+enabled = false
+
+[[world.rule]]
+when = { name = "Guardar" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Guardado" } }

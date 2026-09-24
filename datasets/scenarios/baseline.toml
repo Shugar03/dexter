@@ -27,3 +27,22 @@ max_physical_acts = 0
 [scenario.admin-absent]
 min_success = 1.0
 max_mean_steps = 1.0
+
+[scenario.multi-step-document]
+min_success = 1.0
+max_mean_steps = 3.0
+
+[scenario.open-semantic]
+min_success = 1.0
+max_mean_steps = 2.0
+
+[scenario.duplicate-labels]
+min_success = 1.0
+max_mean_steps = 3.0
+
+[scenario.disabled-target]
+min_success = 1.0
+max_mean_steps = 1.0
+
+[scenario.silent-noop]
+min_success = 1.0

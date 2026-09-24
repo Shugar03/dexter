@@ -1,0 +1,38 @@
+# multi-step-document — the realistic two-act flow: type into the
+# field, then press Guardar. Measures sequencing: the engine must
+# chain two different mutating acts (TypeText then Click), each
+# verified, before done_when holds.
+[scenario]
+id = "multi-step-document"
+goal = "escribir 'hola mundo' y guardar el documento"
+optimal_steps = 2
+app = "Editor"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "Guardado" } }
+max_steps = 8
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Documento"
+
+[[world.element]]
+id = 2
+role = "text_field"
+name = "Contenido"
+value = ""
+actions = ["press"]
+enabled = true
+focused = true
+
+[[world.element]]
+id = 3
+role = "button"
+name = "Guardar"
+actions = ["press"]
+enabled = true
+
+[[world.rule]]
+when = { name = "Guardar" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Guardado" } }
