@@ -3,7 +3,7 @@
 
 use dexter_core::{
     Action, ActionStatus, AppSelector, Element, ElementId, ElementSource, MouseButton,
-    ObservationScope, SemanticTarget, Target, WindowOperation,
+    ObservationScope, SemanticTarget, Sensitivity, Target, WindowOperation,
 };
 use dexter_driver::{ActContext, ComputerDriver};
 use dexter_sim::{Effect, SimDriver};
@@ -417,4 +417,51 @@ fn element_route_descriptor_carries_semantic_identity() {
     assert_eq!(t.observation, Some(obs.id));
     assert_eq!(t.role.as_deref(), Some("button"));
     assert_eq!(t.name.as_deref(), Some("Save"));
+}
+
+#[test]
+fn quit_and_close_carry_destructive_sensitivity() {
+    // The destructive floor is route metadata: quit_app and window
+    // close declare it, so policy gates them before the mutating
+    // default — the other window ops stay standard.
+    let d = SimDriver::new(vec![]);
+    let plan = d
+        .plan(
+            &Action::QuitApp {
+                app: AppSelector::Name("x".into()),
+            },
+            &ctx(),
+        )
+        .unwrap();
+    assert_eq!(plan.routes[0].sensitivity, Sensitivity::Destructive);
+    let plan = d
+        .plan(
+            &Action::Window {
+                window_id: Some(1),
+                operation: WindowOperation::Close,
+            },
+            &ctx(),
+        )
+        .unwrap();
+    assert_eq!(plan.routes[0].sensitivity, Sensitivity::Destructive);
+    let plan = d
+        .plan(
+            &Action::Window {
+                window_id: Some(1),
+                operation: WindowOperation::Minimize,
+            },
+            &ctx(),
+        )
+        .unwrap();
+    assert_eq!(plan.routes[0].sensitivity, Sensitivity::Standard);
+    let plan = d
+        .plan(
+            &Action::LaunchApp {
+                app: AppSelector::Name("x".into()),
+                activate: false,
+            },
+            &ctx(),
+        )
+        .unwrap();
+    assert_eq!(plan.routes[0].sensitivity, Sensitivity::Standard);
 }

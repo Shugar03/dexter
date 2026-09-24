@@ -59,7 +59,10 @@ pub struct RunConfig {
   exists, Engine verifies before considering another action because the side
   effect may have landed.
 - A step without an expectation reports the driver's honest result and does
-  not invent verification.
+  not invent verification. An element token bound to a foreign observation
+  is unresolvable for expectation derivation — the step runs unverified
+  rather than binding whichever element now sits at that id (or failing on
+  a secure field's redacted value).
 
 ## Deterministic recovery classifier
 

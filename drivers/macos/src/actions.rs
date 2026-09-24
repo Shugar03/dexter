@@ -1128,7 +1128,12 @@ fn plan_inner(
                 target: TargetDescriptor::from_action(action),
                 mechanism: Some(Mechanism::Api),
                 intrusiveness: Intrusiveness::Visual,
-                sensitivity: Sensitivity::Standard,
+                // Quitting an app can discard unsaved state — the
+                // destructive floor asks for an explicit grant.
+                sensitivity: match action {
+                    Action::QuitApp { .. } => Sensitivity::Destructive,
+                    _ => Sensitivity::Standard,
+                },
                 requires_foreground: false,
             },
         ),
@@ -1143,7 +1148,12 @@ fn plan_inner(
                     target: TargetDescriptor::from_action(action),
                     mechanism: Some(Mechanism::Accessibility),
                     intrusiveness: Intrusiveness::Visual,
-                    sensitivity: Sensitivity::Standard,
+                    // Closing a window can discard unsaved state; the
+                    // other ops are rearrangements.
+                    sensitivity: match operation {
+                        dexter_core::WindowOperation::Close => Sensitivity::Destructive,
+                        _ => Sensitivity::Standard,
+                    },
                     requires_foreground: false,
                 },
             ),

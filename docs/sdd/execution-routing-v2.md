@@ -15,7 +15,10 @@ introduced.
 pub enum Sensitivity {
     Standard,
     Secrets,      // secure/password fields, clipboard — never journaled
-    Destructive,  // irreversible operations (delete, purchase, send)
+    Destructive,  // irreversible operations — declared for quit_app and
+                  // window close; the engine floor upgrades any Standard
+                  // route carrying those actions, and policy requires
+                  // explicit approval when no rule matches
 }
 
 pub struct TargetDescriptor {

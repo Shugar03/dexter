@@ -613,3 +613,35 @@ fn non_payload_params_bind_the_fingerprint() {
         fp(&Action::Wait { millis: 200 })
     );
 }
+
+#[test]
+fn destructive_floor_requires_approval_under_mutating_allow() {
+    // quit_app / window close can discard unsaved state — a batch
+    // `mutating = "allow"` must not silently cover them. Same floor
+    // shape as secrets.
+    let policy = Policy::from_toml("[defaults]\nmutating = \"allow\"\n").unwrap();
+    let route = ExecutionRoute {
+        action: Action::QuitApp {
+            app: dexter_core::AppSelector::Name("Finder".into()),
+        },
+        target: Default::default(),
+        mechanism: Some(dexter_core::Mechanism::Api),
+        intrusiveness: dexter_core::Intrusiveness::Visual,
+        sensitivity: dexter_core::Sensitivity::Destructive,
+        requires_foreground: false,
+    };
+    match policy.evaluate_route(&route, &ctx(None)) {
+        PolicyDecision::RequireApproval { .. } => {}
+        other => panic!("destructive floor should require approval, got {other:?}"),
+    }
+
+    // An explicit rule still wins — the floor is a default, not a veto.
+    let policy = Policy::from_toml(
+        "[defaults]\nmutating = \"deny\"\n[[rule]]\naction = \"quit_app\"\ndecision = \"allow\"\n",
+    )
+    .unwrap();
+    match policy.evaluate_route(&route, &ctx(None)) {
+        PolicyDecision::Allow => {}
+        other => panic!("explicit quit_app rule should win, got {other:?}"),
+    }
+}

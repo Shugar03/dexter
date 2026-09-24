@@ -1608,6 +1608,21 @@ fn enforce_sensitivity_floor(route: &mut ExecutionRoute, obs: Option<&Observatio
     if sensitive {
         route.sensitivity = Sensitivity::Secrets;
     }
+    // Destructiveness is action-shaped, not target-shaped: a driver
+    // that forgets to declare it must not slip past the floor — the
+    // same seam-enforcement the secrets floor gets.
+    if route.sensitivity == Sensitivity::Standard
+        && matches!(
+            route.action,
+            Action::QuitApp { .. }
+                | Action::Window {
+                    operation: dexter_core::WindowOperation::Close,
+                    ..
+                }
+        )
+    {
+        route.sensitivity = Sensitivity::Destructive;
+    }
 }
 
 /// The label an attempted action resolved to on this observation —
@@ -1688,6 +1703,12 @@ fn is_mutating(action: &Action) -> bool {
 /// Whether the target resolves to a sensitive (secure/password)
 /// element — the same definition the collectors redact values by, so
 /// a value-based expectation can never be honest for it.
+///
+/// An unresolvable target (e.g. a foreign-observation element token)
+/// reads "not sensitive" here, which is safe only because
+/// [`semantic_for`] returns `None` for the same token — no value
+/// expectation can be derived either way, so the act stays on the
+/// unverified path rather than failing on a redacted value.
 fn target_is_sensitive(target: &Target, obs: &Observation) -> bool {
     dexter_world_model::resolve_element(obs, target)
         .ok()
@@ -1701,17 +1722,17 @@ fn target_is_sensitive(target: &Target, obs: &Observation) -> bool {
 fn semantic_for(target: &Target, obs: &Observation) -> Option<SemanticTarget> {
     match target {
         Target::Semantic(s) => Some(s.clone()),
-        Target::Element { element, .. } => {
-            let el = obs.elements.iter().find(|e| e.id == *element)?;
-            Some(SemanticTarget {
-                role: el.role.clone(),
-                name: el.name.clone(),
-                identifier: el.identifier.clone(),
-                ..Default::default()
-            })
-        }
-        Target::Focused => {
-            let el = obs.elements.iter().find(|e| e.focused)?;
+        // An element token is bound to the observation that minted it —
+        // `resolve_element` enforces that qualifier, and a bare id
+        // lookup would bind whichever element now sits at that
+        // position. A foreign token is unresolvable here → `None` →
+        // the act runs unverified rather than verified against the
+        // wrong element (or false-failed on a secure field's redacted
+        // value — which a retry would append a second time). `Focused`
+        // resolves through the same path (the focused element of this
+        // observation).
+        Target::Element { .. } | Target::Focused => {
+            let el = dexter_world_model::resolve_element(obs, target).ok()?;
             Some(SemanticTarget {
                 role: el.role.clone(),
                 name: el.name.clone(),

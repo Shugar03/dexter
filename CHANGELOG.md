@@ -78,6 +78,34 @@
   policy-preference order: `Deny`/`RequireApproval` short-circuits
   the remaining routes — no route-shopping around a decision.
 
+### Fixed (runtime-reliability-v2 review, round 7)
+
+- `derive_expect` honours the `observation` qualifier on
+  `Target::Element` tokens: `semantic_for` now resolves through
+  `dexter_world_model::resolve_element`, which rejects foreign-observation
+  tokens, instead of a bare id lookup that bound whichever element sat
+  at that position in the fresh tree. Every element-token flow
+  (`dexter_observe`, `dexter_candidates`, `element:N` targets) mints
+  tokens bound to a prior observation, so the pre-act observation is
+  always foreign — a secure-field `TypeText` previously derived an
+  `ElementValue` check that could only fail on the redacted value,
+  reporting `Failed` on a landed act and inviting a secret-retyping
+  retry. Foreign tokens now run unverified, matching the convention
+  every other resolver already follows.
+
+### Changed (runtime-reliability-v2 review, round 7)
+
+- `Sensitivity::Destructive` is wired: `QuitApp` and
+  `Window::Close` (tab close on browser) declare it at plan on all
+  three drivers, the engine floor upgrades any `Standard` route
+  carrying those actions so a driver can't forget, and policy
+  requires explicit approval when no rule matches — a batch
+  `mutating = "allow"` no longer silently covers discarding state.
+  The legacy `evaluate` path declares the same sensitivities rather
+  than bypassing both floors.
+- `Route::Wait` documents the engine's 10s execution clamp at the
+  decision layer.
+
 ### Fixed (runtime-reliability-v2 review, round 2)
 
 - `kCGMouseEventClickState` corrected to field 1 (`CGEventTypes.h`) —

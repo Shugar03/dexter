@@ -2107,3 +2107,87 @@ decision = "require_approval"
     };
     assert_ne!(fingerprint_for("Search"), fingerprint_for("Password"));
 }
+
+#[test]
+fn foreign_observation_element_token_derives_no_expectation() {
+    // The dexter_candidates → dexter_act flow: the element token is
+    // bound to the observation that minted it, and `run_step` observes
+    // fresh — the token's qualifier is always foreign there. Deriving
+    // an expectation against the fresh tree would bind whichever
+    // element now sits at that id — or, for a secure field, a value
+    // check that can only fail on the redacted value, and a retry
+    // would re-type the secret. Honest answer: run unverified.
+    let mut pwd = el(1, "secure_text_field", "Password");
+    pwd.focused = true;
+    let sim = SimDriver::new(vec![pwd]);
+    // obs1: the token's minting observation — what `dexter_observe`
+    // or `dexter_candidates` would have produced before the act.
+    let obs1 = sim.observe(&ObservationScope::default()).unwrap();
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::TypeText {
+            text: "hunter2".into(),
+            target: Some(Target::Element {
+                observation: obs1.id,
+                element: ElementId(1),
+            }),
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { verification, .. } => {
+            assert!(
+                verification.is_none(),
+                "a foreign element token must run unverified, got {verification:?}"
+            );
+        }
+        other => panic!("the act must complete unverified, not fail: {other:?}"),
+    }
+    let journal: Vec<String> = engine
+        .events()
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap())
+        .collect();
+    assert!(
+        !journal
+            .iter()
+            .any(|l| l.contains("\"verification_failed\"") || l.contains("VerificationFailed")),
+        "no verification verdict may fire for a foreign-observation token"
+    );
+}
+
+#[test]
+fn foreign_element_token_on_present_element_runs_unverified() {
+    // Same qualifier, no security angle: obs1 and the pre-act obs2
+    // both contain element 1 — a bare id lookup would bind it and
+    // verify. The qualifier is still foreign (tokens bind to their
+    // minting observation), so the honest path is unverified.
+    let sim = SimDriver::new(vec![el(1, "text_field", "Nombre")]);
+    let obs1 = sim.observe(&ObservationScope::default()).unwrap();
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::SetValue {
+            target: Target::Element {
+                observation: obs1.id,
+                element: ElementId(1),
+            },
+            value: "x".into(),
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { verification, .. } => {
+            assert!(
+                verification.is_none(),
+                "a foreign token must not bind by bare id: {verification:?}"
+            );
+        }
+        other => panic!("the act must complete unverified: {other:?}"),
+    }
+}

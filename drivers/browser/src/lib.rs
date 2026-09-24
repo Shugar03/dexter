@@ -427,11 +427,22 @@ impl ComputerDriver for BrowserDriver {
             Action::Window { operation, .. } => {
                 use dexter_core::WindowOperation as Op;
                 match operation {
-                    Op::New | Op::Focus | Op::Close => single(
+                    Op::New | Op::Focus => single(
                         Mechanism::Api,
                         Intrusiveness::Visual,
                         TargetDescriptor::from_action(action),
                     ),
+                    // Closing a tab can discard unsaved state — the
+                    // destructive floor asks for an explicit grant.
+                    Op::Close => {
+                        let mut p = single(
+                            Mechanism::Api,
+                            Intrusiveness::Visual,
+                            TargetDescriptor::from_action(action),
+                        );
+                        p.routes[0].sensitivity = Sensitivity::Destructive;
+                        p
+                    }
                     _ => ExecutionPlan {
                         requested: action.clone(),
                         routes: vec![],

@@ -155,7 +155,21 @@ impl Policy {
                 target: TargetDescriptor::from_action(action),
                 mechanism: None,
                 intrusiveness: action.intrusiveness(),
-                sensitivity: dexter_core::Sensitivity::Standard,
+                // The floors travel on sensitivity — a caller that
+                // never plans must still declare what the drivers
+                // would, or secrets and destructive acts slip a batch
+                // `mutating = "allow"`.
+                sensitivity: match action {
+                    Action::ReadClipboardText | Action::WriteClipboardText { .. } => {
+                        dexter_core::Sensitivity::Secrets
+                    }
+                    Action::QuitApp { .. }
+                    | Action::Window {
+                        operation: dexter_core::WindowOperation::Close,
+                        ..
+                    } => dexter_core::Sensitivity::Destructive,
+                    _ => dexter_core::Sensitivity::Standard,
+                },
                 requires_foreground: action.intrusiveness() == Intrusiveness::Physical,
             },
             ctx,
@@ -212,6 +226,18 @@ impl Policy {
             return PolicyDecision::RequireApproval {
                 reason: format!(
                     "sensitive {} on {} — secrets require explicit approval",
+                    kind,
+                    describe_ctx(ctx)
+                ),
+            };
+        }
+        // Destructive routes (quit, window close) can discard unsaved
+        // state — a batch `mutating = "allow"` must not silently cover
+        // them either. Same floor shape as secrets.
+        if route.sensitivity == dexter_core::Sensitivity::Destructive {
+            return PolicyDecision::RequireApproval {
+                reason: format!(
+                    "destructive {} on {} — discarding state requires explicit approval",
                     kind,
                     describe_ctx(ctx)
                 ),

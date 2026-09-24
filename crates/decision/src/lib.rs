@@ -34,7 +34,9 @@ use thiserror::Error;
 pub enum Route {
     /// Nothing sensible to do yet — observe again.
     Reobserve,
-    /// Wait for the world to change (animations, loads).
+    /// Wait for the world to change (animations, loads). The engine
+    /// clamps execution to 10s — a decision layer should not request
+    /// longer; long waits belong at the caller's timeout, not here.
     Wait { millis: u64 },
     /// Repeat the last action (e.g. transient failure).
     Retry,

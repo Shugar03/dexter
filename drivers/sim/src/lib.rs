@@ -12,7 +12,7 @@
 use dexter_core::{
     Action, ActionResult, ActionStatus, Element, ElementId, ExecutionPlan, ExecutionRoute,
     Intrusiveness, Mechanism, MouseButton, Observation, ObservationId, ObservationScope,
-    SemanticTarget, Sensitivity, Target, TargetDescriptor, Window,
+    SemanticTarget, Sensitivity, Target, TargetDescriptor, Window, WindowOperation,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError, WakeHandle};
 use std::collections::VecDeque;
@@ -791,12 +791,20 @@ impl ComputerDriver for SimDriver {
             // visible but not input-capturing.
             Action::Focus {
                 target: Target::Window { .. },
-            }
-            | Action::Window { .. } => vec![route(
+            } => vec![route(
                 Mechanism::Accessibility,
                 Intrusiveness::Visual,
                 false,
             )],
+            Action::Window { operation, .. } => {
+                let mut r = route(Mechanism::Accessibility, Intrusiveness::Visual, false);
+                // Closing a window can discard unsaved state — same
+                // destructive floor as quit_app on the real driver.
+                if matches!(operation, WindowOperation::Close) {
+                    r.sensitivity = Sensitivity::Destructive;
+                }
+                vec![r]
+            }
             Action::SetValue { .. } | Action::Focus { .. } => vec![],
             Action::Invoke { target, .. } if resolvable(target) => vec![route(
                 Mechanism::Accessibility,
@@ -804,8 +812,15 @@ impl ComputerDriver for SimDriver {
                 false,
             )],
             Action::Invoke { .. } => vec![],
-            Action::LaunchApp { .. } | Action::QuitApp { .. } => {
+            Action::LaunchApp { .. } => {
                 vec![route(Mechanism::Api, Intrusiveness::Visual, false)]
+            }
+            Action::QuitApp { .. } => {
+                // Quitting can discard unsaved state — the destructive
+                // floor asks for an explicit grant, like macOS.
+                let mut r = route(Mechanism::Api, Intrusiveness::Visual, false);
+                r.sensitivity = Sensitivity::Destructive;
+                vec![r]
             }
             // Clipboard is semantic but secret-bearing — the sensitivity
             // floor travels on the route so policy can gate it alone.
