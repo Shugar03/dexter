@@ -21,3 +21,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 toml.workspace = true
+dexter-verify.workspace = true
+criterion = "0.5"
+
+[[bench]]
+name = "pipeline"
+harness = false

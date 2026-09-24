@@ -2061,7 +2061,7 @@ fn eval_scenario(
         }
         let m = aggregate(&spec.scenario.id, spec.scenario.optimal_steps, runs);
         println!(
-            "{:<24} ok {}/{}  steps {:>4.1} (opt {})  decide p50/p95 {:>3}/{}ms  rec {}  fails {}  appr {}  phys {}  {}",
+            "{:<24} ok {}/{}  steps {:>4.1} (opt {})  p95 obs/act/verify/decide {}/{}/{}/{}ms  rec {}  fails {}  appr {}  phys {}  {}",
             m.id,
             m.succeeded,
             m.reps,
@@ -2070,7 +2070,9 @@ fn eval_scenario(
                 .optimal_steps
                 .map(|o| o.to_string())
                 .unwrap_or_else(|| "-".into()),
-            m.decide_p50_ms,
+            m.observe_p95_ms,
+            m.act_p95_ms,
+            m.verify_p95_ms,
             m.decide_p95_ms,
             m.recoveries,
             m.verify_fails + m.action_failures,

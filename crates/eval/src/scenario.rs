@@ -250,6 +250,12 @@ pub struct ScenarioRun {
     pub gen_ms: Vec<u64>,
     /// Per-step act time: DecisionMade → ActionExecuted.
     pub act_ms: Vec<u64>,
+    /// Per-call driver observation latency, engine-reported in the
+    /// ObservationCreated event — the dominant cost on real platforms.
+    pub observe_ms: Vec<u64>,
+    /// Per-call structural verification latency, engine-reported in
+    /// Verification events.
+    pub verify_ms: Vec<u64>,
     /// `RecoveryStarted` events (verify-failed retries inside a step).
     pub recoveries: usize,
     /// `VerificationFailed` events.
@@ -368,6 +374,8 @@ pub fn run_scenario_with<D: ComputerDriver>(
         outcome: outcome.clone(),
         steps,
         elapsed_ms: 0,
+        observe_ms: Vec::new(),
+        verify_ms: Vec::new(),
         decide_ms: Vec::new(),
         gen_ms: Vec::new(),
         act_ms: Vec::new(),
@@ -403,7 +411,12 @@ fn measure(events: &[dexter_core::Event], run: &mut ScenarioRun) {
                 .map(|d| d.as_millis() as u64)
         };
         match ev.kind {
-            ObservationCreated => last_obs = ev.ts.into(),
+            ObservationCreated => {
+                last_obs = ev.ts.into();
+                if let Some(ms) = ev.data.get("observe_ms").and_then(|v| v.as_u64()) {
+                    run.observe_ms.push(ms);
+                }
+            }
             CandidatesGenerated => {
                 run.gen_ms.push(delta(last_obs).unwrap_or(0));
                 last_candidates = ev.ts.into();
@@ -419,7 +432,14 @@ fn measure(events: &[dexter_core::Event], run: &mut ScenarioRun) {
                 }
             }
             RecoveryStarted => run.recoveries += 1,
-            VerificationFailed => run.verify_fails += 1,
+            VerificationPassed | VerificationFailed => {
+                if ev.kind == VerificationFailed {
+                    run.verify_fails += 1;
+                }
+                if let Some(ms) = ev.data.get("verify_ms").and_then(|v| v.as_u64()) {
+                    run.verify_ms.push(ms);
+                }
+            }
             ActionFailed => run.action_failures += 1,
             HumanApprovalRequired => run.approvals += 1,
             TaskCompleted | TaskFailed | TaskCancelled | TaskTimedOut => {
@@ -574,6 +594,15 @@ pub struct ScenarioMetrics {
     /// Engine latency percentiles across all steps of all reps.
     pub decide_p50_ms: u64,
     pub decide_p95_ms: u64,
+    /// Driver observation latency percentiles — the real-platform cost.
+    pub observe_p50_ms: u64,
+    pub observe_p95_ms: u64,
+    /// Structural verification latency percentiles.
+    pub verify_p50_ms: u64,
+    pub verify_p95_ms: u64,
+    /// Act latency percentiles (DecisionMade → ActionExecuted).
+    pub act_p50_ms: u64,
+    pub act_p95_ms: u64,
     pub recoveries: usize,
     pub verify_fails: usize,
     pub action_failures: usize,
@@ -590,6 +619,9 @@ pub fn aggregate(id: &str, optimal_steps: Option<u32>, runs: Vec<ScenarioRun>) -
     let mut over = Vec::new();
     let mut elapsed = Vec::new();
     let mut decide = Vec::new();
+    let mut observe = Vec::new();
+    let mut verify = Vec::new();
+    let mut act = Vec::new();
     let mut m = ScenarioMetrics {
         id: id.to_string(),
         reps,
@@ -600,6 +632,12 @@ pub fn aggregate(id: &str, optimal_steps: Option<u32>, runs: Vec<ScenarioRun>) -
         mean_elapsed_ms: 0.0,
         decide_p50_ms: 0,
         decide_p95_ms: 0,
+        observe_p50_ms: 0,
+        observe_p95_ms: 0,
+        verify_p50_ms: 0,
+        verify_p95_ms: 0,
+        act_p50_ms: 0,
+        act_p95_ms: 0,
         recoveries: 0,
         verify_fails: 0,
         action_failures: 0,
@@ -611,6 +649,9 @@ pub fn aggregate(id: &str, optimal_steps: Option<u32>, runs: Vec<ScenarioRun>) -
         steps.push(r.steps as u64);
         elapsed.push(r.elapsed_ms);
         decide.extend_from_slice(&r.decide_ms);
+        observe.extend_from_slice(&r.observe_ms);
+        verify.extend_from_slice(&r.verify_ms);
+        act.extend_from_slice(&r.act_ms);
         m.recoveries += r.recoveries;
         m.verify_fails += r.verify_fails;
         m.action_failures += r.action_failures;
@@ -631,6 +672,15 @@ pub fn aggregate(id: &str, optimal_steps: Option<u32>, runs: Vec<ScenarioRun>) -
     let (_, p50, p95) = stats(&decide);
     m.decide_p50_ms = p50;
     m.decide_p95_ms = p95;
+    let (_, p50, p95) = stats(&observe);
+    m.observe_p50_ms = p50;
+    m.observe_p95_ms = p95;
+    let (_, p50, p95) = stats(&verify);
+    m.verify_p50_ms = p50;
+    m.verify_p95_ms = p95;
+    let (_, p50, p95) = stats(&act);
+    m.act_p50_ms = p50;
+    m.act_p95_ms = p95;
     m
 }
 
@@ -643,6 +693,10 @@ pub struct SuiteMetrics {
     pub success_rate: f64,
     /// Worst decide latency percentile seen across the suite.
     pub decide_p95_ms: u64,
+    /// Worst observation latency seen across the suite.
+    pub observe_p95_ms: u64,
+    /// Worst verification latency seen across the suite.
+    pub verify_p95_ms: u64,
     pub physical_acts: usize,
 }
 
@@ -659,6 +713,8 @@ pub fn suite_rollup(metrics: &[ScenarioMetrics]) -> SuiteMetrics {
             succeeded as f64 / reps as f64
         },
         decide_p95_ms: metrics.iter().map(|m| m.decide_p95_ms).max().unwrap_or(0),
+        observe_p95_ms: metrics.iter().map(|m| m.observe_p95_ms).max().unwrap_or(0),
+        verify_p95_ms: metrics.iter().map(|m| m.verify_p95_ms).max().unwrap_or(0),
         physical_acts: metrics.iter().map(|m| m.physical_acts).sum(),
     }
 }
@@ -692,6 +748,8 @@ pub struct ScenarioBounds {
 pub struct SuiteBounds {
     pub min_success_rate: Option<f64>,
     pub max_decide_p95_ms: Option<u64>,
+    pub max_observe_p95_ms: Option<u64>,
+    pub max_verify_p95_ms: Option<u64>,
     pub max_physical_acts: Option<usize>,
 }
 
@@ -772,6 +830,22 @@ pub fn check_baseline(metrics: &[ScenarioMetrics], base: &Baseline) -> Vec<Viola
                 out.push(Violation {
                     scenario: "suite".into(),
                     message: format!("decide p95 {}ms > baseline {max}ms", roll.decide_p95_ms),
+                });
+            }
+        }
+        if let Some(max) = suite.max_observe_p95_ms {
+            if roll.observe_p95_ms > max {
+                out.push(Violation {
+                    scenario: "suite".into(),
+                    message: format!("observe p95 {}ms > baseline {max}ms", roll.observe_p95_ms),
+                });
+            }
+        }
+        if let Some(max) = suite.max_verify_p95_ms {
+            if roll.verify_p95_ms > max {
+                out.push(Violation {
+                    scenario: "suite".into(),
+                    message: format!("verify p95 {}ms > baseline {max}ms", roll.verify_p95_ms),
                 });
             }
         }

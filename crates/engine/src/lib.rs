@@ -549,6 +549,9 @@ impl<D: ComputerDriver> Engine<D> {
         // VERIFY-POLL — the world may need time to reach the expected
         // state; re-observe, never re-execute. `max_attempts` is the v1
         // alias for the poll bound (renamed `verify_attempts` upstream).
+        // The first poll runs immediately — most effects land
+        // synchronously (AX updates are not async); the settle delay
+        // only pays between failed polls.
         let verify_attempts = step.max_attempts.unwrap_or(cfg.max_attempts).max(1);
         let mut last_detail = String::new();
         for attempt in 1..=verify_attempts {
@@ -561,13 +564,14 @@ impl<D: ComputerDriver> Engine<D> {
                         "attempt": attempt,
                     }),
                 );
+                std::thread::sleep(cfg.verify_delay);
             }
-            std::thread::sleep(cfg.verify_delay);
             let scope = ObservationScope {
                 app: app.clone(),
                 max_elements: cfg.observe_max_elements,
                 ..Default::default()
             };
+            let observe_start = std::time::Instant::now();
             let obs = match self.driver.observe(&scope) {
                 Ok(o) => o,
                 Err(e) => {
@@ -578,11 +582,14 @@ impl<D: ComputerDriver> Engine<D> {
                     return StepStatus::Errored { error: e };
                 }
             };
+            let observe_ms = observe_start.elapsed().as_millis() as u64;
             self.journal(
                 EventKind::ObservationCreated,
-                serde_json::json!({"observation": obs.id.0, "elements": obs.elements.len(), "attempt": attempt}),
+                serde_json::json!({"observation": obs.id.0, "elements": obs.elements.len(), "attempt": attempt, "observe_ms": observe_ms}),
             );
+            let verify_start = std::time::Instant::now();
             let verification = dexter_verify::verify(&obs, expected);
+            let verify_ms = verify_start.elapsed().as_millis() as u64;
             // The effect taxonomy rides the journal: VERIFIED is a
             // confirmed effect, an unchanged signature is the suspected
             // no-op, and everything else the engine couldn't prove is
@@ -614,6 +621,7 @@ impl<D: ComputerDriver> Engine<D> {
                     "unknown_reason": verification.unknown_reason,
                     "checks": &verification.checks,
                     "attempt": attempt,
+                    "verify_ms": verify_ms,
                 }),
             );
             match verification.status {
@@ -822,6 +830,7 @@ impl<D: ComputerDriver> Engine<D> {
                     };
                 }
             }
+            let observe_start = std::time::Instant::now();
             let obs = match initial_obs
                 .take()
                 .map(Ok)
@@ -838,9 +847,10 @@ impl<D: ComputerDriver> Engine<D> {
                     };
                 }
             };
+            let observe_ms = observe_start.elapsed().as_millis() as u64;
             self.journal(
                 EventKind::ObservationCreated,
-                serde_json::json!({"observation": obs.id.0, "elements": obs.elements.len(), "step": step}),
+                serde_json::json!({"observation": obs.id.0, "elements": obs.elements.len(), "step": step, "observe_ms": observe_ms}),
             );
 
             // Done? Structural check — never the engine's word.
