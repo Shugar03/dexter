@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added (agent-cost & recovery metrics)
+
+- `dexter_status` reports a `session` block — per-tool call counts,
+  `response_bytes`, `est_response_tokens` (a bytes/4 heuristic, not
+  provider billing) and `task_internal_steps` (observe/decide/act/
+  verify cycles `dexter_task` ran internally — the avoided-cost number
+  for the host agent).
+- `RecoveryCompleted` is now journaled when a recovery actually lands:
+  `next_route` (a fallback route executed after `Unsupported`) or
+  `verify_poll` (a retry poll verified). Scenario metrics report
+  `recoveries`/`recoveries_completed`/`recovery_rate` (suite too);
+  the rate is `null` when no recovery was attempted.
+- `eval scenario --export-negatives <file>` mines hard negatives from
+  all runs (failed included): rows whose act provably did not verify,
+  each tagged `task_success`. Interim poll failures that a later
+  attempt overturned are not negatives.
+
 ### Fixed (runtime-reliability-v2 review)
 
 - macOS batched AX reads now detect `AXValue`-wrapped `AXError` slots

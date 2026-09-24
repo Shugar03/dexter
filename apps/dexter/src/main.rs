@@ -401,6 +401,12 @@ enum EvalCommand {
         /// shape `eval export` emits, labelled by the decision taken.
         #[arg(long)]
         export: Option<String>,
+        /// Export hard negatives (JSONL): rows whose act provably did
+        /// not verify, from successful AND failed runs — each tagged
+        /// `task_success`. Real negatives mined from the journal, not
+        /// inferred ones.
+        #[arg(long)]
+        export_negatives: Option<String>,
         /// Dump each run's event journal to `<dir>/<id>.jsonl`.
         #[arg(long)]
         journal_out: Option<String>,
@@ -864,6 +870,7 @@ fn run() -> Result<()> {
                 history,
                 check,
                 export,
+                export_negatives,
                 journal_out,
                 overlay,
                 no_overlay,
@@ -877,6 +884,7 @@ fn run() -> Result<()> {
                 history,
                 check,
                 export,
+                export_negatives,
                 journal_out,
                 cli.browser_url.clone(),
                 presence_wanted(overlay, no_overlay),
@@ -1822,6 +1830,7 @@ fn eval_scenario(
     history: Option<String>,
     check: Option<String>,
     export: Option<String>,
+    export_negatives: Option<String>,
     journal_out: Option<String>,
     browser_url: Option<String>,
     presence: bool,
@@ -1855,6 +1864,8 @@ fn eval_scenario(
     let mut export_rows: Vec<String> = Vec::new();
     let mut export_seen = std::collections::HashSet::new();
     let mut export_skipped = 0usize;
+    let mut neg_rows: Vec<String> = Vec::new();
+    let mut neg_seen = std::collections::HashSet::new();
 
     let mut all: Vec<ScenarioMetrics> = Vec::new();
     let mut last_overlay: Option<std::process::Child> = None;
@@ -2081,18 +2092,33 @@ fn eval_scenario(
                 std::fs::write(std::path::Path::new(dir).join(name), buf)
                     .with_context(|| format!("writing journal to '{dir}'"))?;
             }
-            if export.is_some() && run.success {
+            if (export.is_some() && run.success) || export_negatives.is_some() {
                 let (rows, skipped) = rows_from_events(
                     &run.events,
                     &spec.scenario.id,
                     spec.scenario.app.as_deref().unwrap_or(spec.driver()),
                 );
-                export_skipped += skipped;
-                for row in rows {
-                    // Deterministic sim reps emit identical rows — dedup.
-                    let line = serde_json::to_string(&row)?;
-                    if export_seen.insert(line.clone()) {
-                        export_rows.push(line);
+                if export.is_some() && run.success {
+                    export_skipped += skipped;
+                    for row in &rows {
+                        // Deterministic sim reps emit identical rows — dedup.
+                        let line = serde_json::to_string(row)?;
+                        if export_seen.insert(line.clone()) {
+                            export_rows.push(line);
+                        }
+                    }
+                }
+                if export_negatives.is_some() {
+                    // Hard negatives: the decision's act provably did not
+                    // land — labelled by verification, not by the task
+                    // outcome, and tagged so a trainer can weight them.
+                    for row in rows.iter().filter(|r| r.verified == Some(false)) {
+                        let mut v = serde_json::to_value(row)?;
+                        v["task_success"] = run.success.into();
+                        let line = serde_json::to_string(&v)?;
+                        if neg_seen.insert(line.clone()) {
+                            neg_rows.push(line);
+                        }
                     }
                 }
             }
@@ -2109,7 +2135,7 @@ fn eval_scenario(
         }
         let m = aggregate(&spec.scenario.id, spec.scenario.optimal_steps, runs);
         println!(
-            "{:<24} ok {}/{}  steps {:>4.1} (opt {})  p95 obs/act/verify/decide {}/{}/{}/{}ms  rec {}  fails {}  appr {}  phys {}  {}",
+            "{:<24} ok {}/{}  steps {:>4.1} (opt {})  p95 obs/act/verify/decide {}/{}/{}/{}ms  rec {}/{}  fails {}  appr {}  phys {}  {}",
             m.id,
             m.succeeded,
             m.reps,
@@ -2122,6 +2148,7 @@ fn eval_scenario(
             m.act_p95_ms,
             m.verify_p95_ms,
             m.decide_p95_ms,
+            m.recoveries_completed,
             m.recoveries,
             m.verify_fails + m.action_failures,
             m.approvals,
@@ -2154,6 +2181,14 @@ fn eval_scenario(
             "{} rows exported to {p} ({export_skipped} unlabelable)",
             export_rows.len()
         );
+    }
+    if let Some(p) = &export_negatives {
+        let mut buf = neg_rows.join("\n");
+        if !buf.is_empty() {
+            buf.push('\n');
+        }
+        std::fs::write(p, buf).with_context(|| format!("writing '{p}'"))?;
+        println!("{} hard negatives exported to {p}", neg_rows.len());
     }
     if let Some(p) = &out {
         let doc = serde_json::json!({

@@ -198,6 +198,24 @@ dexter eval scenario datasets/scenarios [--engine laya] [--reps 5]
   label. The intended teacher is `--engine rule-based --export`:
   on authored worlds its picks are correct by construction; exporting
   a laya run is self-distillation and says so.
+- `--export-negatives rows.jsonl` mines **hard negatives** from every
+  run, failed and successful alike: rows whose decided act provably did
+  not land (`verified: false` — a terminal `VerificationFailed` or an
+  `ActionFailed`, never an interim poll a later attempt overturned).
+  Each row carries `task_success` so the trainer can weight a negative
+  from a recovered task differently from one that sank the run. These
+  are evidence labels, not trajectory-outcome guesses.
+
+### Recovery accounting
+
+Every `RecoveryStarted` in the journal must pair with a
+`RecoveryCompleted` when the recovery lands — `next_route` (a fallback
+route executed after `Unsupported`) or `verify_poll` (a poll at
+`attempt > 1` verified). `started − completed` is the failure count.
+Metrics report `recoveries`, `recoveries_completed` and
+`recovery_rate = completed / started` per scenario and at suite level;
+when no recovery was attempted the rate is `null` — no opinion, not a
+vacuous 100%. The console line prints `rec <completed>/<started>`.
 
 ## The fitness loop (measured once)
 

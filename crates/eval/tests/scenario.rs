@@ -257,6 +257,62 @@ fn aggregation_reports_efficiency_and_latency() {
     assert_eq!(roll.success_rate, 1.0);
 }
 
+fn empty_run() -> ScenarioRun {
+    ScenarioRun {
+        outcome: "completed".into(),
+        success: true,
+        steps: 1,
+        elapsed_ms: 0,
+        decide_ms: Vec::new(),
+        gen_ms: Vec::new(),
+        act_ms: Vec::new(),
+        observe_ms: Vec::new(),
+        verify_ms: Vec::new(),
+        recoveries: 0,
+        recovery_completed: 0,
+        verify_fails: 0,
+        action_failures: 0,
+        approvals: 0,
+        physical_acts: 0,
+        events: Vec::new(),
+    }
+}
+
+#[test]
+fn recovery_rate_only_speaks_when_attempted() {
+    // No recovery attempted → `None`, never a vacuous 100%.
+    let m = aggregate("s", None, vec![empty_run()]);
+    assert_eq!(m.recoveries, 0);
+    assert_eq!(m.recovery_rate, None);
+    assert_eq!(suite_rollup(&[m]).recovery_rate, None);
+}
+
+#[test]
+fn recovery_rate_is_completed_over_started() {
+    let recovered = ScenarioRun {
+        recoveries: 2,
+        recovery_completed: 1,
+        ..empty_run()
+    };
+    let clean = empty_run();
+    let m = aggregate("s", None, vec![recovered, clean]);
+    assert_eq!(m.recoveries, 2);
+    assert_eq!(m.recoveries_completed, 1);
+    assert_eq!(m.recovery_rate, Some(0.5));
+
+    let all_landed = ScenarioRun {
+        recoveries: 1,
+        recovery_completed: 1,
+        ..empty_run()
+    };
+    let m = aggregate("s", None, vec![all_landed]);
+    assert_eq!(m.recovery_rate, Some(1.0));
+
+    let roll = suite_rollup(&[m]);
+    assert_eq!(roll.recoveries, 1);
+    assert_eq!(roll.recovery_rate, Some(1.0));
+}
+
 #[test]
 fn baseline_check_bites_on_regression() {
     let s = spec(WIZARD);

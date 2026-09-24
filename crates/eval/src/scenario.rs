@@ -258,6 +258,10 @@ pub struct ScenarioRun {
     pub verify_ms: Vec<u64>,
     /// `RecoveryStarted` events (verify-failed retries inside a step).
     pub recoveries: usize,
+    /// `RecoveryCompleted` events — recoveries that actually landed
+    /// (fallback route executed / poll verified). `recoveries −
+    /// recovery_completed` is the count that never recovered.
+    pub recovery_completed: usize,
     /// `VerificationFailed` events.
     pub verify_fails: usize,
     /// `ActionFailed` events (driver errors).
@@ -398,6 +402,7 @@ pub fn run_scenario_with<D: ComputerDriver>(
         gen_ms: Vec::new(),
         act_ms: Vec::new(),
         recoveries: 0,
+        recovery_completed: 0,
         verify_fails: 0,
         action_failures: 0,
         approvals: 0,
@@ -450,6 +455,7 @@ fn measure(events: &[dexter_core::Event], run: &mut ScenarioRun) {
                 }
             }
             RecoveryStarted => run.recoveries += 1,
+            RecoveryCompleted => run.recovery_completed += 1,
             VerificationPassed | VerificationFailed => {
                 if ev.kind == VerificationFailed {
                     run.verify_fails += 1;
@@ -657,6 +663,11 @@ pub struct ScenarioMetrics {
     pub act_p50_ms: u64,
     pub act_p95_ms: u64,
     pub recoveries: usize,
+    /// Recoveries that actually landed (`RecoveryCompleted`).
+    pub recoveries_completed: usize,
+    /// `recoveries_completed / recoveries` — `None` when no recovery
+    /// was attempted: no opinion is better than a vacuous 100%.
+    pub recovery_rate: Option<f64>,
     pub verify_fails: usize,
     pub action_failures: usize,
     pub approvals: usize,
@@ -692,6 +703,8 @@ pub fn aggregate(id: &str, optimal_steps: Option<u32>, runs: Vec<ScenarioRun>) -
         act_p50_ms: 0,
         act_p95_ms: 0,
         recoveries: 0,
+        recoveries_completed: 0,
+        recovery_rate: None,
         verify_fails: 0,
         action_failures: 0,
         approvals: 0,
@@ -706,6 +719,7 @@ pub fn aggregate(id: &str, optimal_steps: Option<u32>, runs: Vec<ScenarioRun>) -
         verify.extend_from_slice(&r.verify_ms);
         act.extend_from_slice(&r.act_ms);
         m.recoveries += r.recoveries;
+        m.recoveries_completed += r.recovery_completed;
         m.verify_fails += r.verify_fails;
         m.action_failures += r.action_failures;
         m.approvals += r.approvals;
@@ -734,6 +748,9 @@ pub fn aggregate(id: &str, optimal_steps: Option<u32>, runs: Vec<ScenarioRun>) -
     let (_, p50, p95) = stats(&act);
     m.act_p50_ms = p50;
     m.act_p95_ms = p95;
+    if m.recoveries > 0 {
+        m.recovery_rate = Some(m.recoveries_completed as f64 / m.recoveries as f64);
+    }
     m
 }
 
@@ -751,6 +768,11 @@ pub struct SuiteMetrics {
     /// Worst verification latency seen across the suite.
     pub verify_p95_ms: u64,
     pub physical_acts: usize,
+    /// Recovery attempts and completions across the suite.
+    pub recoveries: usize,
+    pub recoveries_completed: usize,
+    /// `completed / started` — `None` when the suite attempted none.
+    pub recovery_rate: Option<f64>,
 }
 
 pub fn suite_rollup(metrics: &[ScenarioMetrics]) -> SuiteMetrics {
@@ -769,6 +791,13 @@ pub fn suite_rollup(metrics: &[ScenarioMetrics]) -> SuiteMetrics {
         observe_p95_ms: metrics.iter().map(|m| m.observe_p95_ms).max().unwrap_or(0),
         verify_p95_ms: metrics.iter().map(|m| m.verify_p95_ms).max().unwrap_or(0),
         physical_acts: metrics.iter().map(|m| m.physical_acts).sum(),
+        recoveries: metrics.iter().map(|m| m.recoveries).sum(),
+        recoveries_completed: metrics.iter().map(|m| m.recoveries_completed).sum(),
+        recovery_rate: {
+            let started: usize = metrics.iter().map(|m| m.recoveries).sum();
+            let completed: usize = metrics.iter().map(|m| m.recoveries_completed).sum();
+            (started > 0).then_some(completed as f64 / started as f64)
+        },
     }
 }
 

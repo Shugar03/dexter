@@ -38,6 +38,33 @@ pub struct DexterRuntime {
     /// reads them without the engine lock so the probe stays live
     /// while a task runs.
     caps: dexter_driver::DriverCapabilities,
+    /// Session accounting — what this session cost the host agent in
+    /// round-trips and returned payload volume. Counted at the response
+    /// boundary, so the numbers describe work actually delivered.
+    metrics: Mutex<SessionMetrics>,
+}
+
+/// Per-session agent-cost accounting — the measurable half of Dexter's
+/// thesis ("the runtime absorbs the loop so the model doesn't pay for
+/// it"). Every `dexter_*` call is one agent round-trip; every byte
+/// returned is context the model ingests.
+#[derive(Debug, Default)]
+pub struct SessionMetrics {
+    /// Successful tool responses, by tool name.
+    pub calls: std::collections::BTreeMap<String, u64>,
+    /// Serialized JSON bytes returned across all responses.
+    pub response_bytes: u64,
+    /// Steps executed inside `dexter_task` — each is a full
+    /// observe/decide/act/verify cycle that cost the agent zero calls.
+    /// Comparing this against `calls` totals is the avoided-cost number.
+    pub task_internal_steps: u64,
+}
+
+impl SessionMetrics {
+    /// Crude token estimate (bytes/4) — order of magnitude, not billing.
+    pub fn est_response_tokens(&self) -> u64 {
+        self.response_bytes / 4
+    }
 }
 
 impl DexterRuntime {
@@ -58,6 +85,7 @@ impl DexterRuntime {
             journal,
             task_cancel: Mutex::new(None),
             caps,
+            metrics: Mutex::new(SessionMetrics::default()),
         }
     }
 
@@ -249,6 +277,16 @@ impl DexterMcp {
         }
     }
 
+    /// Count a successful tool response — one agent round-trip plus
+    /// its payload volume — then stamp the contract version.
+    fn respond(&self, tool: &'static str, v: serde_json::Value) -> Json<serde_json::Value> {
+        if let (Ok(mut m), Ok(bytes)) = (self.runtime.metrics.lock(), json_len(&v)) {
+            *m.calls.entry(tool.to_string()).or_insert(0) += 1;
+            m.response_bytes += bytes;
+        }
+        v2(v)
+    }
+
     /// Observe the current world: window list + element count + text
     /// digest. This is what a decision layer should read first.
     #[tool(
@@ -332,17 +370,20 @@ impl DexterMcp {
             })
             .collect();
         let elements_returned = elements.len();
-        Ok(v2(serde_json::json!({
-            "observation": obs.id.0,
-            "windows": windows,
-            "element_count": obs.elements.len(),
-            "elements_returned": elements_returned,
-            "elements_output_truncated": total_worthy > elements_returned,
-            "elements": elements,
-            "elements_truncated": obs.elements_truncated,
-            "ax_limited": obs.ax_limited,
-            "digest": obs.digest,
-        })))
+        Ok(self.respond(
+            "dexter_observe",
+            serde_json::json!({
+                "observation": obs.id.0,
+                "windows": windows,
+                "element_count": obs.elements.len(),
+                "elements_returned": elements_returned,
+                "elements_output_truncated": total_worthy > elements_returned,
+                "elements": elements,
+                "elements_truncated": obs.elements_truncated,
+                "ax_limited": obs.ax_limited,
+                "digest": obs.digest,
+            }),
+        ))
     }
 
     /// Application map: what this app IS and what it can DO — windows,
@@ -419,7 +460,7 @@ impl DexterMcp {
         })
         .await
         .map_err(|e| err(format!("join: {e}")))??;
-        Ok(v2(map))
+        Ok(self.respond("dexter_map", map))
     }
 
     /// Ranked menu of plausible actions for a goal — the agent stays the
@@ -463,12 +504,15 @@ impl DexterMcp {
                 })
             })
             .collect();
-        Ok(v2(serde_json::json!({
-            "observation": obs.id.0,
-            "candidates": candidates,
-            "note": "priors are heuristic hints — the agent decides; \
-                     dexter_act still runs policy+verify on whatever it picks",
-        })))
+        Ok(self.respond(
+            "dexter_candidates",
+            serde_json::json!({
+                "observation": obs.id.0,
+                "candidates": candidates,
+                "note": "priors are heuristic hints — the agent decides; \
+                         dexter_act still runs policy+verify on whatever it picks",
+            }),
+        ))
     }
 
     /// Execute one action through policy -> act -> verify. Returns the
@@ -549,7 +593,7 @@ impl DexterMcp {
         })
         .await
         .map_err(|e| err(format!("join: {e}")))??;
-        status_json(status)
+        Ok(self.respond("dexter_act", status_json(status)))
     }
 
     /// Grant an approval fingerprint for this session (single use,
@@ -574,10 +618,13 @@ impl DexterMcp {
         }
         let mut engine = self.runtime.engine.lock().map_err(err)?;
         engine.grant_approval(&params.fingerprint);
-        Ok(v2(serde_json::json!({
-            "granted": true,
-            "fingerprint": params.fingerprint,
-        })))
+        Ok(self.respond(
+            "dexter_grant",
+            serde_json::json!({
+                "granted": true,
+                "fingerprint": params.fingerprint,
+            }),
+        ))
     }
 
     /// Check an ExpectedState against a fresh observation.
@@ -603,10 +650,13 @@ impl DexterMcp {
         })
         .await
         .map_err(|e| err(format!("join: {e}")))??;
-        Ok(v2(serde_json::json!({
-            "status": format!("{:?}", v.status),
-            "checks": v.checks,
-        })))
+        Ok(self.respond(
+            "dexter_verify",
+            serde_json::json!({
+                "status": format!("{:?}", v.status),
+                "checks": v.checks,
+            }),
+        ))
     }
 
     /// Closed-loop task: observe -> candidates -> decide -> act ->
@@ -742,7 +792,15 @@ impl DexterMcp {
                 v
             }
         };
-        Ok(v2(status))
+        // Steps a completed plan absorbed — each is a loop the agent
+        // didn't pay a call for. Failed plans' internal work stays
+        // journal-visible but isn't claimed as avoided calls.
+        if let dexter_engine::PlanOutcome::Completed { steps, .. } = &outcome {
+            if let Ok(mut m) = self.runtime.metrics.lock() {
+                m.task_internal_steps += *steps as u64;
+            }
+        }
+        Ok(self.respond("dexter_task", status))
     }
 
     /// Ask the running `dexter_task` to stop between steps (cooperative —
@@ -760,7 +818,7 @@ impl DexterMcp {
             }
             None => false,
         };
-        Ok(v2(serde_json::json!({"cancelled": cancelled})))
+        Ok(self.respond("dexter_cancel", serde_json::json!({"cancelled": cancelled})))
     }
 
     /// Audit journal for this session — every observation, policy check,
@@ -771,10 +829,13 @@ impl DexterMcp {
     )]
     async fn dexter_journal(&self) -> Result<Json<serde_json::Value>, McpError> {
         let journal = self.runtime.journal.lock().map_err(err)?;
-        Ok(v2(serde_json::json!({
-            "events": journal.events,
-            "dropped": journal.dropped,
-        })))
+        Ok(self.respond(
+            "dexter_journal",
+            serde_json::json!({
+                "events": journal.events,
+                "dropped": journal.dropped,
+            }),
+        ))
     }
 
     /// Runtime status probe: driver capabilities, decision-engine
@@ -799,28 +860,49 @@ impl DexterMcp {
         .await
         .map_err(|e| err(format!("join: {e}")))??;
         let caps = &self.runtime.caps;
-        Ok(v2(serde_json::json!({
-            "driver": {
-                "name": caps.name,
-                "element_tree": caps.element_tree,
-                "background_input": caps.background_input,
-            },
-            "engine": {
-                "name": self.runtime.decider.name(),
-                "health": health,
-            },
-            "trust": {
-                "approve_all": self.runtime.config.approve_all,
-                "coords": self.runtime.config.allow_coords,
-            },
-            "journal": { "events": jlen, "dropped": jdropped },
-            "task_running": task_running,
-        })))
+        // Snapshot of agent-cost accounting. `est_response_tokens` is a
+        // bytes/4 heuristic — it measures the response payloads this
+        // session returned, not provider billing tokens.
+        let session = self
+            .runtime
+            .metrics
+            .lock()
+            .map(|m| {
+                serde_json::json!({
+                    "tool_calls": m.calls,
+                    "tool_calls_total": m.calls.values().sum::<u64>(),
+                    "response_bytes": m.response_bytes,
+                    "est_response_tokens": m.est_response_tokens(),
+                    "task_internal_steps": m.task_internal_steps,
+                })
+            })
+            .unwrap_or(serde_json::json!({}));
+        Ok(self.respond(
+            "dexter_status",
+            serde_json::json!({
+                "driver": {
+                    "name": caps.name,
+                    "element_tree": caps.element_tree,
+                    "background_input": caps.background_input,
+                },
+                "engine": {
+                    "name": self.runtime.decider.name(),
+                    "health": health,
+                },
+                "trust": {
+                    "approve_all": self.runtime.config.approve_all,
+                    "coords": self.runtime.config.allow_coords,
+                },
+                "journal": { "events": jlen, "dropped": jdropped },
+                "task_running": task_running,
+                "session": session,
+            }),
+        ))
     }
 }
 
-fn status_json(status: StepStatus) -> Result<Json<serde_json::Value>, McpError> {
-    let v = match status {
+fn status_json(status: StepStatus) -> serde_json::Value {
+    match status {
         StepStatus::Done {
             result,
             verification,
@@ -852,8 +934,7 @@ fn status_json(status: StepStatus) -> Result<Json<serde_json::Value>, McpError> 
         StepStatus::Errored { error } => {
             serde_json::json!({"status": "error", "error": error.to_string()})
         }
-    };
-    Ok(v2(v))
+    }
 }
 
 #[tool_handler]

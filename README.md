@@ -106,6 +106,9 @@ dexter eval run datasets/browser/items.jsonl --engine rule-based
 # subset — they need no OS grants or browser endpoint, so the suite's
 # success number is reproducible anywhere.
 dexter eval scenario datasets/scenarios --check datasets/scenarios/baseline.toml
+# hard negatives for training: rows whose act provably did not verify,
+# mined from every run (failed included), tagged with task_success
+dexter eval scenario datasets/scenarios --export-negatives negatives.jsonl
 # Harvest new labeled items by observing real pages (browser) or apps (macOS)
 dexter --driver browser --browser-url http://localhost:9515 \
   eval harvest datasets/browser/manifest.toml -o items.jsonl

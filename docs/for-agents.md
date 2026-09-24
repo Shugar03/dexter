@@ -80,7 +80,13 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
 8. **`dexter_status`** — liveness probe: driver capabilities, decision
    engine health (`ready`/`degraded`/`down` — probe a `laya` worker
    before trusting `dexter_task` with a goal), journal stats, whether a
-   task is running. Never blocks on the engine lock.
+   task is running. Never blocks on the engine lock. The `session`
+   block reports agent-cost accounting for this session:
+   `tool_calls`/`tool_calls_total` (your round-trips),
+   `response_bytes` (payload volume returned), `est_response_tokens`
+   (a bytes/4 order-of-magnitude estimate — not provider billing) and
+   `task_internal_steps` (observe/decide/act/verify cycles `dexter_task`
+   ran internally — each one a round-trip you didn't pay for).
 9. **`dexter_map {app, wake?}`** — a capability map of the app:
    windows, controls, editable fields, navigation, menu verbs and
    inferred capabilities, without you parsing raw elements. `app` is

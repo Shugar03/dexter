@@ -69,6 +69,45 @@ async fn status_reports_driver_engine_and_journal() {
     client.cancel().await.ok();
 }
 
+/// Session accounting: every successful tool call is one agent
+/// round-trip; the status probe reports the totals and the response
+/// volume. `est_response_tokens` is a labelled bytes/4 estimate.
+#[tokio::test]
+async fn status_reports_session_agent_cost() {
+    let client = client_server("").await;
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_observe".into(),
+            arguments: None,
+        })
+        .await
+        .expect("observe call");
+    assert!(res.content[0].raw.as_text().is_some());
+
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_status".into(),
+            arguments: None,
+        })
+        .await
+        .expect("status call");
+    let text = res.content[0].raw.as_text().unwrap().text.clone();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let session = &v["session"];
+    assert_eq!(
+        session["tool_calls"]["dexter_observe"], 1,
+        "the observe call must be counted: {v}"
+    );
+    assert_eq!(session["tool_calls_total"], 1);
+    assert!(
+        session["response_bytes"].as_u64().unwrap() > 0,
+        "the observe response's bytes are counted"
+    );
+    assert!(session["est_response_tokens"].is_number());
+    assert_eq!(session["task_internal_steps"], 0);
+    client.cancel().await.ok();
+}
+
 #[tokio::test]
 async fn act_denied_by_policy_never_touches_driver() {
     // Deny everything — the policy gate fires before the driver, so this

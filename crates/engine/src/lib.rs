@@ -670,6 +670,10 @@ impl<D: ComputerDriver> Engine<D> {
         // identically — asking again would only duplicate the journal.
         let mut stage_answered = false;
         let mut stage_refusal: Option<String> = None;
+        // Set when a route was refused `Unsupported` and the loop moved
+        // to a fallback — consumed to pair `RecoveryCompleted` with the
+        // earlier `RecoveryStarted`.
+        let mut route_recovery = false;
 
         // AUTHORIZE + EXECUTE — each route independently. One approval
         // covers exactly one route's execution: a fallback route is a
@@ -871,6 +875,19 @@ impl<D: ComputerDriver> Engine<D> {
             }
 
             if result.status.ok() {
+                // A route that lands after a prior `Unsupported` closes
+                // the recovery loop — the journal pair is what the
+                // recovery-rate metric counts.
+                if route_recovery {
+                    self.journal(
+                        EventKind::RecoveryCompleted,
+                        serde_json::json!({
+                            "strategy": "next_route",
+                            "outcome": "executed",
+                            "route": index,
+                        }),
+                    );
+                }
                 executed = Some(result);
                 break;
             }
@@ -878,6 +895,7 @@ impl<D: ComputerDriver> Engine<D> {
             // Unsupported is the one verdict another route may fix —
             // anything else is final.
             if result.status == ActionStatus::Unsupported && index + 1 < routes.len() {
+                route_recovery = true;
                 self.journal(
                     EventKind::RecoveryStarted,
                     serde_json::json!({
@@ -1053,6 +1071,19 @@ impl<D: ComputerDriver> Engine<D> {
                 }),
             );
             if verification.status == VerificationStatus::Verified {
+                // attempt > 1 means earlier polls failed and a
+                // `RecoveryStarted{verify_poll}` was journaled — close
+                // the pair so recovery rate is measurable.
+                if attempt > 1 {
+                    self.journal(
+                        EventKind::RecoveryCompleted,
+                        serde_json::json!({
+                            "strategy": "verify_poll",
+                            "outcome": "verified",
+                            "attempt": attempt,
+                        }),
+                    );
+                }
                 return Ok(PollOutcome {
                     verification,
                     attempts: attempt,

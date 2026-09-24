@@ -665,6 +665,8 @@ fn run_plan_auto_complete_requires_world_change() {
 struct DelayedVerifyDriver {
     execute_count: Arc<AtomicU32>,
     observe_count: Arc<AtomicU32>,
+    /// Observation index at which the expected element appears.
+    appear_at: u32,
 }
 
 impl ComputerDriver for DelayedVerifyDriver {
@@ -684,7 +686,7 @@ impl ComputerDriver for DelayedVerifyDriver {
     fn observe(&self, _scope: &ObservationScope) -> Result<Observation, DriverError> {
         let n = self.observe_count.fetch_add(1, Ordering::SeqCst) + 1;
         let mut obs = Observation::default();
-        if self.execute_count.load(Ordering::SeqCst) > 0 && n >= 2 {
+        if self.execute_count.load(Ordering::SeqCst) > 0 && n >= self.appear_at {
             obs.elements.push(el(1, "static_text", "Done"));
         }
         Ok(obs)
@@ -743,6 +745,7 @@ fn verification_poll_executes_mutation_once() {
     let driver = DelayedVerifyDriver {
         execute_count: execute_count.clone(),
         observe_count,
+        appear_at: 2,
     };
     let mut engine = Engine::new(driver, allow_all(), Duration::from_secs(60));
     let step = Step {
@@ -761,6 +764,175 @@ fn verification_poll_executes_mutation_once() {
     };
     assert!(engine.run_step(&step, &cfg()).done());
     assert_eq!(execute_count.load(Ordering::SeqCst), 1);
+}
+
+// -- recovery accounting: a Started must pair with a Completed --
+
+#[test]
+fn verify_poll_recovery_closes_the_pair() {
+    // The act lands on the first execute but the world only shows it on
+    // the second poll — attempt > 1 means a recovery was entered and,
+    // when it verifies, the journal must record the completion.
+    let driver = DelayedVerifyDriver {
+        execute_count: Arc::new(AtomicU32::new(0)),
+        observe_count: Arc::new(AtomicU32::new(0)),
+        appear_at: 2,
+    };
+    let mut engine = Engine::new(driver, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Navigate {
+            url: "https://example.test".into(),
+        },
+        expect: Some(ExpectedState::ElementExists {
+            target: SemanticTarget {
+                name: Some("Done".into()),
+                ..Default::default()
+            },
+        }),
+        max_attempts: Some(4),
+        app: None,
+    };
+    assert!(engine.run_step(&step, &cfg()).done());
+    let kinds: Vec<_> = engine.events().iter().map(|e| e.kind).collect();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| **k == EventKind::RecoveryStarted)
+            .count(),
+        1,
+        "one verify-poll retry entered"
+    );
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| **k == EventKind::RecoveryCompleted)
+            .count(),
+        1,
+        "the recovery verified — it must close"
+    );
+}
+
+#[test]
+fn unrecovered_poll_never_claims_completion() {
+    // The effect never lands: every retry starts a recovery attempt,
+    // none completes — `started − completed` is the failure count.
+    let driver = DelayedVerifyDriver {
+        execute_count: Arc::new(AtomicU32::new(0)),
+        observe_count: Arc::new(AtomicU32::new(0)),
+        appear_at: u32::MAX,
+    };
+    let mut engine = Engine::new(driver, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Navigate {
+            url: "https://example.test".into(),
+        },
+        expect: Some(ExpectedState::ElementExists {
+            target: SemanticTarget {
+                name: Some("Nunca".into()),
+                ..Default::default()
+            },
+        }),
+        max_attempts: Some(3),
+        app: None,
+    };
+    assert!(!engine.run_step(&step, &cfg()).done());
+    let kinds: Vec<_> = engine.events().iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&EventKind::RecoveryStarted));
+    assert!(!kinds.contains(&EventKind::RecoveryCompleted));
+}
+
+/// First planned route is always `Unsupported`; the fallback actually
+/// works — exercises the `next_route` recovery path.
+struct FallbackDriver(SimDriver);
+
+impl ComputerDriver for FallbackDriver {
+    fn capabilities(&self) -> DriverCapabilities {
+        self.0.capabilities()
+    }
+    fn windows(&self) -> Result<Vec<Window>, DriverError> {
+        self.0.windows()
+    }
+    fn observe(&self, s: &ObservationScope) -> Result<Observation, DriverError> {
+        self.0.observe(s)
+    }
+    fn act(&self, a: &Action, c: &ActContext) -> Result<ActionResult, DriverError> {
+        self.0.act(a, c)
+    }
+    fn plan(&self, action: &Action, _ctx: &ActContext) -> Result<ExecutionPlan, DriverError> {
+        let route = |mechanism| ExecutionRoute {
+            action: action.clone(),
+            target: TargetDescriptor::from_action(action),
+            mechanism: Some(mechanism),
+            intrusiveness: Intrusiveness::Background,
+            sensitivity: Sensitivity::Standard,
+            requires_foreground: false,
+        };
+        Ok(ExecutionPlan {
+            requested: action.clone(),
+            routes: vec![route(Mechanism::Vision), route(Mechanism::Api)],
+        })
+    }
+    fn execute(
+        &self,
+        route: &ExecutionRoute,
+        ctx: &ActContext,
+    ) -> Result<ActionResult, DriverError> {
+        if route.mechanism == Some(Mechanism::Vision) {
+            return Ok(ActionResult::failure(
+                ActionStatus::Unsupported,
+                Mechanism::Vision,
+                "no vision backend",
+            ));
+        }
+        self.0.act(&route.action, ctx)
+    }
+}
+
+#[test]
+fn fallback_route_completion_is_journaled() {
+    let sim = SimDriver::new(vec![el(1, "button", "Guardar")]);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(2, "static_text", "Guardado")),
+    );
+    let mut engine = Engine::new(FallbackDriver(sim), allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                name: Some("Guardar".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+            count: 1,
+        },
+        expect: Some(ExpectedState::ElementExists {
+            target: SemanticTarget {
+                name: Some("Guardado".into()),
+                ..Default::default()
+            },
+        }),
+        max_attempts: Some(1),
+        app: None,
+    };
+    assert!(engine.run_step(&step, &cfg()).done());
+    let events = engine.events();
+    let started = events
+        .iter()
+        .filter(|e| e.kind == EventKind::RecoveryStarted)
+        .count();
+    let completed: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::RecoveryCompleted)
+        .collect();
+    assert_eq!(started, 1, "the Unsupported route starts a recovery");
+    assert_eq!(completed.len(), 1, "the fallback landing closes it");
+    assert_eq!(completed[0].data["strategy"], "next_route");
 }
 
 // -- loop-integrity slice 1: verify-every-act inside run_goal --
