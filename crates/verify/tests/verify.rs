@@ -329,3 +329,51 @@ fn uncertain_verdicts_carry_their_reason() {
     assert_eq!(v.status, VerificationStatus::Verified);
     assert_eq!(v.unknown_reason, None);
 }
+
+#[test]
+fn text_present_matches_data_not_digest() {
+    let expect = ExpectedState::TextPresent {
+        text: "guardado".into(),
+    };
+    // Element name hit.
+    let v = verify(
+        &obs_with(vec![el(1, "static_text", Some("Documento guardado"))]),
+        &expect,
+    );
+    assert_eq!(v.status, VerificationStatus::Verified);
+    // Element value hit — no name needed.
+    let mut o = obs_with(vec![el(1, "text_field", None)]);
+    o.elements[0].value = Some("estado: guardado".into());
+    assert_eq!(verify(&o, &expect).status, VerificationStatus::Verified);
+    // Window title hit — no elements at all.
+    let mut o = obs_with(vec![]);
+    o.windows.push(Window {
+        id: 1,
+        pid: 1,
+        app: "Editor".into(),
+        title: Some("Doc — guardado".into()),
+        bounds: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+        },
+        on_screen: true,
+        layer: 0,
+    });
+    assert_eq!(verify(&o, &expect).status, VerificationStatus::Verified);
+    // A menu item name still matches — menus are collapsed in the
+    // digest but they're still data.
+    let mut o = obs_with(vec![el(1, "menu_item", Some("Guardar como…"))]);
+    o.elements[0].raw_role = Some("AXMenuItem".into());
+    let expect_menu = ExpectedState::TextPresent {
+        text: "guardar como".into(),
+    };
+    assert_eq!(
+        verify(&o, &expect_menu).status,
+        VerificationStatus::Verified
+    );
+    // Genuine absence fails.
+    let v = verify(&obs_with(vec![el(1, "button", Some("Cancel"))]), &expect);
+    assert_eq!(v.status, VerificationStatus::Failed);
+}
