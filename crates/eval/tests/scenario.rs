@@ -361,3 +361,58 @@ fn training_rows_carry_per_step_outcome() {
         .iter()
         .any(|r| r.gold_route.is_some() && r.verified.is_none()));
 }
+
+#[test]
+fn interim_verify_failures_do_not_mislabel_delayed_pass() {
+    // Verify-polling exists for effects that land late (async UI,
+    // animations): the engine emits VerificationFailed per failed poll,
+    // then VerificationPassed when the effect arrives. An interim
+    // failure must label the row provisionally false but stay
+    // overwriteable — never a permanent mislabel.
+    let s = spec(WIZARD);
+    let run = run_scenario(&s, &HeuristicGenerator::default(), &RuleBased::default());
+    assert!(run.success);
+    let mut events = Vec::new();
+    for ev in &run.events {
+        if ev.kind == dexter_core::EventKind::VerificationPassed {
+            events.push(dexter_core::Event::new(
+                dexter_core::EventKind::VerificationFailed,
+                serde_json::json!({"attempt": 1}),
+            ));
+            events.push(dexter_core::Event::new(
+                dexter_core::EventKind::VerificationFailed,
+                serde_json::json!({"attempt": 2}),
+            ));
+        }
+        events.push(ev.clone());
+    }
+    let (rows, _) = rows_from_events(&events, &s.scenario.id, "sim");
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter().all(|r| r.verified == Some(true)),
+        "delayed pass overwrites interim failures: {:?}",
+        rows.iter().map(|r| r.verified).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn terminal_verify_failures_label_false() {
+    // When polling exhausts (no VerificationPassed follows), the
+    // provisional false label stands — that's the honest outcome.
+    let s = spec(WIZARD);
+    let run = run_scenario(&s, &HeuristicGenerator::default(), &RuleBased::default());
+    assert!(run.success);
+    let mut events = Vec::new();
+    for ev in &run.events {
+        if ev.kind == dexter_core::EventKind::VerificationPassed {
+            events.push(dexter_core::Event::new(
+                dexter_core::EventKind::VerificationFailed,
+                serde_json::json!({"attempt": 1}),
+            ));
+            continue; // the pass never arrives
+        }
+        events.push(ev.clone());
+    }
+    let (rows, _) = rows_from_events(&events, &s.scenario.id, "sim");
+    assert!(rows.iter().all(|r| r.verified == Some(false)));
+}

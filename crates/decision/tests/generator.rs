@@ -382,3 +382,59 @@ fn candidates_bind_duplicate_labels_to_observed_elements() {
     ids.sort_unstable();
     assert_eq!(ids, vec![(77, 1), (77, 2)]);
 }
+
+#[test]
+fn failed_invoke_and_drag_are_not_reproposed() {
+    // A failed or no-op Invoke/Drag must be remembered like a failed
+    // click — otherwise the generator re-proposes it every step until
+    // MaxSteps. (`Key` is not element-bound and is never generated, so
+    // there is nothing to re-propose; `TypeText` with a bound target is
+    // covered the same way.)
+    let o = obs(vec![
+        el(1, "button", "Open Alpha", &["press", "open"]),
+        el(2, "button", "Open Beta", &["press", "open"]),
+    ]);
+    for attempted in [
+        Action::Invoke {
+            target: Target::Semantic(dexter_core::SemanticTarget {
+                role: Some("button".into()),
+                name: Some("Open Alpha".into()),
+                ..Default::default()
+            }),
+            action: "open".into(),
+        },
+        Action::Drag {
+            from: Target::Semantic(dexter_core::SemanticTarget {
+                role: Some("button".into()),
+                name: Some("Open Alpha".into()),
+                ..Default::default()
+            }),
+            to: Target::Semantic(dexter_core::SemanticTarget {
+                role: Some("button".into()),
+                name: Some("Open Beta".into()),
+                ..Default::default()
+            }),
+            duration_ms: 0,
+        },
+    ] {
+        let mut hist = GenHistory::default();
+        hist.attempts.push(attempted);
+        let cands = gen().generate(&o, "open alpha or open beta", &hist);
+        assert!(
+            !cands.is_empty(),
+            "an alternative must remain for {cands:?}"
+        );
+        // The untried element wins — the attempted one is penalized.
+        match &cands[0].action {
+            Action::Invoke {
+                target: Target::Element { element, .. },
+                ..
+            }
+            | Action::Click {
+                target: Target::Element { element, .. },
+                ..
+            } => assert_eq!(element, &ElementId(2), "{cands:?}"),
+            other => panic!("expected element-bound action, got {other:?}"),
+        }
+    }
+}

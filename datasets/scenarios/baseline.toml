@@ -6,6 +6,11 @@
 [suite]
 min_success_rate = 1.0
 max_physical_acts = 0
+# Latency gates carry CI headroom over the sim's ~0ms phases — they
+# exist to catch the class of regression the immediate verify-poll fix
+# removed (~250ms of pre-poll sleep per verified step).
+max_observe_p95_ms = 100
+max_verify_p95_ms = 100
 
 [scenario.wizard-install]
 min_success = 1.0

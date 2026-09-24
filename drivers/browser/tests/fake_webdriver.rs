@@ -48,6 +48,8 @@ struct FakeServer {
     url: String,
     /// Scripts received at /execute/sync, in order.
     scripts: Arc<Mutex<Vec<String>>>,
+    /// WebDriver `args` arrays parallel to `scripts`.
+    args: Arc<Mutex<Vec<Value>>>,
     /// Toggle: make the walker return a *different* tree to simulate a
     /// mutated DOM (stale detection test).
     mutated: Arc<Mutex<bool>>,
@@ -61,12 +63,14 @@ fn fake_webdriver() -> FakeServer {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let scripts = Arc::new(Mutex::new(Vec::new()));
+    let args = Arc::new(Mutex::new(Vec::new()));
     let mutated = Arc::new(Mutex::new(false));
     let handles = Arc::new(Mutex::new(vec!["h1".to_string()]));
     let current = Arc::new(Mutex::new("h1".to_string()));
     let iframe_errors = Arc::new(Mutex::new(0u32));
-    let (s2, m2, h2, c2, e2) = (
+    let (s2, a2, m2, h2, c2, e2) = (
         scripts.clone(),
+        args.clone(),
         mutated.clone(),
         handles.clone(),
         current.clone(),
@@ -167,11 +171,10 @@ fn fake_webdriver() -> FakeServer {
                     json!({"value":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="})
                 }
                 ("POST", p) if p.ends_with("/execute/sync") => {
-                    let script = serde_json::from_str::<Value>(body)
-                        .ok()
-                        .and_then(|b| b["script"].as_str().map(String::from))
-                        .unwrap_or_default();
+                    let parsed = serde_json::from_str::<Value>(body).unwrap_or_default();
+                    let script = parsed["script"].as_str().unwrap_or_default().to_string();
                     s2.lock().unwrap().push(script.clone());
+                    a2.lock().unwrap().push(parsed["args"].clone());
                     if script.contains("__dexterNodes = nodes") {
                         let errs = *e2.lock().unwrap();
                         if *m2.lock().unwrap() {
@@ -206,6 +209,7 @@ fn fake_webdriver() -> FakeServer {
     FakeServer {
         url: format!("http://127.0.0.1:{port}"),
         scripts,
+        args,
         mutated,
         iframe_errors,
     }
@@ -565,4 +569,191 @@ fn observe_reports_iframe_collection_errors() {
     let obs = driver.observe(&ObservationScope::default()).unwrap();
     assert_eq!(obs.collection_errors, 2);
     assert_eq!(obs.elements.len(), 5);
+}
+
+// ---- generated-JS behavior: run captured scripts under Node ----
+
+/// Run a captured /execute/sync script the same way WebDriver does:
+/// `new Function(script)` applied to the args array (the script's
+/// `arguments`), with stubbed `window.__dexterNodes`. Returns
+/// `{result, events:[[type, node]...]}` — None when Node is absent so
+/// the structural asserts still run standalone.
+fn run_script_in_node(script: &str, args: &Value, nodes: &[(u64, &str)]) -> Option<Value> {
+    let node_defs: Vec<Value> = nodes
+        .iter()
+        .map(|(id, who)| json!([id.to_string(), who]))
+        .collect();
+    let harness = format!(
+        r#"
+        const out = {{ events: [] }};
+        const ev = (t, w) => out.events.push([t, w]);
+        class Ev {{ constructor(t, i) {{ this.type = t; Object.assign(this, i || {{}}); }} }}
+        globalThis.MouseEvent = Ev; globalThis.PointerEvent = Ev; globalThis.DragEvent = Ev;
+        const mk = w => ({{
+            click() {{ ev('click', w); }},
+            focus() {{ ev('focus', w); }},
+            scrollIntoView() {{ ev('scrollIntoView', w); }},
+            dispatchEvent(e) {{ ev(e.type, w); return true; }},
+            getBoundingClientRect() {{ return {{x:0,y:0,width:10,height:10}}; }},
+            value: '', setAttribute() {{}},
+        }});
+        globalThis.window = {{ __dexterNodes: {{}} }};
+        for (const [id, who] of {node_defs}) window.__dexterNodes[id] = mk(who);
+        try {{
+            out.result = new Function({script}).apply(null, {args});
+        }} catch (e) {{ out.thrown = String(e); }}
+        console.log(JSON.stringify(out));
+        "#,
+        node_defs = serde_json::to_string(&node_defs).unwrap(),
+        script = serde_json::to_string(script).unwrap(),
+        args = serde_json::to_string(args).unwrap(),
+    );
+    let path = std::env::temp_dir().join(format!(
+        "dexter-js-{}-{}.js",
+        std::process::id(),
+        nodes.len() * 31 + script.len()
+    ));
+    std::fs::write(&path, harness).ok()?;
+    let out = std::process::Command::new("node")
+        .arg(&path)
+        .output()
+        .ok()?;
+    let _ = std::fs::remove_file(&path);
+    serde_json::from_slice(&out.stdout).ok()
+}
+
+fn captured(
+    scripts: &Mutex<Vec<String>>,
+    args: &Mutex<Vec<Value>>,
+    marker: &str,
+) -> (String, Value) {
+    let scripts = scripts.lock().unwrap();
+    let args = args.lock().unwrap();
+    let idx = scripts
+        .iter()
+        .rposition(|s| s.contains(marker))
+        .unwrap_or_else(|| panic!("no captured script containing {marker:?}"));
+    (scripts[idx].clone(), args[idx].clone())
+}
+
+#[test]
+fn multi_click_dispatches_a_real_event_sequence() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let target = Target::Semantic(SemanticTarget {
+        role: Some("button".into()),
+        name: Some("Pay now".into()),
+        ..Default::default()
+    });
+    for count in [2u8, 3] {
+        driver
+            .act(
+                &Action::Click {
+                    target: target.clone(),
+                    button: MouseButton::Left,
+                    count,
+                },
+                &ActContext::default(),
+            )
+            .expect("multi-click");
+
+        let (script, sargs) = captured(&server.scripts, &server.args, "'multi-clicked'");
+        assert_eq!(sargs, json!([count]));
+        // Forwarded args reach the inner function as `a`, never
+        // `arguments` (which is the inner call's own list there).
+        assert!(script.contains("a[0]"), "{script}");
+        assert!(!script.contains("i<arguments[0]"), "{script}");
+
+        let Some(out) = run_script_in_node(&script, &sargs, &[(3, "pay")]) else {
+            eprintln!("node unavailable — ran structural asserts only");
+            continue;
+        };
+        assert!(
+            out["thrown"].is_null() && out["result"]["__dexter_err"].is_null(),
+            "{out}"
+        );
+        let got: Vec<String> = serde_json::from_value::<Vec<Vec<String>>>(out["events"].clone())
+            .unwrap()
+            .into_iter()
+            .map(|e| e[0].clone())
+            .collect();
+        let mut want: Vec<String> = Vec::new();
+        for _ in 0..count {
+            want.extend(
+                ["mousedown", "mouseup", "click"]
+                    .iter()
+                    .map(|s| s.to_string()),
+            );
+        }
+        want.push("dblclick".into());
+        assert_eq!(got, want, "count={count}");
+    }
+}
+
+#[test]
+fn drag_dispatches_press_on_source_and_drop_on_destination() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    driver
+        .act(
+            &Action::Drag {
+                from: Target::Semantic(SemanticTarget {
+                    name: Some("Pay now".into()),
+                    ..Default::default()
+                }),
+                to: Target::Semantic(SemanticTarget {
+                    name: Some("Save card".into()),
+                    ..Default::default()
+                }),
+                duration_ms: 0,
+            },
+            &ActContext::default(),
+        )
+        .expect("drag");
+
+    let (script, sargs) = captured(&server.scripts, &server.args, "'dragged'");
+    // a[0] is the DESTINATION node index (4 = "Save card"), never the
+    // source — `el` is already bound to the source (3 = "Pay now").
+    assert_eq!(sargs, json!([4]));
+    assert!(script.contains("__dexterNodes?.[a[0]]"), "{script}");
+
+    let Some(out) = run_script_in_node(&script, &sargs, &[(3, "src"), (4, "dst")]) else {
+        eprintln!("node unavailable — ran structural asserts only");
+        return;
+    };
+    assert!(
+        out["thrown"].is_null() && out["result"]["__dexter_err"].is_null(),
+        "{out}"
+    );
+    let got: Vec<(String, String)> =
+        serde_json::from_value::<Vec<Vec<String>>>(out["events"].clone())
+            .unwrap()
+            .into_iter()
+            .map(|e| (e[0].clone(), e[1].clone()))
+            .collect();
+    let mut want: Vec<(String, String)> = [
+        ("pointerdown", "src"),
+        ("mousedown", "src"),
+        ("dragstart", "src"),
+    ]
+    .into_iter()
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .collect();
+    for _ in 0..6 {
+        want.push(("pointermove".into(), "dst".into()));
+        want.push(("dragover".into(), "dst".into()));
+    }
+    want.extend(
+        [
+            ("drop", "dst"),
+            ("pointerup", "dst"),
+            ("mouseup", "dst"),
+            ("dragend", "src"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string())),
+    );
+    assert_eq!(got, want);
 }

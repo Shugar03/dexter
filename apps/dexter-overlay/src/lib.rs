@@ -79,6 +79,10 @@ pub fn reduce(state: &mut PresenceState, ev: &Event) {
             state.status = PresenceStatus::Observing;
             state.status_line = "observing".into();
         }
+        EventKind::ObservationFailed => {
+            state.visible = true;
+            state.status_line = "observation failed".into();
+        }
         EventKind::CandidatesGenerated => {
             let n = ev.data["count"].as_u64().unwrap_or(0);
             state.status = PresenceStatus::Thinking;

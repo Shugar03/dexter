@@ -167,10 +167,38 @@ Notes worth knowing:
   and the clipboard content never reaches the journal.
 - **`drag`** resolves and validates both endpoints *before* the
   pointer moves — a stale endpoint aborts cleanly.
-- **Every mutating action is verified**: after acting, Dexter
-  re-observes and checks the world actually changed (or the derived
-  expectation holds). A no-op reports `failed`/`suspected_noop`, never
-  silent success — trust `status: "done"` to mean *observed* success.
+- **Mutating actions with a derivable effect are verified**: after
+  acting, Dexter re-observes and checks the world actually changed (or
+  the derived expectation holds). A no-op reports
+  `failed`/`suspected_noop`, never silent success — trust
+  `status: "done"` with `verification` present to mean *observed*
+  success. Derived verification covers `click` on element targets,
+  `set_value`, `type_text`, `focus`, `invoke`, `drag`, `launch_app`
+  and `quit_app`.
+- **Some actions are intentionally unverifiable** — the world model
+  cannot express a reliable effect for them, so they run with
+  `verification: null` rather than a fake check: `window` ops,
+  clipboard reads/writes, `key`, `scroll`, `navigate`, `wait` and
+  `click` on raw `{"point"}` coordinates. Where the API accepts an
+  explicit `expect`, you may still supply one.
+- **Secure fields are unverifiable by design**: `type_text`/`set_value`
+  into a password or other secure field never derives a value
+  expectation — the field's value is redacted at collection, so a
+  successful entry reports `verification: null` and is never retried
+  (a retry would append the secret twice). An explicit value
+  expectation there reports `uncertain` (`redacted_value`), not
+  `failed`.
+- **A failed observation is journaled, not hidden**: if the pre-action
+  `observe` itself fails, the act proceeds unverified and the journal
+  records `observation_failed` (`pre_act`/`post_wake`/`goal_start`) —
+  an unverified act can never be mistaken for a verified one.
+- **Mechanism is part of the authorization**: routes declare the
+  mechanism they'll take (`accessibility`, `dom`, `api`,
+  `coordinates`...); if execution produces a different one, the step
+  fails — a planned semantic act never silently becomes physical
+  input. (`mechanism: null` is a compatibility seam for unmigrated
+  drivers: policy still gates their intrusiveness, but the mechanism
+  itself can't be fingerprinted — don't rely on it for new drivers.)
 
 ## The intrusiveness contract
 

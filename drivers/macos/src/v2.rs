@@ -131,13 +131,17 @@ pub fn invoke(el: &AXUIElement, action: &str) -> Result<String, DriverError> {
 // Clipboard — NSPasteboard, text only.
 // ---------------------------------------------------------------------------
 
+/// A temporary NSString registered with the caller's autorelease pool.
+/// `init_str` returns a +1-retained object — without `autorelease`
+/// every call leaks it. The caller must hold an `NSAutoreleasePool`.
+pub(crate) fn ns_str(s: &str) -> id {
+    unsafe { msg_send![NSString::alloc(nil).init_str(s), autorelease] }
+}
+
 fn pasteboard(name: Option<&str>) -> id {
     unsafe {
         match name {
-            Some(n) => {
-                let ns = NSString::alloc(nil).init_str(n);
-                msg_send![class!(NSPasteboard), pasteboardWithName: ns]
-            }
+            Some(n) => msg_send![class!(NSPasteboard), pasteboardWithName: ns_str(n)],
             None => msg_send![class!(NSPasteboard), generalPasteboard],
         }
     }
@@ -153,7 +157,7 @@ pub fn clipboard_read(name: Option<&str>) -> Result<Option<String>, DriverError>
             pool.drain();
             return Err(DriverError::Platform("NSPasteboard unavailable".into()));
         }
-        let ty = NSString::alloc(nil).init_str(PB_TYPE);
+        let ty = ns_str(PB_TYPE);
         let s: id = msg_send![pb, stringForType: ty];
         let out = if s == nil {
             None
@@ -191,8 +195,8 @@ pub fn clipboard_write(name: Option<&str>, text: &str) -> Result<(), DriverError
             return Err(DriverError::Platform("NSPasteboard unavailable".into()));
         }
         let _: i64 = msg_send![pb, clearContents];
-        let ty = NSString::alloc(nil).init_str(PB_TYPE);
-        let ns = NSString::alloc(nil).init_str(text);
+        let ty = ns_str(PB_TYPE);
+        let ns = ns_str(text);
         let ok: bool = msg_send![pb, setString: ns forType: ty];
         pool.drain();
         if ok {

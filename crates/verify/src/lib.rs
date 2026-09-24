@@ -68,6 +68,12 @@ fn eval(
             ));
             if hit {
                 VerificationStatus::Verified
+            } else if found.iter().all(|e| e.is_sensitive()) && !found.is_empty() {
+                // Every candidate is a secure field — its value is
+                // redacted by design, so "no match" is unknowable,
+                // never a failure.
+                reason.get_or_insert(UnknownReason::RedactedValue);
+                VerificationStatus::Uncertain
             } else if found.is_empty() {
                 absence(VerificationStatus::Failed, partial, reason)
             } else {

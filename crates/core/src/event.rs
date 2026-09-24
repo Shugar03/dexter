@@ -6,6 +6,9 @@ use std::time::SystemTime;
 #[serde(rename_all = "PascalCase")]
 pub enum EventKind {
     ObservationCreated,
+    /// A needed observation failed — any act that follows runs
+    /// unverified/degraded, and this event is *why*.
+    ObservationFailed,
     CandidatesGenerated,
     DecisionMade,
     ActionProposed,

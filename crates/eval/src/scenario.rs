@@ -516,7 +516,19 @@ pub fn rows_from_events(
                     rows[i].verified = Some(true);
                 }
             }
-            dexter_core::EventKind::VerificationFailed | dexter_core::EventKind::ActionFailed => {
+            dexter_core::EventKind::VerificationFailed => {
+                // Interim poll failures are NOT terminal: the engine
+                // polls until the effect lands (async UI, animations)
+                // and may still emit VerificationPassed — a delayed
+                // success must overwrite the provisional label, so the
+                // row stays pending instead of being consumed.
+                if let Some(i) = pending {
+                    rows[i].verified = Some(false);
+                }
+            }
+            dexter_core::EventKind::ActionFailed => {
+                // The act itself failed to deliver — terminal: no
+                // verification can still arrive for it.
                 if let Some(i) = pending.take() {
                     rows[i].verified = Some(false);
                 }

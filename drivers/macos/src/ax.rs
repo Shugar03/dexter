@@ -14,6 +14,11 @@ use std::ffi::c_void;
 
 use crate::ffi;
 
+/// Roles that must never leak their value — the shared definition
+/// lives in `dexter_core` so collection redaction, expectation
+/// derivation and policy sensitivity agree.
+pub(crate) use dexter_core::is_sensitive_role;
+
 pub struct AxTree {
     pub elements: Vec<Element>,
     /// Live AXUIElement refs parallel to `elements` (same order) — needed
@@ -250,13 +255,6 @@ fn action_names(el: &AXUIElement) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Roles that must never leak their value — password/secure fields are
-/// redacted at collection time, before anything reaches the process.
-pub(crate) fn is_sensitive_role(role: &str) -> bool {
-    let r = role.to_lowercase();
-    r.contains("secure") || r.contains("password")
-}
-
 /// Batched attribute read: every field `walk` needs in ONE IPC
 /// roundtrip (`AXUIElementCopyMultipleAttributeValues`) instead of a
 /// dozen. Failed slots arrive as AXValue-wrapped AXError and decode to
@@ -330,8 +328,10 @@ fn batch_values(el: &AXUIElement, attrs: &[&str]) -> Vec<Option<CFType>> {
             let item = values.get(i as _)?;
             // ItemRef is a borrow — retain it into an owned CFType.
             let v = unsafe { CFType::wrap_under_get_rule(item.as_CFTypeRef()) };
-            // AXError slots decode as AXValue of the error type.
-            if unsafe { ffi::AXValueGetType(v.as_CFTypeRef()) } == ffi::K_AX_VALUE_AX_ERROR_TYPE {
+            // Failed slots arrive as AXValue-wrapped AXError — decode
+            // to `None`. `AXValueGetType` is only defined on AXValue
+            // instances, so check the CFTypeID first.
+            if is_ax_error(&v) {
                 None
             } else {
                 Some(v)
@@ -356,9 +356,24 @@ fn num_slot(v: Option<&CFType>) -> Option<i64> {
         .and_then(|n| n.to_i64())
 }
 
+/// Whether this CFType is an AXValue wrapping an `AXError` — the
+/// failure slot of a batched attribute read.
+fn is_ax_error(v: &CFType) -> bool {
+    use core_foundation::base::CFGetTypeID;
+    unsafe {
+        CFGetTypeID(v.as_CFTypeRef()) == ffi::AXValueGetTypeID()
+            && ffi::AXValueGetType(v.as_CFTypeRef()) == ffi::K_AX_VALUE_AX_ERROR_TYPE
+    }
+}
+
 fn pair_slot(v: Option<&CFType>, expected: i32) -> Option<(f64, f64)> {
     let v = v?;
-    if unsafe { ffi::AXValueGetType(v.as_CFTypeRef()) } != expected {
+    use core_foundation::base::CFGetTypeID;
+    let is_expected = unsafe {
+        CFGetTypeID(v.as_CFTypeRef()) == ffi::AXValueGetTypeID()
+            && ffi::AXValueGetType(v.as_CFTypeRef()) == expected
+    };
+    if !is_expected {
         return None;
     }
     let mut out = [0.0f64; 2];
@@ -466,10 +481,18 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx, 
     });
     ctx.nodes.push(el.clone());
 
-    if is_app_boundary || depth >= ctx.max_depth {
+    if is_app_boundary {
         return;
     }
-    for child in children_slot(slot(I_CHILDREN)) {
+    let children = children_slot(slot(I_CHILDREN));
+    // The depth boundary is a truncation point too: unvisited children
+    // mean the tree is partial, and absence-dependent verification
+    // must know that (`walk_menu` flags the same case at entry).
+    if depth >= ctx.max_depth {
+        ctx.truncated |= !children.is_empty();
+        return;
+    }
+    for child in children {
         walk(&child, Some(this_id), depth + 1, ctx, false);
         if ctx.truncated {
             return;

@@ -210,18 +210,22 @@ impl ComputerDriver for MacOsDriver {
     }
 
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
-        actions::act(action, ctx, &self.obs_cache)
+        actions::act(action, ctx, &self.obs_cache, None)
     }
 
     fn plan(&self, action: &Action, ctx: &ActContext) -> Result<ExecutionPlan, DriverError> {
         actions::plan(action, ctx, &self.obs_cache)
     }
 
+    /// The authorized mechanism travels into execution: a route whose
+    /// declared mechanism no longer applies refuses instead of silently
+    /// escalating (plan→execute contract, `execution-routing-v2`).
+    /// `mechanism: None` is the legacy compat path — `act` decides.
     fn execute(
         &self,
         route: &ExecutionRoute,
         ctx: &ActContext,
     ) -> Result<ActionResult, DriverError> {
-        actions::act(&route.action, ctx, &self.obs_cache)
+        actions::act(&route.action, ctx, &self.obs_cache, route.mechanism)
     }
 }

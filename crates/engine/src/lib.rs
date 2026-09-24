@@ -266,8 +266,11 @@ impl<D: ComputerDriver> Engine<D> {
         // presence overlay can draw the cursor where the act lands.
         // A mutating action without an explicit expect also needs the
         // pre-act world — its derived expectation verifies the effect.
+        // Stage-needing actions observe so the wake oracle can tell a
+        // genuinely windowless app from "no observation taken".
         let needs_obs = bounds_need_observation(&step.action)
-            || (step.expect.is_none() && derives(&step.action));
+            || (step.expect.is_none() && derives(&step.action))
+            || needs_stage(&step.action);
         let mut obs = if needs_obs {
             let scope = ObservationScope {
                 app: step.app.clone().or_else(|| cfg.app.clone()),
@@ -275,7 +278,18 @@ impl<D: ComputerDriver> Engine<D> {
                 window: cfg.window_scope,
                 ..Default::default()
             };
-            self.driver.observe(&scope).ok()
+            match self.driver.observe(&scope) {
+                Ok(o) => Some(o),
+                // A failed pre-observation is not silent: any act that
+                // proceeds is unverified, and the journal must say why.
+                Err(e) => {
+                    self.journal(
+                        EventKind::ObservationFailed,
+                        serde_json::json!({"error": e.to_string(), "context": "pre_act"}),
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -290,7 +304,7 @@ impl<D: ComputerDriver> Engine<D> {
             window: cfg.window_scope,
             ..Default::default()
         };
-        let wake = self.maybe_wake(app.as_ref(), &mut obs, &scope);
+        let wake = self.maybe_wake(app.as_ref(), &mut obs, &scope, needs_stage(&step.action));
         // An explicit expect wins; otherwise mutating actions verify
         // their effect by derivation — the same contract goal flow has.
         let derived;
@@ -315,17 +329,26 @@ impl<D: ComputerDriver> Engine<D> {
 
     /// Borrow the stage once when a scoped observation shows no window
     /// content — some platforms (macOS) only expose an app's AX window
-    /// tree while it is frontmost. On wake the observation is refreshed
-    /// in place so callers act on the world the wake produced. The
-    /// caller restores the returned handle — every terminal path
-    /// funnels through a single point that hands focus back.
+    /// tree while it is frontmost. Two guards keep the steal honest:
+    /// the action must actually need the stage (`stage_needed`), and a
+    /// real observation must have shown the windowless state — waking
+    /// on an absent observation would foreground apps for actions that
+    /// never wanted the stage (a background `--launch`, a `wait`).
+    /// On wake the observation is refreshed in place so callers act on
+    /// the world the wake produced. The caller restores the returned
+    /// handle — every terminal path funnels through a single point
+    /// that hands focus back.
     fn maybe_wake(
-        &self,
+        &mut self,
         app: Option<&AppSelector>,
         obs: &mut Option<Observation>,
         scope: &ObservationScope,
+        stage_needed: bool,
     ) -> Option<WakeHandle> {
         let app = app?;
+        if !stage_needed {
+            return None;
+        }
         let windowed = obs.as_ref().is_some_and(|o| {
             o.elements
                 .iter()
@@ -334,12 +357,25 @@ impl<D: ComputerDriver> Engine<D> {
         if windowed {
             return None;
         }
+        let observed = obs.is_some();
+        if !observed {
+            return None;
+        }
         let handle = self.driver.wake(app).ok()?;
         if !handle.activated {
             return None;
         }
         std::thread::sleep(Duration::from_millis(800));
-        *obs = self.driver.observe(scope).ok().or_else(|| obs.take());
+        *obs = match self.driver.observe(scope) {
+            Ok(o) => Some(o),
+            Err(e) => {
+                self.journal(
+                    EventKind::ObservationFailed,
+                    serde_json::json!({"error": e.to_string(), "context": "post_wake"}),
+                );
+                obs.take()
+            }
+        };
         Some(handle)
     }
 
@@ -783,8 +819,18 @@ impl<D: ComputerDriver> Engine<D> {
             window: cfg.run.window_scope,
             ..Default::default()
         };
-        let mut obs = self.driver.observe(&scope).ok();
-        let wake = self.maybe_wake(cfg.run.app.as_ref(), &mut obs, &scope);
+        let mut obs = match self.driver.observe(&scope) {
+            Ok(o) => Some(o),
+            Err(e) => {
+                self.journal(
+                    EventKind::ObservationFailed,
+                    serde_json::json!({"error": e.to_string(), "context": "goal_start"}),
+                );
+                None
+            }
+        };
+        // A goal exists to act on elements — it always needs the stage.
+        let wake = self.maybe_wake(cfg.run.app.as_ref(), &mut obs, &scope, true);
         // The wake-check observation doubles as step 1's — observing is
         // not free (drivers tick, AX walks cost), so the loop must not
         // pay for a second one.
@@ -1350,7 +1396,9 @@ fn attempt_label(action: &Action, obs: &Observation) -> Option<String> {
     let target = match action {
         Action::Click { target, .. }
         | Action::Focus { target }
-        | Action::SetValue { target, .. } => Some(target),
+        | Action::SetValue { target, .. }
+        | Action::Invoke { target, .. } => Some(target),
+        Action::Drag { from, .. } => Some(from),
         Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
         _ => None,
     }?;
@@ -1361,19 +1409,39 @@ fn attempt_label(action: &Action, obs: &Observation) -> Option<String> {
 
 /// Actions whose effect is derivable — the subset of mutating actions
 /// `derive_expect` can express. Used to decide when a pre-act
-/// observation is worth taking.
+/// observation is worth taking. A coordinate click derives nothing —
+/// don't pay an observation for a check that will be `None`.
 fn derives(action: &Action) -> bool {
-    matches!(
-        action,
-        Action::Click { .. }
-            | Action::SetValue { .. }
-            | Action::TypeText { .. }
-            | Action::Focus { .. }
-            | Action::Invoke { .. }
-            | Action::Drag { .. }
-            | Action::LaunchApp { .. }
-            | Action::QuitApp { .. }
-    )
+    match action {
+        Action::Click { target, .. } => !matches!(target, Target::Point { .. }),
+        _ => matches!(
+            action,
+            Action::SetValue { .. }
+                | Action::TypeText { .. }
+                | Action::Focus { .. }
+                | Action::Invoke { .. }
+                | Action::Drag { .. }
+                | Action::LaunchApp { .. }
+                | Action::QuitApp { .. }
+        ),
+    }
+}
+
+/// Whether the action needs the app on stage (window-layer element
+/// resolution or foreground input) — the honest gate for `maybe_wake`.
+/// Lifecycle, waits, clipboard, navigation and window ops never do:
+/// waking for them would steal focus for no reason. A point click
+/// doesn't either — the coordinate is the target.
+fn needs_stage(action: &Action) -> bool {
+    match action {
+        Action::Click { target, .. }
+        | Action::Focus { target }
+        | Action::SetValue { target, .. } => !matches!(target, Target::Point { .. }),
+        Action::Invoke { .. } | Action::Drag { .. } | Action::Key { .. } => true,
+        Action::TypeText { .. } => true,
+        Action::Scroll { target, .. } => target.is_some(),
+        _ => false,
+    }
 }
 
 /// Does this action mutate the world (as opposed to observing or
@@ -1393,6 +1461,15 @@ fn is_mutating(action: &Action) -> bool {
             | Action::WriteClipboardText { .. }
             | Action::Drag { .. }
     )
+}
+
+/// Whether the target resolves to a sensitive (secure/password)
+/// element — the same definition the collectors redact values by, so
+/// a value-based expectation can never be honest for it.
+fn target_is_sensitive(target: &Target, obs: &Observation) -> bool {
+    dexter_world_model::resolve_element(obs, target)
+        .ok()
+        .is_some_and(|e| e.is_sensitive())
 }
 
 /// The semantic identity an act's target refers to — for deriving a
@@ -1442,12 +1519,21 @@ fn derive_expect(action: &Action, obs: &Observation) -> Option<ExpectedState> {
         },
         Action::TypeText { text, target } => {
             let t = target.clone().unwrap_or(Target::Focused);
+            // A secure field's value is redacted at collection — an
+            // ElementValue check could only fail, then a retry would
+            // append the secret a second time. Honestly unverifiable.
+            if target_is_sensitive(&t, obs) {
+                return None;
+            }
             semantic_for(&t, obs).map(|st| ExpectedState::ElementValue {
                 target: st,
                 predicate: ValuePredicate::Contains(text.clone()),
             })
         }
         Action::SetValue { target, value } => {
+            if target_is_sensitive(target, obs) {
+                return None;
+            }
             semantic_for(target, obs).map(|st| ExpectedState::ElementValue {
                 target: st,
                 predicate: ValuePredicate::Equals(value.clone()),

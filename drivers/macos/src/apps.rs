@@ -17,10 +17,9 @@ pub fn resolve_pid(selector: &AppSelector) -> Result<i32, DriverError> {
 fn pid_for_bundle(bundle: &str) -> Result<i32, DriverError> {
     unsafe {
         let pool = NSAutoreleasePool::new(nil);
-        let bundle_ns = NSString::alloc(nil).init_str(bundle);
         let apps: id = msg_send![
             class!(NSRunningApplication),
-            runningApplicationsWithBundleIdentifier: bundle_ns
+            runningApplicationsWithBundleIdentifier: crate::v2::ns_str(bundle)
         ];
         let count: usize = msg_send![apps, count];
         let pid = if count > 0 {

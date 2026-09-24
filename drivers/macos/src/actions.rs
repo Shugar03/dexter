@@ -26,8 +26,11 @@ const ACTION_WALK_DEPTH: u32 = 40;
 const ACTION_WALK_MAX: usize = 4_000;
 
 /// A live element resolved for an action, with a display detail.
+/// `id` is the element's observation id when resolution produced one —
+/// `Target::Focused` resolves straight to an AX node, so it has none.
 struct Resolved {
     el: AXUIElement,
+    id: Option<dexter_core::ElementId>,
     detail: String,
 }
 
@@ -131,11 +134,17 @@ fn resolve_element(
                 *observation,
                 *element,
             )?;
-            let idx = fresh_idx.expect("position was Some — verify_identity refuses None");
+            let idx = fresh_idx.ok_or_else(|| {
+                DriverError::StaleReference(format!(
+                    "element {element} vanished — the tree shrank since observation {}",
+                    observation.0
+                ))
+            })?;
             let el = tree.nodes.get(idx).cloned().ok_or_else(|| {
                 DriverError::StaleReference("resolved element vanished mid-walk".into())
             })?;
             Ok(Resolved {
+                id: Some(*element),
                 detail: describe(&el),
                 el,
             })
@@ -154,6 +163,7 @@ fn resolve_element(
                 DriverError::StaleReference("resolved element vanished mid-walk".into())
             })?;
             Ok(Resolved {
+                id: Some(found.id),
                 detail: describe(&el),
                 el,
             })
@@ -170,6 +180,7 @@ fn resolve_element(
                 DriverError::NotFound("focused attribute was not an element".into())
             })?;
             Ok(Resolved {
+                id: None,
                 detail: describe(&el),
                 el,
             })
@@ -186,7 +197,8 @@ fn ax_press(r: &Resolved) -> Result<ActionResult, DriverError> {
     Ok(ActionResult::success(
         Mechanism::Accessibility,
         Some(format!("pressed {}", r.detail)),
-    ))
+    )
+    .with_element(r.id))
 }
 
 fn ax_show_menu(r: &Resolved) -> Result<ActionResult, DriverError> {
@@ -195,7 +207,8 @@ fn ax_show_menu(r: &Resolved) -> Result<ActionResult, DriverError> {
     Ok(ActionResult::success(
         Mechanism::Accessibility,
         Some(format!("opened menu on {}", r.detail)),
-    ))
+    )
+    .with_element(r.id))
 }
 
 fn ax_focus(r: &Resolved) -> Result<(), DriverError> {
@@ -319,10 +332,32 @@ fn needs_ax(action: &Action) -> bool {
     )
 }
 
+/// The plan→execute contract: when a route declared a mechanism,
+/// execution must honor it or refuse — never silently take a more
+/// intrusive fallback. `would_take` is the mechanism the current world
+/// would push us to; a mismatch means the route no longer applies.
+fn route_refusal(
+    authorized: Option<Mechanism>,
+    would_take: Mechanism,
+    why: String,
+) -> Option<ActionResult> {
+    match authorized {
+        Some(declared) if declared != would_take => Some(ActionResult::failure(
+            ActionStatus::Unsupported,
+            declared,
+            format!("authorized route {declared:?} no longer applies ({why}) — refusing to switch to {would_take:?}"),
+        )),
+        _ => None,
+    }
+}
+
+/// `authorized` binds the mechanism a planned route declared (`Some`)
+/// — `None` is the legacy `act` path, which keeps the dynamic choice.
 pub fn act(
     action: &Action,
     ctx: &ActContext,
     cache: &ObsCache,
+    authorized: Option<Mechanism>,
 ) -> Result<ActionResult, DriverError> {
     if needs_ax(action) && !permissions::accessibility_trusted() {
         return Ok(ActionResult::failure(
@@ -397,11 +432,21 @@ pub fn act(
                     // v2: a multi-click on an element advertising `open`
                     // is a semantic open — never a physical double-click.
                     if *count >= 2 && *button == MouseButton::Left {
-                        if let Ok(raw) = v2::invoke(&r.el, "open") {
-                            return Ok(ActionResult::success(
-                                Mechanism::Accessibility,
-                                Some(format!("{raw} on {}", r.detail)),
-                            ));
+                        if authorized != Some(Mechanism::Coordinates) {
+                            if let Ok(raw) = v2::invoke(&r.el, "open") {
+                                return Ok(ActionResult::success(
+                                    Mechanism::Accessibility,
+                                    Some(format!("{raw} on {}", r.detail)),
+                                )
+                                .with_element(r.id));
+                            }
+                            if let Some(refusal) = route_refusal(
+                                authorized,
+                                Mechanism::Coordinates,
+                                format!("{} does not advertise 'open'", r.detail),
+                            ) {
+                                return Ok(refusal);
+                            }
                         }
                         // Element doesn't advertise open — a physical
                         // multi-click is the only way, gated hard.
@@ -431,7 +476,8 @@ pub fn act(
                         return Ok(ActionResult::success(
                             Mechanism::Coordinates,
                             Some(format!("clicked x{count} on {}", r.detail)),
-                        ));
+                        )
+                        .with_element(r.id));
                     }
                     match button {
                         MouseButton::Left => ax_press(&r),
@@ -446,20 +492,38 @@ pub fn act(
             // v2 semantics: TypeText *appends* — read the scalar value,
             // concatenate, set. A value we can't read back (rich text,
             // attributed content) never gets silently replaced: the
-            // physical route types at the caret instead.
-            if ax_value_settable(&r) {
-                let current =
-                    r.el.value()
-                        .ok()
-                        .and_then(|v| v.downcast::<CFString>().map(|s| s.to_string()));
-                if let Some(cur) = current {
-                    ax_set_value(&r, &format!("{cur}{text}"))?;
-                    return Ok(ActionResult::success(
-                        Mechanism::Accessibility,
-                        Some(format!("appended on {}", r.detail)),
-                    ));
+            // physical route types at the caret instead. An authorized
+            // AX route that no longer applies refuses rather than
+            // escalating to keystrokes.
+            if authorized != Some(Mechanism::Coordinates) {
+                if ax_value_settable(&r) {
+                    let current =
+                        r.el.value()
+                            .ok()
+                            .and_then(|v| v.downcast::<CFString>().map(|s| s.to_string()));
+                    if let Some(cur) = current {
+                        ax_set_value(&r, &format!("{cur}{text}"))?;
+                        return Ok(ActionResult::success(
+                            Mechanism::Accessibility,
+                            Some(format!("appended on {}", r.detail)),
+                        )
+                        .with_element(r.id));
+                    }
+                    // Rich/unreadable value — would need physical typing.
+                    if let Some(refusal) = route_refusal(
+                        authorized,
+                        Mechanism::Coordinates,
+                        format!("AXValue on {} is settable but unreadable", r.detail),
+                    ) {
+                        return Ok(refusal);
+                    }
+                } else if let Some(refusal) = route_refusal(
+                    authorized,
+                    Mechanism::Coordinates,
+                    format!("AXValue not settable on {}", r.detail),
+                ) {
+                    return Ok(refusal);
                 }
-                // Rich/unreadable value — fall through to physical typing.
             }
             if !ctx.allow_coordinates {
                 return Ok(ActionResult::failure(
@@ -483,23 +547,35 @@ pub fn act(
             Ok(ActionResult::success(
                 Mechanism::Coordinates,
                 Some(format!("typed {} chars via CGEvent", text.chars().count())),
-            ))
+            )
+            .with_element(r.id))
         }
         Action::Key { chord } => {
             // v2 semantic route first: a chord a menu item advertises
             // becomes an AXPress on that item — no physical input, no
-            // foreground requirement. Ambiguity fails closed.
+            // foreground requirement. Ambiguity fails closed. An
+            // authorized AX route whose menu claim vanished refuses —
+            // it never degrades to physical input under a semantic grant.
             if let Some(sel) = &ctx.app {
                 let pid = apps::resolve_pid(sel)?;
-                if let Some(item) = v2::menu_item_for_chord(pid, chord)? {
-                    item.perform_action(&CFString::new("AXPress"))
-                        .map_err(|e| {
-                            DriverError::Platform(format!("menu AXPress failed: {e:?}"))
-                        })?;
-                    return Ok(ActionResult::success(
-                        Mechanism::Accessibility,
-                        Some(format!("pressed menu item for {}", describe_chord(chord))),
-                    ));
+                if authorized != Some(Mechanism::Coordinates) {
+                    if let Some(item) = v2::menu_item_for_chord(pid, chord)? {
+                        item.perform_action(&CFString::new("AXPress"))
+                            .map_err(|e| {
+                                DriverError::Platform(format!("menu AXPress failed: {e:?}"))
+                            })?;
+                        return Ok(ActionResult::success(
+                            Mechanism::Accessibility,
+                            Some(format!("pressed menu item for {}", describe_chord(chord))),
+                        ));
+                    }
+                    if let Some(refusal) = route_refusal(
+                        authorized,
+                        Mechanism::Coordinates,
+                        "no menu item advertises this chord".into(),
+                    ) {
+                        return Ok(refusal);
+                    }
                 }
                 // No menu claim — physical keys need the app frontmost.
                 if !ctx.allow_coordinates {
@@ -517,6 +593,14 @@ pub fn act(
                     ));
                 }
                 return cg_key_chord(chord);
+            }
+            // No app scope: the semantic menu route was never available.
+            if let Some(refusal) = route_refusal(
+                authorized,
+                Mechanism::Coordinates,
+                "no app scope — cannot resolve a menu claim".into(),
+            ) {
+                return Ok(refusal);
             }
             if !ctx.allow_coordinates {
                 return Ok(ActionResult::failure(
@@ -537,7 +621,8 @@ pub fn act(
                 return Ok(ActionResult::success(
                     Mechanism::Accessibility,
                     Some(format!("scrolled {} into view", r.detail)),
-                ));
+                )
+                .with_element(r.id));
             }
             if !ctx.allow_coordinates {
                 return Ok(ActionResult::failure(
@@ -575,7 +660,8 @@ pub fn act(
                 Ok(ActionResult::success(
                     Mechanism::Accessibility,
                     Some(format!("focused {}", r.detail)),
-                ))
+                )
+                .with_element(r.id))
             }
         },
         Action::SetValue { target, value } => {
@@ -584,7 +670,8 @@ pub fn act(
             Ok(ActionResult::success(
                 Mechanism::Accessibility,
                 Some(format!("set value on {}", r.detail)),
-            ))
+            )
+            .with_element(r.id))
         }
         Action::Invoke { target, action } => {
             let r = resolve_element(target, ctx, cache)?;
@@ -592,7 +679,8 @@ pub fn act(
             Ok(ActionResult::success(
                 Mechanism::Accessibility,
                 Some(format!("{raw} on {}", r.detail)),
-            ))
+            )
+            .with_element(r.id))
         }
         Action::LaunchApp { app, activate } => {
             apps::launch(app, *activate)?;
@@ -671,7 +759,8 @@ pub fn act(
             Ok(ActionResult::success(
                 Mechanism::Coordinates,
                 Some(format!("dragged {} onto {}", a.detail, b.detail)),
-            ))
+            )
+            .with_element(a.id))
         }
     }
 }
@@ -960,17 +1049,22 @@ pub fn plan(
                 requires_foreground: false,
             },
         ),
-        Action::Window { .. } => ExecutionPlan::single(
-            action,
-            ExecutionRoute {
-                action: action.clone(),
-                target: TargetDescriptor::from_action(action),
-                mechanism: Some(Mechanism::Accessibility),
-                intrusiveness: Intrusiveness::Visual,
-                sensitivity: Sensitivity::Standard,
-                requires_foreground: false,
-            },
-        ),
+        // `window_op` has no new-window verb — declare no route for it
+        // rather than an AX route that execute then rejects.
+        Action::Window { operation, .. } => match operation {
+            dexter_core::WindowOperation::New => empty_plan(action),
+            _ => ExecutionPlan::single(
+                action,
+                ExecutionRoute {
+                    action: action.clone(),
+                    target: TargetDescriptor::from_action(action),
+                    mechanism: Some(Mechanism::Accessibility),
+                    intrusiveness: Intrusiveness::Visual,
+                    sensitivity: Sensitivity::Standard,
+                    requires_foreground: false,
+                },
+            ),
+        },
         // Clipboard is semantic but secret-bearing — the sensitivity
         // floor travels on the route so policy gates it independently.
         Action::ReadClipboardText | Action::WriteClipboardText { .. } => ExecutionPlan::single(
@@ -1002,4 +1096,56 @@ pub fn plan(
         }
     };
     Ok(plan)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // plan→execute contract: an authorized mechanism is a promise. If
+    // the world moved and the only remaining path is a different
+    // mechanism, execute must refuse — never escalate silently.
+    #[test]
+    fn route_refusal_blocks_mechanism_escalation() {
+        let refusal = route_refusal(
+            Some(Mechanism::Accessibility),
+            Mechanism::Coordinates,
+            "element no longer settable".into(),
+        )
+        .expect("declared AX, would take Coordinates — must refuse");
+        assert_eq!(refusal.status, ActionStatus::Unsupported);
+        assert_eq!(refusal.mechanism, Mechanism::Accessibility);
+
+        // Same mechanism stays allowed.
+        assert!(route_refusal(
+            Some(Mechanism::Accessibility),
+            Mechanism::Accessibility,
+            "still applies".into(),
+        )
+        .is_none());
+        // Legacy routes (mechanism `None`) keep the dynamic choice —
+        // the compat seam the enforcement deliberately doesn't cover.
+        assert!(route_refusal(None, Mechanism::Coordinates, "legacy".into()).is_none());
+    }
+
+    #[test]
+    fn window_new_declares_no_route() {
+        // `window_op` has no new-window verb — planning an AX route for
+        // it would only fail at execute. The honest answer is an empty
+        // plan, matching the browser driver.
+        if !permissions::accessibility_trusted() {
+            eprintln!("AX untrusted host — plan falls back to legacy; skipping");
+            return;
+        }
+        let action = Action::Window {
+            operation: dexter_core::WindowOperation::New,
+            window_id: None,
+        };
+        let plan = plan(&action, &ActContext::default(), &ObsCache::new()).unwrap();
+        assert!(
+            plan.routes.is_empty(),
+            "Window::New must plan empty, got {:?}",
+            plan.routes
+        );
+    }
 }

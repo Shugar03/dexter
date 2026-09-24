@@ -131,6 +131,46 @@ fn element_value_predicates() {
 }
 
 #[test]
+fn element_value_on_sensitive_field_is_uncertain_not_failed() {
+    // Secure-field values are redacted at collection by design — the
+    // verifier can never satisfy a value predicate there, and "no
+    // match" is unknowable rather than a failure. This holds for
+    // explicit caller-supplied expectations too (e.g. an MCP expect).
+    let mut field = el(1, "secure_text_field", Some("Password"));
+    field.value = None; // redacted
+    let o = obs_with(vec![field]);
+    let r = verify(
+        &o,
+        &ExpectedState::ElementValue {
+            target: SemanticTarget {
+                name: Some("Password".into()),
+                ..Default::default()
+            },
+            predicate: ValuePredicate::Contains("s3cret".into()),
+        },
+    );
+    assert_eq!(r.status, VerificationStatus::Uncertain);
+    assert_eq!(r.unknown_reason, Some(UnknownReason::RedactedValue));
+
+    // A mixed match set still fails honestly — the redacted candidate
+    // doesn't shield a checkable element from its real outcome.
+    let mut visible = el(2, "text_field", Some("User"));
+    visible.value = Some("alice".into());
+    let o2 = obs_with(vec![el(3, "secure_text_field", Some("PIN")), visible]);
+    let r2 = verify(
+        &o2,
+        &ExpectedState::ElementValue {
+            target: SemanticTarget {
+                role: Some("text_field".into()),
+                ..Default::default()
+            },
+            predicate: ValuePredicate::Contains("zzz".into()),
+        },
+    );
+    assert_eq!(r2.status, VerificationStatus::Failed);
+}
+
+#[test]
 fn window_title_uncertain_when_all_titles_hidden() {
     let mut o = obs_with(vec![]);
     o.windows.push(Window {

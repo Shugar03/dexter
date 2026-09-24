@@ -141,7 +141,11 @@ impl BrowserDriver {
         self.exec_on_args(id, script, vec![])
     }
 
-    /// `exec_on` with extra `arguments[]` after the bound element.
+    /// `exec_on` with extra args, exposed to the script as `a[0], a[1]…`.
+    /// The WebDriver `args` array becomes `arguments` of the script's
+    /// outer function; the inner call receives them after the bound
+    /// element — scripts must use `a[i]`, never `arguments[i]` (inside
+    /// a *regular* function `arguments` is that function's own list).
     fn exec_on_args(
         &self,
         id: ElementId,
@@ -152,7 +156,7 @@ impl BrowserDriver {
             &format!(
                 "return (() => {{ const el = window.__dexterNodes?.[{}]; \
                  if (!el) return {{__dexter_err: 'stale node'}}; \
-                 return (function(el) {{ {} }})(el); }})()",
+                 return (function(el, ...a) {{ {} }}).apply(null, [el].concat(Array.from(arguments))); }})()",
                 id.0, script
             ),
             args,
@@ -470,7 +474,7 @@ impl ComputerDriver for BrowserDriver {
                     // A real double-click sequence: mousedown/up pairs
                     // plus the dblclick event apps listen for.
                     (_, 2..=3) => {
-                        "for(let i=0;i<arguments[0];i++){el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));el.click();}\
+                        "for(let i=0;i<a[0];i++){el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));el.click();}\
                          el.dispatchEvent(new MouseEvent('dblclick',{bubbles:true})); 'multi-clicked'"
                     }
                     _ => "el.click(); 'clicked'",
@@ -482,7 +486,8 @@ impl ComputerDriver for BrowserDriver {
                 Ok(ActionResult::success(
                     Mechanism::Dom,
                     Some(format!("clicked element {id} x{count}")),
-                ))
+                )
+                .with_element(Some(id)))
             }
             Action::Invoke { target, action } => {
                 let id = self.resolve(target)?;
@@ -519,7 +524,8 @@ impl ComputerDriver for BrowserDriver {
                 Ok(ActionResult::success(
                     Mechanism::Dom,
                     Some(format!("invoked '{action}' on element {id}")),
-                ))
+                )
+                .with_element(Some(id)))
             }
             Action::LaunchApp { .. } | Action::QuitApp { .. } => Ok(ActionResult::failure(
                 ActionStatus::Unsupported,
@@ -582,14 +588,14 @@ impl ComputerDriver for BrowserDriver {
             Action::Drag {
                 from,
                 to,
-                duration_ms,
+                duration_ms: _,
             } => {
                 // DOM event synthesis — never moves the OS cursor.
                 let a = self.resolve(from)?;
                 let b = self.resolve(to)?;
                 let resp = self.exec_on_args(
                     a,
-                    "const to = window.__dexterNodes?.[arguments[0]]; \
+                    "const to = window.__dexterNodes?.[a[0]]; \
                      if (!to) return {__dexter_err: 'stale node'}; \
                      const f = el.getBoundingClientRect(), t = to.getBoundingClientRect(); \
                      const [x1,y1,x2,y2] = [f.x+f.width/2, f.y+f.height/2, t.x+t.width/2, t.y+t.height/2]; \
@@ -609,7 +615,9 @@ impl ComputerDriver for BrowserDriver {
                      to.dispatchEvent(new MouseEvent('mouseup', d)); \
                      el.dispatchEvent(new DragEvent('dragend', d)); \
                      'dragged'",
-                    vec![json!(a.0), json!(b.0), json!(duration_ms)],
+                    // a[0] = the drop target's node index; `duration_ms`
+                    // paces real-pointer drags — DOM dispatch is instant.
+                    vec![json!(b.0)],
                 )?;
                 if resp["__dexter_err"].is_string() {
                     return Err(DriverError::StaleReference("stale node".into()));
@@ -617,7 +625,8 @@ impl ComputerDriver for BrowserDriver {
                 Ok(ActionResult::success(
                     Mechanism::Dom,
                     Some(format!("dragged element {a} onto {b}")),
-                ))
+                )
+                .with_element(Some(a)))
             }
             Action::Focus { target } => {
                 // A window target is a tab switch — an observable API
@@ -639,10 +648,10 @@ impl ComputerDriver for BrowserDriver {
                 if resp["__dexter_err"].is_string() {
                     return Err(DriverError::StaleReference("stale node".into()));
                 }
-                Ok(ActionResult::success(
-                    Mechanism::Dom,
-                    Some(format!("focused element {id}")),
-                ))
+                Ok(
+                    ActionResult::success(Mechanism::Dom, Some(format!("focused element {id}")))
+                        .with_element(Some(id)),
+                )
             }
             Action::SetValue { target, value } => {
                 let id = self.resolve(target)?;
@@ -664,7 +673,8 @@ impl ComputerDriver for BrowserDriver {
                 Ok(ActionResult::success(
                     Mechanism::Dom,
                     Some(format!("set value on element {id}")),
-                ))
+                )
+                .with_element(Some(id)))
             }
             Action::TypeText { text, target } => {
                 let t = target.clone().unwrap_or(Target::Focused);
@@ -680,10 +690,10 @@ impl ComputerDriver for BrowserDriver {
                     ),
                     vec![json!(text)],
                 )?;
-                Ok(ActionResult::success(
-                    Mechanism::Dom,
-                    Some(format!("typed into element {id}")),
-                ))
+                Ok(
+                    ActionResult::success(Mechanism::Dom, Some(format!("typed into element {id}")))
+                        .with_element(Some(id)),
+                )
             }
             Action::Key { chord } => {
                 // DOM key dispatch to the focused element — no physical
@@ -720,7 +730,8 @@ impl ComputerDriver for BrowserDriver {
                     return Ok(ActionResult::success(
                         Mechanism::Dom,
                         Some(format!("scrolled element {id} into view")),
-                    ));
+                    )
+                    .with_element(Some(id)));
                 }
                 self.client.lock().unwrap().execute(
                     "window.scrollBy(arguments[0], arguments[1]); return 'scrolled';",

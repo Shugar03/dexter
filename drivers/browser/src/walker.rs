@@ -113,7 +113,10 @@ return (() => {
     const name = accName(el);
     const tag = el.tagName.toLowerCase();
     let value = null;
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+    // Sensitive fields never materialize their value — same redaction
+    // contract the AX path enforces on secure fields.
+    const sensitive = tag === 'input' && (el.type || '').toLowerCase() === 'password';
+    if (!sensitive && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
       value = el.type === 'checkbox' || el.type === 'radio'
         ? String(el.checked) : el.value;
     } else if (TEXT_TAGS.has(tag)) {
@@ -128,6 +131,7 @@ return (() => {
       depth,
       role,
       raw_role: el.getAttribute('role') || tag,
+      subrole: sensitive ? 'password' : null,
       name: name || null,
       value,
       bounds: { x: r.x + ox, y: r.y + oy, w: r.width, h: r.height },
@@ -196,6 +200,7 @@ struct RawElement {
     depth: u32,
     role: String,
     raw_role: Option<String>,
+    subrole: Option<String>,
     name: Option<String>,
     value: Option<String>,
     bounds: Option<RawRect>,
@@ -236,7 +241,7 @@ pub fn parse_elements(raw: serde_json::Value) -> (Vec<Element>, u32) {
             depth: r.depth,
             role: Some(r.role),
             raw_role: r.raw_role,
-            subrole: None,
+            subrole: r.subrole,
             name: r.name,
             value: r.value,
             bounds: r.bounds.map(|b| Rect {

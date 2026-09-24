@@ -1,7 +1,7 @@
 //! Hermetic end-to-end: sim world + engine loop + policy + verifier.
 
 use dexter_core::*;
-use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
+use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError, WakeHandle};
 use dexter_engine::{Engine, RunConfig, Step, StepStatus};
 use dexter_policy::{ActionContext, Policy};
 use dexter_sim::{Effect, SimDriver};
@@ -1196,4 +1196,279 @@ fn goal_flow_open_affordance_yields_invoke() {
             .unwrap_or(false)
     });
     assert!(invoked, "open-affordance should route through Invoke");
+}
+
+// -- runtime-reliability-v2 review fixes --
+
+/// A driver whose `execute` reports a mechanism other than the route
+/// declared — the plan→execute contract violation the engine must
+/// refuse rather than launder.
+struct MismatchDriver;
+
+impl ComputerDriver for MismatchDriver {
+    fn capabilities(&self) -> DriverCapabilities {
+        DriverCapabilities {
+            name: "mismatch",
+            element_tree: true,
+            screenshots: false,
+            background_input: true,
+        }
+    }
+
+    fn windows(&self) -> Result<Vec<Window>, DriverError> {
+        Ok(vec![])
+    }
+
+    fn observe(&self, _scope: &ObservationScope) -> Result<Observation, DriverError> {
+        Ok(Observation::default())
+    }
+
+    fn plan(&self, action: &Action, _ctx: &ActContext) -> Result<ExecutionPlan, DriverError> {
+        Ok(ExecutionPlan {
+            requested: action.clone(),
+            routes: vec![ExecutionRoute {
+                action: action.clone(),
+                target: TargetDescriptor::from_action(action),
+                mechanism: Some(Mechanism::Api),
+                intrusiveness: Intrusiveness::Background,
+                sensitivity: Sensitivity::Standard,
+                requires_foreground: false,
+            }],
+        })
+    }
+
+    fn execute(
+        &self,
+        _route: &ExecutionRoute,
+        _ctx: &ActContext,
+    ) -> Result<ActionResult, DriverError> {
+        // Claims Api at plan time, ran Coordinates at execute time —
+        // physical input under a background-authorized route.
+        Ok(ActionResult::success(
+            Mechanism::Coordinates,
+            Some("sneaky".into()),
+        ))
+    }
+
+    fn act(&self, _action: &Action, _ctx: &ActContext) -> Result<ActionResult, DriverError> {
+        Ok(ActionResult::success(Mechanism::Api, None))
+    }
+}
+
+#[test]
+fn mechanism_mismatch_fails_instead_of_laundering() {
+    let mut engine = Engine::new(MismatchDriver, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Wait { millis: 1 },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Failed { reason, .. } => {
+            assert!(reason.contains("mechanism mismatch"), "{reason}")
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    let kinds: Vec<_> = engine.events().iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&EventKind::ActionFailed));
+}
+
+/// A driver whose observation path is down — the pre-act observe
+/// fails, the act proceeds unverified, and the journal must say why.
+struct FailObserveDriver {
+    executes: Arc<AtomicU32>,
+    wakes: Arc<AtomicU32>,
+}
+
+impl ComputerDriver for FailObserveDriver {
+    fn capabilities(&self) -> DriverCapabilities {
+        DriverCapabilities {
+            name: "fail-observe",
+            element_tree: true,
+            screenshots: false,
+            background_input: true,
+        }
+    }
+
+    fn windows(&self) -> Result<Vec<Window>, DriverError> {
+        Ok(vec![])
+    }
+
+    fn observe(&self, _scope: &ObservationScope) -> Result<Observation, DriverError> {
+        Err(DriverError::Platform("AX API unavailable".into()))
+    }
+
+    fn act(&self, _action: &Action, _ctx: &ActContext) -> Result<ActionResult, DriverError> {
+        self.executes.fetch_add(1, Ordering::SeqCst);
+        Ok(ActionResult::success(Mechanism::Api, Some("ran".into())))
+    }
+
+    fn wake(&self, _app: &AppSelector) -> Result<WakeHandle, DriverError> {
+        self.wakes.fetch_add(1, Ordering::SeqCst);
+        Ok(WakeHandle::activated(None))
+    }
+}
+
+#[test]
+fn failed_pre_observation_journals_and_never_wakes() {
+    let executes = Arc::new(AtomicU32::new(0));
+    let wakes = Arc::new(AtomicU32::new(0));
+    let driver = FailObserveDriver {
+        executes: executes.clone(),
+        wakes: wakes.clone(),
+    };
+    let mut engine = Engine::new(driver, allow_all(), Duration::from_secs(60));
+    // A click is a stage-needing action — with no observation at all,
+    // the engine must not foreground the app to find out.
+    let step = Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                name: Some("Anything".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+            count: 1,
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: Some(AppSelector::Name("ghost".into())),
+    };
+    let status = engine.run_step(&step, &cfg());
+    match status {
+        StepStatus::Done { verification, .. } => {
+            assert!(verification.is_none(), "unverified, not faked");
+        }
+        other => panic!("expected Done (unverified), got {other:?}"),
+    }
+    assert_eq!(executes.load(Ordering::SeqCst), 1, "the act still ran");
+    assert_eq!(
+        wakes.load(Ordering::SeqCst),
+        0,
+        "absent observation must never trigger a wake"
+    );
+    let events = engine.events();
+    let fail_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::ObservationFailed)
+        .collect();
+    assert_eq!(
+        fail_events
+            .iter()
+            .filter(|e| e.data["context"] == "pre_act")
+            .count(),
+        1,
+        "the pre-act observe failure is journaled: {:?}",
+        engine.events()
+    );
+}
+
+#[test]
+fn stage_free_actions_never_wake_the_app() {
+    // `dexter launch Foo --background` and `wait` must not steal focus:
+    // before the stage gate, maybe_wake fired on any absent-window
+    // observation regardless of what the action needed.
+    let sim = SimDriver::new(vec![el(1, "button", "A")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let c = RunConfig {
+        app: Some(AppSelector::Name("sim".into())),
+        ..cfg()
+    };
+    let launch = Step {
+        note: None,
+        action: Action::LaunchApp {
+            app: AppSelector::Name("ghost".into()),
+            activate: false,
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    assert!(engine.run_step(&launch, &c).done());
+    let wait = Step {
+        note: None,
+        action: Action::Wait { millis: 1 },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    assert!(engine.run_step(&wait, &c).done());
+    assert!(
+        engine.driver().wakes().is_empty(),
+        "stage-free acts woke: {:?}",
+        engine.driver().wakes()
+    );
+
+    // Positive control: a stage-needing act on a windowless app DOES
+    // wake — the gate narrows, it doesn't remove the borrow.
+    let click = Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                name: Some("A".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+            count: 1,
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    engine.run_step(&click, &c);
+    assert_eq!(engine.driver().wakes(), vec!["sim".to_string()]);
+}
+
+#[test]
+fn typing_into_sensitive_field_is_unverified_and_types_once() {
+    // Secure fields redact `value` at collection — no value expectation
+    // can ever verify there. The old code derived one anyway: a
+    // physically-successful password entry failed every poll, and a
+    // retry would append the secret a second time.
+    let mut pw = el(1, "secure_text_field", "Password");
+    pw.value = None; // redacted, as a real driver reports it
+    let sim = SimDriver::new(vec![pw]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::TypeText {
+            text: "s3cret".into(),
+            target: Some(Target::Semantic(SemanticTarget {
+                name: Some("Password".into()),
+                ..Default::default()
+            })),
+        },
+        expect: None,
+        max_attempts: Some(3),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done {
+            verification,
+            attempts,
+            ..
+        } => {
+            assert!(
+                verification.is_none(),
+                "sensitive target derives no value expectation"
+            );
+            assert_eq!(attempts, 1, "no failed-verify retry may re-type");
+        }
+        other => panic!("expected Done (unverified), got {other:?}"),
+    }
+    let els = engine.driver().elements();
+    assert_eq!(
+        els[0].value.as_deref(),
+        Some("s3cret"),
+        "the secret lands exactly once — never re-appended by a retry"
+    );
+    assert!(
+        !engine
+            .events()
+            .iter()
+            .any(|e| e.kind == EventKind::VerificationFailed),
+        "no verification may run on a redacted value"
+    );
 }

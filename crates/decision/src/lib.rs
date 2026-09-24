@@ -840,7 +840,9 @@ fn already_tried(el: &Element, attempts: &[Action]) -> bool {
     attempts.iter().any(|a| match a {
         Action::Click { target, .. }
         | Action::Focus { target }
-        | Action::SetValue { target, .. } => same_element_target(target, el),
+        | Action::SetValue { target, .. }
+        | Action::Invoke { target, .. } => same_element_target(target, el),
+        Action::Drag { from, .. } => same_element_target(from, el),
         Action::TypeText { target, .. } => {
             target.as_ref().is_some_and(|t| same_element_target(t, el))
         }

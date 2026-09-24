@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### Fixed (runtime-reliability-v2 review)
+
+- macOS batched AX reads now detect `AXValue`-wrapped `AXError` slots
+  correctly — the constant was `kAXValueCGRectType` (3), not
+  `kAXValueAXErrorType` (5), so real error slots fell through to
+  per-attribute decoders.
+- Browser `drag` and multi-click (`count` 2–3) dispatch real event
+  sequences again — script args were read from the inner function's
+  `arguments` (the element) instead of the forwarded WebDriver args;
+  `drag` also resolves the *destination* node rather than the source.
+- `type_text`/`set_value` into secure fields no longer derive an
+  unsatisfiable value expectation: a successful password entry reports
+  `verification: null` and is never retried (a retry would append the
+  secret). Explicit value expectations there report
+  `uncertain`/`redacted_value`, not `failed`.
+- Plan→execute contract enforced on macOS: an authorized mechanism is
+  a promise — if the world moved and only a different mechanism
+  applies, execute refuses instead of escalating to physical input.
+- Training-row labels: interim `VerificationFailed` poll events mark a
+  row provisionally false but a later `VerificationPassed` overwrites
+  it — delayed-but-verified acts export `verified: true`.
+- `maybe_wake` only fires when a real observation showed a windowless
+  app *and* the action needs the stage — a background `launch_app` or
+  `wait` no longer steals focus, and a failed observation never wakes.
+- Failed pre-action observations are journaled as
+  `observation_failed` (`pre_act`/`post_wake`/`goal_start`) instead of
+  being silently swallowed — an unverified act is never mistaken for
+  a verified one.
+- macOS depth-boundary truncation flags `elements_truncated` when
+  unvisited children exist, matching `walk_menu`.
+- macOS `Window::New` plans empty (no route) instead of a route that
+  only fails at execute; `ActionResult.element` is populated wherever
+  an element was resolved; coordinate clicks skip the useless
+  pre-act observation.
+- Baseline latency gates (`max_observe_p95_ms`, `max_verify_p95_ms`)
+  are now set in `datasets/scenarios/baseline.toml`.
+- `NSString` autoreleased via a shared helper instead of leaking one
+  object per clipboard/app lookup; stale-resolution `.expect()`
+  replaced with a fail-closed error.
+
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:

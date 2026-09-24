@@ -189,6 +189,13 @@ impl ActionResult {
             escalation,
         })
     }
+
+    /// Bind the element the act resolved to — the journal carries the
+    /// id so an audit trail knows *which* node the input landed on.
+    pub fn with_element(mut self, element: Option<crate::ElementId>) -> Self {
+        self.element = element;
+        self
+    }
 }
 
 /// Verification verdict. `Uncertain` must never be treated as `Verified`.
@@ -214,6 +221,9 @@ pub enum UnknownReason {
     NoFocusedElement,
     /// No window exposes a title to check against.
     NoWindowTitle,
+    /// The check needs a value a sensitive field never exposes — the
+    /// redaction is deliberate, so the verdict can't be definite.
+    RedactedValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

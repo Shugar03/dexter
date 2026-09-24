@@ -14,7 +14,7 @@ mod result;
 mod target;
 
 pub use action::{Action, Intrusiveness, KeyChord, MouseButton, ScrollDelta, WindowOperation};
-pub use element::{Element, ElementId, ElementSource, Rect};
+pub use element::{is_sensitive_role, Element, ElementId, ElementSource, Rect};
 pub use error::DexterError;
 pub use event::{Event, EventKind};
 pub use execution::{ExecutionPlan, ExecutionRoute, Sensitivity, TargetDescriptor};

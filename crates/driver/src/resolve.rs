@@ -104,7 +104,14 @@ pub fn resolve_element_ref(
     let stored = stored_element(stored, observation, element)?;
     let idx = fresh.iter().position(|e| e.id == element);
     verify_identity(stored, idx.map(|i| &fresh[i]), observation, element)?;
-    Ok(idx.expect("position was Some — verify_identity refuses None"))
+    // verify_identity refuses a missing index, but the invariant spans
+    // two calls — fail closed rather than assert it.
+    idx.ok_or_else(|| {
+        DriverError::StaleReference(format!(
+            "element {} vanished — the tree shrank since observation {}",
+            element.0, observation.0
+        ))
+    })
 }
 
 /// Semantic/Focused resolution against a fresh observation — ambiguity

@@ -140,6 +140,14 @@ impl Default for Element {
     }
 }
 
+/// Roles whose values must never be materialized — password/secure
+/// fields. The single definition collection redaction, expectation
+/// derivation and policy sensitivity all share.
+pub fn is_sensitive_role(role: &str) -> bool {
+    let r = role.to_lowercase();
+    r.contains("secure") || r.contains("password")
+}
+
 impl Element {
     /// Display name used by matching and digests.
     pub fn label(&self) -> Option<&str> {
@@ -147,5 +155,19 @@ impl Element {
             .as_deref()
             .filter(|s| !s.is_empty())
             .or(self.identifier.as_deref())
+    }
+
+    /// Whether this element is a secure/password field — its value is
+    /// redacted at collection, so value-based verification can never
+    /// honestly check it.
+    pub fn is_sensitive(&self) -> bool {
+        [
+            self.role.as_deref(),
+            self.subrole.as_deref(),
+            self.raw_role.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(is_sensitive_role)
     }
 }

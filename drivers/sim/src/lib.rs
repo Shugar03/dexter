@@ -67,6 +67,8 @@ struct SimState {
     /// Names of running apps; launching spawns a window, quitting
     /// removes them. The sim itself runs as "sim".
     apps: Vec<String>,
+    /// `wake` calls in order — tests assert who was foregrounded.
+    wakes: Vec<String>,
     obs_cache: VecDeque<(ObservationId, Vec<Element>)>,
     rules: Vec<Rule>,
     /// Effects applied on every `observe()` — worlds that evolve while
@@ -109,6 +111,7 @@ impl SimDriver {
                 dragged: Vec::new(),
                 clipboard: String::new(),
                 apps: vec!["sim".into()],
+                wakes: Vec::new(),
                 obs_cache: VecDeque::new(),
                 rules: Vec::new(),
                 ticks: Vec::new(),
@@ -166,6 +169,12 @@ impl SimDriver {
     /// Current pasteboard text — test observability hook.
     pub fn clipboard(&self) -> String {
         self.state.lock().unwrap().clipboard.clone()
+    }
+
+    /// App names `wake` was called for, in order — test observability
+    /// hook: a stage-free action must never trigger one.
+    pub fn wakes(&self) -> Vec<String> {
+        self.state.lock().unwrap().wakes.clone()
     }
 
     /// Current world elements — test observability hook.
@@ -799,8 +808,12 @@ impl ComputerDriver for SimDriver {
     fn wake(&self, app: &dexter_core::AppSelector) -> Result<WakeHandle, DriverError> {
         let name = match app {
             dexter_core::AppSelector::Name(n) | dexter_core::AppSelector::BundleId(n) => n.clone(),
-            dexter_core::AppSelector::Pid(_) => return Ok(WakeHandle::default()),
+            dexter_core::AppSelector::Pid(p) => p.to_string(),
         };
+        self.state.lock().unwrap().wakes.push(name.clone());
+        if matches!(app, dexter_core::AppSelector::Pid(_)) {
+            return Ok(WakeHandle::default());
+        }
         let mut s = self.state.lock().unwrap();
         if !s.apps.iter().any(|a| a == &name) {
             let id = s.windows.iter().map(|w| w.id).max().unwrap_or(0) + 1;

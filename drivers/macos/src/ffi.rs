@@ -33,18 +33,22 @@ pub struct CGSize {
     pub height: f64,
 }
 
-/// AXValueType values we decode.
+/// `AXValueType` values we decode — the `CF_ENUM` order in the SDK's
+/// `AXValue.h` (Unknown=0, CGPoint, CGSize, CGRect, CFRange, AXError,
+/// Illegal). The error slot in a batched
+/// `AXUIElementCopyMultipleAttributeValues` result is `AXError`.
 pub const K_AX_VALUE_CG_POINT_TYPE: i32 = 1;
 pub const K_AX_VALUE_CG_SIZE_TYPE: i32 = 2;
-/// `kAXValueAXErrorType` — the failure slot inside a batched
-/// `AXUIElementCopyMultipleAttributeValues` result array.
-pub const K_AX_VALUE_AX_ERROR_TYPE: i32 = 3;
+pub const K_AX_VALUE_AX_ERROR_TYPE: i32 = 5;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     pub fn AXIsProcessTrusted() -> CfBoolean;
     pub fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> CfBoolean;
     pub static kAXTrustedCheckOptionPrompt: CFStringRef;
+    /// The `AXValue` CFTypeID — `AXValueGetType` is only defined on
+    /// AXValue instances, so callers must check this first.
+    pub fn AXValueGetTypeID() -> usize;
     pub fn AXValueGetType(value: CFTypeRef) -> i32;
     pub fn AXValueGetValue(value: CFTypeRef, theType: i32, valuePtr: *mut c_void) -> CfBoolean;
     /// Create an AXValue wrapping a CGPoint/CGSize — needed to *set*
@@ -124,3 +128,20 @@ pub const K_CG_FLAG_SHIFT: u64 = 0x0002_0000;
 pub const K_CG_FLAG_CONTROL: u64 = 0x0004_0000;
 pub const K_CG_FLAG_ALT: u64 = 0x0008_0000;
 pub const K_CG_FLAG_CMD: u64 = 0x0010_0000;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The AXValueType CF_ENUM order is fixed by the SDK (`AXValue.h`):
+    // a wrong constant silently mis-decodes every batched read — the
+    // AXError slot (5) was once written as 3, which is CGRect.
+    #[test]
+    fn ax_value_type_constants_match_the_sdk() {
+        assert_eq!(K_AX_VALUE_CG_POINT_TYPE, 1); // kAXValueCGPointType
+        assert_eq!(K_AX_VALUE_CG_SIZE_TYPE, 2); // kAXValueCGSizeType
+                                                // 3 is kAXValueCGRectType, 4 is kAXValueCFRangeType — neither
+                                                // is the error slot.
+        assert_eq!(K_AX_VALUE_AX_ERROR_TYPE, 5); // kAXValueAXErrorType
+    }
+}
