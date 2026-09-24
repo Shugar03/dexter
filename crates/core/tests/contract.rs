@@ -196,3 +196,118 @@ fn element_id_accepts_v1_number_and_v2_string() {
     assert_eq!(v2, ElementId(4));
     assert_eq!(serde_json::to_string(&ElementId(4)).unwrap(), "\"e_4\"");
 }
+
+// -- loop-integrity slice 0: Effect/Escalation vocabulary --
+
+#[test]
+fn classify_effect_covers_the_four_cases() {
+    use dexter_core::{classify_effect, Effect};
+    // Confirmed requires a read-back that shows change.
+    assert_eq!(classify_effect(true, true), Effect::Confirmed);
+    // Changed-or-unproven is unverifiable — the driver saw no read-back.
+    assert_eq!(classify_effect(true, false), Effect::Unverifiable);
+    assert_eq!(classify_effect(false, false), Effect::Unverifiable);
+    // Read-back exists and shows nothing moved: the absorbed click.
+    assert_eq!(classify_effect(false, true), Effect::SuspectedNoop);
+}
+
+#[test]
+fn confirmed_requires_evidence_and_success() {
+    use dexter_core::{ActionResult, ActionStatus, Effect, Mechanism};
+    // A Confirmed claim without a read-back is a lie — rejected.
+    assert!(ActionResult::classified(
+        ActionStatus::Success,
+        Mechanism::Accessibility,
+        None,
+        Effect::Confirmed,
+        None,
+        None,
+    )
+    .is_err());
+    // Confirmed on a failure status is a contradiction.
+    assert!(ActionResult::classified(
+        ActionStatus::Failed,
+        Mechanism::Accessibility,
+        None,
+        Effect::Confirmed,
+        Some("value became 7".into()),
+        None,
+    )
+    .is_err());
+    let ok = ActionResult::classified(
+        ActionStatus::Success,
+        Mechanism::Accessibility,
+        None,
+        Effect::Confirmed,
+        Some("value became 7".into()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(ok.effect, Some(Effect::Confirmed));
+}
+
+#[test]
+fn refused_admits_no_delivery_nor_evidence() {
+    use dexter_core::{ActionResult, ActionStatus, Effect, Mechanism};
+    // Refused means nothing ran — it cannot claim Success.
+    assert!(ActionResult::classified(
+        ActionStatus::Success,
+        Mechanism::Accessibility,
+        None,
+        Effect::Refused,
+        None,
+        None,
+    )
+    .is_err());
+    // And it cannot carry evidence — nothing delivered, nothing read.
+    assert!(ActionResult::classified(
+        ActionStatus::PermissionDenied,
+        Mechanism::Accessibility,
+        None,
+        Effect::Refused,
+        Some("saw it anyway".into()),
+        None,
+    )
+    .is_err());
+    let refused = ActionResult::classified(
+        ActionStatus::PermissionDenied,
+        Mechanism::Accessibility,
+        None,
+        Effect::Refused,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(refused.effect, Some(Effect::Refused));
+    assert!(refused.evidence.is_none());
+}
+
+#[test]
+fn classified_result_serializes_snake_case_and_omits_absent_fields() {
+    use dexter_core::{
+        ActionResult, ActionStatus, Effect, Escalation, EscalationReason, EscalationTarget,
+        Mechanism,
+    };
+    let r = ActionResult::classified(
+        ActionStatus::Success,
+        Mechanism::Dom,
+        None,
+        Effect::SuspectedNoop,
+        None,
+        Some(Escalation {
+            target: EscalationTarget::Px,
+            reason: EscalationReason::SuspectedNoop,
+        }),
+    )
+    .unwrap();
+    let v = serde_json::to_value(&r).unwrap();
+    assert_eq!(v["effect"], "suspected_noop");
+    assert_eq!(v["escalation"]["target"], "px");
+    assert_eq!(v["escalation"]["reason"], "suspected_noop");
+    // Absent optional fields stay out of the wire — v1 payloads unaffected.
+    let plain = ActionResult::success(Mechanism::Dom, None);
+    let pv = serde_json::to_value(&plain).unwrap();
+    assert!(pv.get("effect").is_none());
+    assert!(pv.get("evidence").is_none());
+    assert!(pv.get("escalation").is_none());
+}

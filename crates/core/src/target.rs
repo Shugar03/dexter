@@ -2,6 +2,29 @@ use crate::element::ElementId;
 use crate::observation::ObservationId;
 use serde::{Deserialize, Serialize};
 
+/// u64 as a decimal string — `WorldChanged::from` crosses the JS
+/// boundary (MCP/SDKs) where f64 can't hold every u64.
+mod u64_str {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&v.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            S(String),
+            N(u64),
+        }
+        match Repr::deserialize(d)? {
+            Repr::S(s) => s.parse().map_err(serde::de::Error::custom),
+            Repr::N(n) => Ok(n),
+        }
+    }
+}
+
 /// Semantic lookup for an element inside an observation.
 /// All present fields must match; absent fields are wildcards.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -89,6 +112,14 @@ pub enum ExpectedState {
     /// An application with this name/bundle has at least one window.
     AppRunning {
         name: String,
+    },
+    /// The world signature differs from a previously captured one — the
+    /// catch-all "something changed" for acts whose effect cannot be
+    /// predicted (clicks). `from` is a `world_model::signature` value,
+    /// serialized as a string so JSON consumers (JS) don't lose bits.
+    WorldChanged {
+        #[serde(with = "u64_str")]
+        from: u64,
     },
     All {
         all: Vec<ExpectedState>,

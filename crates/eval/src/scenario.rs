@@ -92,6 +92,11 @@ pub struct TaskSpec {
     /// `abstained` for worlds where the correct answer is not to act.
     #[serde(default = "default_expected")]
     pub expected: String,
+    /// Evidence assertion: minimum `VerificationFailed` events the run
+    /// must show. `None` = no evidence requirement. Lets a scenario say
+    /// "the loop must have *seen* the no-op", not just ended right.
+    #[serde(default)]
+    pub expect_verify_fails: Option<u32>,
     #[serde(default = "default_max_steps")]
     pub max_steps: u32,
     pub max_secs: Option<u64>,
@@ -359,8 +364,8 @@ pub fn run_scenario_with<D: ComputerDriver>(
         },
     };
     let mut run = ScenarioRun {
-        success: outcome == spec.task.expected,
-        outcome,
+        success: false, // set after journal metrics land
+        outcome: outcome.clone(),
         steps,
         elapsed_ms: 0,
         decide_ms: Vec::new(),
@@ -375,6 +380,11 @@ pub fn run_scenario_with<D: ComputerDriver>(
     };
     let events = engine.events();
     measure(&events, &mut run);
+    run.success = outcome == spec.task.expected
+        && spec
+            .task
+            .expect_verify_fails
+            .is_none_or(|min| run.verify_fails >= min as usize);
     run.events = events;
     run
 }

@@ -9,3 +9,4 @@ license.workspace = true
 [dependencies]
 dexter-core.workspace = true
 thiserror.workspace = true
+dexter-world-model.workspace = true

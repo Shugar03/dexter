@@ -218,3 +218,114 @@ fn combinators_three_valued() {
         VerificationStatus::Uncertain
     );
 }
+
+// -- loop-integrity slice 1: WorldChanged catch-all --
+
+#[test]
+fn world_changed_verifies_when_signature_differs() {
+    let before = obs_with(vec![el(1, "button", Some("Save"))]);
+    let from = dexter_world_model::signature(&before);
+    let mut after = before.clone();
+    after.elements.push(el(2, "static_text", Some("Saved")));
+    assert_eq!(
+        verify(&after, &ExpectedState::WorldChanged { from }).status,
+        VerificationStatus::Verified
+    );
+}
+
+#[test]
+fn world_changed_fails_on_identical_complete_tree() {
+    let before = obs_with(vec![el(1, "button", Some("Save"))]);
+    let from = dexter_world_model::signature(&before);
+    // Same world re-observed — the act demonstrably did nothing.
+    assert_eq!(
+        verify(&before, &ExpectedState::WorldChanged { from }).status,
+        VerificationStatus::Failed
+    );
+}
+
+#[test]
+fn world_changed_is_uncertain_when_tree_is_partial() {
+    let before = obs_with(vec![el(1, "button", Some("Save"))]);
+    let from = dexter_world_model::signature(&before);
+    let mut partial = before.clone();
+    partial.elements_truncated = true;
+    // Same signature on a partial tree can't claim failure honestly.
+    assert_eq!(
+        verify(&partial, &ExpectedState::WorldChanged { from }).status,
+        VerificationStatus::Uncertain
+    );
+    // A visible difference is still real even on a partial tree.
+    partial.elements.push(el(2, "static_text", Some("Saved")));
+    assert_eq!(
+        verify(&partial, &ExpectedState::WorldChanged { from }).status,
+        VerificationStatus::Verified
+    );
+}
+
+#[test]
+fn world_changed_serializes_signature_as_string() {
+    let e = ExpectedState::WorldChanged { from: u64::MAX };
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(v["type"], "world_changed");
+    assert_eq!(v["from"], "18446744073709551615");
+    let back: ExpectedState = serde_json::from_value(v).unwrap();
+    assert_eq!(back, e);
+    // Numbers deserialize too — Rust-native callers may emit them.
+    let n: ExpectedState = serde_json::from_str(r#"{"type":"world_changed","from":42}"#).unwrap();
+    assert_eq!(n, ExpectedState::WorldChanged { from: 42 });
+}
+
+#[test]
+fn uncertain_verdicts_carry_their_reason() {
+    // TreePartial: absence-shaped verdict on a truncated walk.
+    let mut partial = obs_with(vec![el(1, "button", Some("Save"))]);
+    partial.elements_truncated = true;
+    let v = verify(
+        &partial,
+        &ExpectedState::ElementExists {
+            target: SemanticTarget {
+                name: Some("Nope".into()),
+                ..Default::default()
+            },
+        },
+    );
+    assert_eq!(v.status, VerificationStatus::Uncertain);
+    assert_eq!(v.unknown_reason, Some(UnknownReason::TreePartial));
+
+    // NoFocusedElement: nothing claims focus.
+    let v = verify(
+        &obs_with(vec![el(1, "button", Some("Save"))]),
+        &ExpectedState::FocusedElement {
+            target: SemanticTarget {
+                name: Some("Save".into()),
+                ..Default::default()
+            },
+        },
+    );
+    assert_eq!(v.status, VerificationStatus::Uncertain);
+    assert_eq!(v.unknown_reason, Some(UnknownReason::NoFocusedElement));
+
+    // NoWindowTitle: no window exposes a title.
+    let v = verify(
+        &obs_with(vec![el(1, "button", Some("Save"))]),
+        &ExpectedState::WindowTitleContains {
+            text: "anything".into(),
+        },
+    );
+    assert_eq!(v.status, VerificationStatus::Uncertain);
+    assert_eq!(v.unknown_reason, Some(UnknownReason::NoWindowTitle));
+
+    // A definite verdict never carries a stranded reason.
+    let v = verify(
+        &obs_with(vec![el(1, "button", Some("Save"))]),
+        &ExpectedState::ElementExists {
+            target: SemanticTarget {
+                name: Some("Save".into()),
+                ..Default::default()
+            },
+        },
+    );
+    assert_eq!(v.status, VerificationStatus::Verified);
+    assert_eq!(v.unknown_reason, None);
+}

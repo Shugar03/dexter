@@ -1,0 +1,23 @@
+# silent-noop — a dead button. The click executes cleanly but the world
+# provably does not change, so the loop must not credit the act as
+# progress: verification fails, the retried candidate drops below the
+# act threshold, and the decider abstains — the honest answer for a
+# button that demonstrably does nothing. `expected` alone can't tell
+# this apart from never acting at all, so `expect_verify_fails` asserts
+# the evidence: the run must show the no-op verdicts in its journal.
+[scenario]
+id = "silent-noop"
+goal = "click dead"
+optimal_steps = 1
+
+[world]
+element = [
+  { id = 1, role = "button", name = "Dead", enabled = true, actions = ["press"] },
+]
+# No [[world.rule]] — pressing "Dead" changes nothing.
+
+[task]
+done_when = { type = "element_exists", target = { name = "Guardado" } }
+expected = "abstained"
+expect_verify_fails = 3
+max_steps = 3

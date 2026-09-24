@@ -12,9 +12,8 @@ use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
 use core_foundation::string::CFString;
 use dexter_core::{
-    Action, ActionResult, ActionStatus, Element, ElementSource, ExecutionPlan, ExecutionRoute,
-    Intrusiveness, Mechanism, MouseButton, Observation, ObservationId, Rect, Sensitivity, Target,
-    TargetDescriptor,
+    Action, ActionResult, ActionStatus, Element, ExecutionPlan, ExecutionRoute, Intrusiveness,
+    Mechanism, MouseButton, Observation, ObservationId, Sensitivity, Target, TargetDescriptor,
 };
 use dexter_driver::{ActContext, DriverError};
 use dexter_world_model::normalize_ax_role;
@@ -96,30 +95,10 @@ fn resolve_app(ctx: &ActContext) -> Result<(i32, AXUIElement), DriverError> {
     Ok((pid, app))
 }
 
-fn bounds_close(a: Option<Rect>, b: Option<Rect>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(a), Some(b)) => {
-            (a.x - b.x).abs() <= 2.0
-                && (a.y - b.y).abs() <= 2.0
-                && (a.w - b.w).abs() <= 2.0
-                && (a.h - b.h).abs() <= 2.0
-        }
-        _ => false,
-    }
-}
-
-/// Whether `fresh` is plausibly the same UI element `stored` pointed at.
-fn same_element(stored: &Element, fresh: &Element) -> bool {
-    stored.role == fresh.role
-        && stored.name == fresh.name
-        && stored.parent == fresh.parent
-        && stored.depth == fresh.depth
-        && bounds_close(stored.bounds, fresh.bounds)
-}
-
 /// Resolve a target to a live element. `Semantic` and `Element` targets both
 /// trigger a fresh walk — never trust a stale snapshot for actions.
+/// Identity rules live in `dexter_driver::resolve`; this keeps only the
+/// AX mechanics (pid, walk, node handle).
 fn resolve_element(
     target: &Target,
     ctx: &ActContext,
@@ -130,31 +109,14 @@ fn resolve_element(
             observation,
             element,
         } => {
-            let (pid, stored_elements) = cache.get(*observation).ok_or_else(|| {
-                DriverError::StaleReference(format!(
-                    "observation {} is no longer held — re-observe",
-                    observation.0
-                ))
-            })?;
-            let stored = stored_elements
-                .get(element.0 as usize - 1)
-                .ok_or_else(|| {
-                    DriverError::StaleReference(format!(
-                        "element {} out of range in observation {}",
-                        element.0, observation.0
-                    ))
-                })?
-                .clone();
-            // OCR elements are evidence, not live handles — there is no AX
-            // node to re-resolve. The actionable target is the bounds center.
-            if stored.source == ElementSource::Ocr {
-                return Err(DriverError::StaleReference(format!(
-                    "element {} is OCR-derived — target its bounds center \
-                     as a Point instead",
-                    element.0
-                )));
-            }
-            let pid = pid.ok_or_else(|| {
+            let entry = cache.get(*observation);
+            let stored = dexter_driver::resolve::stored_element(
+                entry.as_ref().map(|(_, els)| els.as_slice()),
+                *observation,
+                *element,
+            )?
+            .clone();
+            let pid = entry.and_then(|(pid, _)| pid).ok_or_else(|| {
                 DriverError::NotFound(
                     "observation was not app-scoped — cannot re-resolve element".into(),
                 )
@@ -162,19 +124,14 @@ fn resolve_element(
             let app = AXUIElement::application(pid);
             let _ = app.set_messaging_timeout(1.5);
             let tree = ax::collect(&app, ACTION_WALK_DEPTH, ACTION_WALK_MAX);
-            let idx = element.0 as usize - 1;
-            let fresh = tree.elements.get(idx).ok_or_else(|| {
-                DriverError::StaleReference(format!(
-                    "element {} vanished — the app's tree shrank since observation {}",
-                    element.0, observation.0
-                ))
-            })?;
-            if !same_element(&stored, fresh) {
-                return Err(DriverError::StaleReference(format!(
-                    "element {} changed since observation {} — re-observe",
-                    element.0, observation.0
-                )));
-            }
+            let fresh_idx = tree.elements.iter().position(|e| e.id == *element);
+            dexter_driver::resolve::verify_identity(
+                &stored,
+                fresh_idx.map(|i| &tree.elements[i]),
+                *observation,
+                *element,
+            )?;
+            let idx = fresh_idx.expect("position was Some — verify_identity refuses None");
             let el = tree.nodes.get(idx).cloned().ok_or_else(|| {
                 DriverError::StaleReference("resolved element vanished mid-walk".into())
             })?;
@@ -191,19 +148,7 @@ fn resolve_element(
                 elements_truncated: tree.truncated,
                 ..Default::default()
             };
-            let found = dexter_world_model::resolve_element(&obs, target).map_err(|e| match e {
-                dexter_core::DexterError::Ambiguous(m) => DriverError::Ambiguous(m),
-                dexter_core::DexterError::NotFound(m) => {
-                    if obs.elements_truncated {
-                        DriverError::NotFound(format!(
-                            "{m} (element list truncated — result not definitive)"
-                        ))
-                    } else {
-                        DriverError::NotFound(m)
-                    }
-                }
-                other => DriverError::Platform(other.to_string()),
-            })?;
+            let found = dexter_driver::resolve::resolve_semantic(&obs, target)?;
             let idx = found.id.0 as usize - 1;
             let el = tree.nodes.get(idx).cloned().ok_or_else(|| {
                 DriverError::StaleReference("resolved element vanished mid-walk".into())

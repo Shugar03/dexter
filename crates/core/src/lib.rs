@@ -19,7 +19,10 @@ pub use error::DexterError;
 pub use event::{Event, EventKind};
 pub use execution::{ExecutionPlan, ExecutionRoute, Sensitivity, TargetDescriptor};
 pub use observation::{AppSelector, Observation, ObservationId, ObservationScope, Window};
-pub use result::{ActionResult, ActionStatus, Mechanism, Verification, VerificationStatus};
+pub use result::{
+    classify_effect, ActionResult, ActionStatus, Effect, Escalation, EscalationReason,
+    EscalationTarget, Mechanism, UnknownReason, Verification, VerificationStatus,
+};
 pub use target::{ExpectedState, SemanticTarget, Target, ValuePredicate};
 
 /// A point in global screen coordinates (pixels, top-left origin).

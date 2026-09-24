@@ -8,3 +8,6 @@ license.workspace = true
 dexter-core.workspace = true
 dexter-world-model.workspace = true
 regex.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

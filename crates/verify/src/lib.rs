@@ -6,16 +6,23 @@
 //! is `UNCERTAIN` when no window exposes a title. `UNCERTAIN` is never a
 //! success — callers must retry, escalate, or fail.
 
-use dexter_core::{ExpectedState, Observation, ValuePredicate, Verification, VerificationStatus};
+use dexter_core::{
+    ExpectedState, Observation, UnknownReason, ValuePredicate, Verification, VerificationStatus,
+};
 
 fn partial_tree(obs: &Observation) -> bool {
     obs.elements_truncated || obs.ax_limited
 }
 
 /// The verdict `status` assumes the tree is complete — degrade it to
-/// UNCERTAIN whenever the walk was partial.
-fn absence(status: VerificationStatus, partial: bool) -> VerificationStatus {
+/// UNCERTAIN whenever the walk was partial, recording why.
+fn absence(
+    status: VerificationStatus,
+    partial: bool,
+    reason: &mut Option<UnknownReason>,
+) -> VerificationStatus {
     if partial {
+        reason.get_or_insert(UnknownReason::TreePartial);
         VerificationStatus::Uncertain
     } else {
         status
@@ -26,6 +33,7 @@ fn eval(
     obs: &Observation,
     expected: &ExpectedState,
     checks: &mut Vec<String>,
+    reason: &mut Option<UnknownReason>,
 ) -> VerificationStatus {
     let partial = partial_tree(obs);
     match expected {
@@ -35,7 +43,7 @@ fn eval(
             if n > 0 {
                 VerificationStatus::Verified
             } else {
-                absence(VerificationStatus::Failed, partial)
+                absence(VerificationStatus::Failed, partial, reason)
             }
         }
         ExpectedState::ElementAbsent { target } => {
@@ -44,7 +52,7 @@ fn eval(
             if n > 0 {
                 VerificationStatus::Failed
             } else {
-                absence(VerificationStatus::Verified, partial)
+                absence(VerificationStatus::Verified, partial, reason)
             }
         }
         ExpectedState::ElementValue { target, predicate } => {
@@ -61,7 +69,7 @@ fn eval(
             if hit {
                 VerificationStatus::Verified
             } else if found.is_empty() {
-                absence(VerificationStatus::Failed, partial)
+                absence(VerificationStatus::Failed, partial, reason)
             } else {
                 VerificationStatus::Failed
             }
@@ -72,7 +80,7 @@ fn eval(
             if hit {
                 VerificationStatus::Verified
             } else {
-                absence(VerificationStatus::Failed, partial)
+                absence(VerificationStatus::Failed, partial, reason)
             }
         }
         ExpectedState::FocusedElement { target } => {
@@ -80,6 +88,7 @@ fn eval(
             match focused {
                 None => {
                     checks.push("focused_element: no focused element in tree".into());
+                    reason.get_or_insert(UnknownReason::NoFocusedElement);
                     VerificationStatus::Uncertain
                 }
                 Some(f) => {
@@ -110,6 +119,7 @@ fn eval(
             if hit {
                 VerificationStatus::Verified
             } else if !any_title {
+                reason.get_or_insert(UnknownReason::NoWindowTitle);
                 VerificationStatus::Uncertain
             } else {
                 VerificationStatus::Failed
@@ -124,11 +134,23 @@ fn eval(
                 VerificationStatus::Failed
             }
         }
+        ExpectedState::WorldChanged { from } => {
+            let now = dexter_world_model::signature(obs);
+            let changed = now != *from;
+            checks.push(format!("world_changed from={from} now={now}: {changed}"));
+            if changed {
+                VerificationStatus::Verified
+            } else {
+                // Same signature on a partial tree can't claim failure
+                // honestly — the missing elements may have moved.
+                absence(VerificationStatus::Failed, partial, reason)
+            }
+        }
         ExpectedState::All { all } => {
             let mut any_fail = false;
             let mut any_uncertain = false;
             for e in all {
-                match eval(obs, e, checks) {
+                match eval(obs, e, checks, reason) {
                     VerificationStatus::Verified => {}
                     VerificationStatus::Failed => any_fail = true,
                     VerificationStatus::Uncertain => any_uncertain = true,
@@ -146,7 +168,7 @@ fn eval(
             let mut any_verified = false;
             let mut any_uncertain = false;
             for e in any {
-                match eval(obs, e, checks) {
+                match eval(obs, e, checks, reason) {
                     VerificationStatus::Verified => any_verified = true,
                     VerificationStatus::Failed => {}
                     VerificationStatus::Uncertain => any_uncertain = true,
@@ -160,7 +182,7 @@ fn eval(
                 VerificationStatus::Failed
             }
         }
-        ExpectedState::Not { not } => match eval(obs, not, checks) {
+        ExpectedState::Not { not } => match eval(obs, not, checks, reason) {
             VerificationStatus::Verified => VerificationStatus::Failed,
             VerificationStatus::Failed => VerificationStatus::Verified,
             VerificationStatus::Uncertain => VerificationStatus::Uncertain,
@@ -189,6 +211,15 @@ fn value_ok(value: &str, predicate: &ValuePredicate, checks: &mut Vec<String>) -
 /// Evaluate `expected` against `obs`, collecting per-check detail lines.
 pub fn verify(obs: &Observation, expected: &ExpectedState) -> Verification {
     let mut checks = Vec::new();
-    let status = eval(obs, expected, &mut checks);
-    Verification { status, checks }
+    let mut reason = None;
+    let status = eval(obs, expected, &mut checks, &mut reason);
+    Verification {
+        status,
+        checks,
+        // A reason stranded on a definite verdict would mislead — only
+        // UNCERTAIN carries one.
+        unknown_reason: (status == VerificationStatus::Uncertain)
+            .then_some(reason)
+            .flatten(),
+    }
 }

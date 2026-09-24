@@ -1,7 +1,7 @@
 //! World-effect semantics: press rules and observe ticks.
 
 use dexter_core::*;
-use dexter_driver::{ActContext, ComputerDriver};
+use dexter_driver::{ActContext, ComputerDriver, DriverError};
 use dexter_sim::{Effect, SimDriver};
 
 fn el(id: u64, role: &str, name: &str) -> Element {
@@ -104,4 +104,66 @@ fn remove_by_target_vanishes_an_element_on_tick() {
         .filter_map(|e| e.name.clone())
         .collect();
     assert_eq!(names, vec!["notas_viaje.txt"]);
+}
+
+#[test]
+fn stale_element_target_refuses_before_any_side_effect() {
+    // Loop-integrity slice 2: an element token is bound to the snapshot
+    // that produced it. A reference to an observation the driver no
+    // longer holds — or to an element whose identity drifted — must be
+    // refused *before* any input: nothing pressed, nothing mutated.
+    let sim = SimDriver::new(vec![el(1, "button", "Save")]);
+    let obs = sim.observe(&ObservationScope::default()).unwrap();
+
+    // Case 1: an observation id the driver never issued.
+    let foreign = sim
+        .act(
+            &Action::Click {
+                target: Target::Element {
+                    observation: ObservationId(999),
+                    element: obs.elements[0].id,
+                },
+                button: MouseButton::Left,
+            },
+            &ActContext::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(foreign, DriverError::StaleReference(_)),
+        "{foreign}"
+    );
+    assert!(
+        sim.pressed().is_empty(),
+        "stale refusal emitted input: {:?}",
+        sim.pressed()
+    );
+
+    // Case 2: the snapshot is held but the element drifted — rename the
+    // button behind the agent's back, then act on the old reference.
+    sim.on_tick(Effect::SetValueOf(
+        SemanticTarget {
+            name: Some("Save".into()),
+            ..Default::default()
+        },
+        "ghost".into(),
+    ));
+    let _evolved = sim.observe(&ObservationScope::default()).unwrap();
+    // The world changed (value, not identity — so craft a name change
+    // via removal+spawn isn't needed: the fresh-vs-stored check below
+    // uses role/name; a value change alone must NOT stale the token).
+    let drift_ok = sim.act(
+        &Action::Click {
+            target: Target::Element {
+                observation: obs.id,
+                element: obs.elements[0].id,
+            },
+            button: MouseButton::Left,
+        },
+        &ActContext::default(),
+    );
+    assert!(
+        drift_ok.is_ok(),
+        "value drift must not stale a token: {drift_ok:?}"
+    );
+    assert_eq!(sim.pressed().len(), 1);
 }

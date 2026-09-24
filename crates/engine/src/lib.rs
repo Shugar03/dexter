@@ -19,7 +19,8 @@
 
 use dexter_core::{
     Action, ActionResult, ActionStatus, AppSelector, Event, EventKind, ExecutionRoute,
-    ExpectedState, Observation, ObservationScope, Rect, Target, Verification, VerificationStatus,
+    ExpectedState, Observation, ObservationScope, Rect, SemanticTarget, Target, ValuePredicate,
+    Verification, VerificationStatus,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverError, WakeHandle};
 use dexter_policy::{ActionContext, ApprovalStore, Policy, PolicyDecision};
@@ -555,6 +556,25 @@ impl<D: ComputerDriver> Engine<D> {
                 serde_json::json!({"observation": obs.id.0, "elements": obs.elements.len(), "attempt": attempt}),
             );
             let verification = dexter_verify::verify(&obs, expected);
+            // The effect taxonomy rides the journal: VERIFIED is a
+            // confirmed effect, an unchanged signature is the suspected
+            // no-op, and everything else the engine couldn't prove is
+            // honestly unverifiable.
+            let effect = match verification.status {
+                VerificationStatus::Verified => "confirmed",
+                VerificationStatus::Uncertain => "unverifiable",
+                VerificationStatus::Failed => {
+                    let noop = verification
+                        .checks
+                        .iter()
+                        .any(|c| c.starts_with("world_changed") && c.ends_with(": false"));
+                    if noop {
+                        "suspected_noop"
+                    } else {
+                        "unverifiable"
+                    }
+                }
+            };
             self.journal(
                 if verification.status == VerificationStatus::Verified {
                     EventKind::VerificationPassed
@@ -563,6 +583,8 @@ impl<D: ComputerDriver> Engine<D> {
                 },
                 serde_json::json!({
                     "status": format!("{:?}", verification.status),
+                    "effect": effect,
+                    "unknown_reason": verification.unknown_reason,
                     "checks": &verification.checks,
                     "attempt": attempt,
                 }),
@@ -810,7 +832,7 @@ impl<D: ComputerDriver> Engine<D> {
                     // Auto-completion: the world must have changed since
                     // the act that claimed it. No pending act, no claim.
                     if let Some(sig) = pending_sig {
-                        if world_signature(&obs) != sig {
+                        if dexter_world_model::signature(&obs) != sig {
                             self.journal(
                                 EventKind::TaskCompleted,
                                 serde_json::json!({"steps": step - 1, "mode": "first_verified_act", "elapsed_ms": started.elapsed().as_millis() as u64}),
@@ -887,12 +909,17 @@ impl<D: ComputerDriver> Engine<D> {
                     let mutating = is_mutating(&action);
                     hist.attempt_names.push(attempt_label(&action, &obs));
                     hist.attempts.push(action.clone());
+                    // Every mutating act earns a derived expectation —
+                    // progress is judged by done_when AND by evidence the
+                    // act itself landed. Acts the model can't express an
+                    // outcome for stay unverified, honestly.
+                    let expect = derive_expect(&action, &obs);
                     let status = self.run_step_inner(
                         &Step {
                             note: Some(rationale),
                             action,
-                            expect: None, // progress is judged by done_when
-                            max_attempts: Some(1),
+                            expect,
+                            max_attempts: Some(3),
                             app: cfg.run.app.clone(),
                         },
                         &cfg.run,
@@ -906,7 +933,7 @@ impl<D: ComputerDriver> Engine<D> {
                             // observation decides whether the world
                             // actually moved.
                             if matches!(done, Completion::FirstVerifiedAct) && mutating {
-                                pending_sig = Some(world_signature(&obs));
+                                pending_sig = Some(dexter_world_model::signature(&obs));
                             }
                         }
                         StepStatus::NeedsApproval {
@@ -1256,35 +1283,69 @@ fn is_mutating(action: &Action) -> bool {
     )
 }
 
-/// Order-independent fingerprint of what the world contains — element
-/// roles, names and values. Ids are excluded on purpose: AX ids are
-/// regenerated per observation and would mark every world "changed".
-fn world_signature(obs: &Observation) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut items: Vec<(&str, &str, &str, Option<bool>, bool)> = obs
-        .elements
-        .iter()
-        .map(|e| {
-            (
-                e.role.as_deref().unwrap_or(""),
-                e.name.as_deref().unwrap_or(""),
-                e.value.as_deref().unwrap_or(""),
-                e.enabled,
-                e.focused,
-            )
-        })
-        .collect();
-    items.sort_unstable();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    items.hash(&mut h);
-    let mut titles: Vec<&str> = obs
-        .windows
-        .iter()
-        .map(|w| w.title.as_deref().unwrap_or(""))
-        .collect();
-    titles.sort_unstable();
-    titles.hash(&mut h);
-    h.finish()
+/// The semantic identity an act's target refers to — for deriving a
+/// checkable expectation. `Element`/`Focused` resolve through the
+/// observation to role+name+identifier; `Semantic` passes through.
+/// `Point`/`Window` have no semantic identity → `None`.
+fn semantic_for(target: &Target, obs: &Observation) -> Option<SemanticTarget> {
+    match target {
+        Target::Semantic(s) => Some(s.clone()),
+        Target::Element { element, .. } => {
+            let el = obs.elements.iter().find(|e| e.id == *element)?;
+            Some(SemanticTarget {
+                role: el.role.clone(),
+                name: el.name.clone(),
+                identifier: el.identifier.clone(),
+                ..Default::default()
+            })
+        }
+        Target::Focused => {
+            let el = obs.elements.iter().find(|e| e.focused)?;
+            Some(SemanticTarget {
+                role: el.role.clone(),
+                name: el.name.clone(),
+                identifier: el.identifier.clone(),
+                ..Default::default()
+            })
+        }
+        Target::Point { .. } | Target::Window { .. } => None,
+    }
+}
+
+/// The minimal check a mutating act must survive before the loop may
+/// claim progress — the per-act half of "verify every act". Clicks get
+/// the signature-diff catch-all (their effect can't be predicted);
+/// value acts get read-back predicates; `Focus` checks focus landed.
+/// Acts whose effect the world model cannot express — Scroll, Key,
+/// Navigate, Wait, Observe, point clicks — return `None` and stay on
+/// the unverified path rather than carrying a check that cannot fail
+/// honestly.
+fn derive_expect(action: &Action, obs: &Observation) -> Option<ExpectedState> {
+    match action {
+        Action::Click { target, .. } => match target {
+            Target::Point { .. } => None,
+            _ => Some(ExpectedState::WorldChanged {
+                from: dexter_world_model::signature(obs),
+            }),
+        },
+        Action::TypeText { text, target } => {
+            let t = target.clone().unwrap_or(Target::Focused);
+            semantic_for(&t, obs).map(|st| ExpectedState::ElementValue {
+                target: st,
+                predicate: ValuePredicate::Contains(text.clone()),
+            })
+        }
+        Action::SetValue { target, value } => {
+            semantic_for(target, obs).map(|st| ExpectedState::ElementValue {
+                target: st,
+                predicate: ValuePredicate::Equals(value.clone()),
+            })
+        }
+        Action::Focus { target } => {
+            semantic_for(target, obs).map(|st| ExpectedState::FocusedElement { target: st })
+        }
+        _ => None,
+    }
 }
 
 /// `run_task` parameters.

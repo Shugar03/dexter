@@ -737,3 +737,100 @@ fn verification_poll_executes_mutation_once() {
     assert!(engine.run_step(&step, &cfg()).done());
     assert_eq!(execute_count.load(Ordering::SeqCst), 1);
 }
+
+// -- loop-integrity slice 1: verify-every-act inside run_goal --
+
+#[test]
+fn goal_act_that_changes_nothing_is_not_credited() {
+    // Silent no-op: a dead button, no on_press rule. The click executes,
+    // the world provably does not change, and the loop must NOT treat
+    // the act as progress — the step fails verification and the task
+    // ends without a Completed claim.
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    let sim = SimDriver::new(vec![el(1, "button", "Dead")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let outcome = engine.run_task(
+        "click dead",
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 3,
+            max_duration: None,
+            cancel: None,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("Nunca".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    assert!(
+        !matches!(outcome, TaskOutcome::Completed { .. }),
+        "a no-op click must never complete the task: {outcome:?}"
+    );
+    // The journal carries *why*: verification ran and could not confirm.
+    let failed_checks: Vec<String> = engine
+        .events()
+        .iter()
+        .filter(|e| e.kind == EventKind::VerificationFailed)
+        .flat_map(|e| {
+            e.data
+                .get("checks")
+                .and_then(|c| c.as_array().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|c| c.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        failed_checks.iter().any(|c| c.contains("world_changed")),
+        "expected a world_changed verdict in the journal: {failed_checks:?}"
+    );
+}
+
+#[test]
+fn goal_act_verified_carries_evidence() {
+    // The positive half: a click whose effect lands earns a
+    // VerificationPassed — every mutating act in goal flow is verified,
+    // not just trusted.
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    let sim = SimDriver::new(vec![el(1, "button", "Guardar")]);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "Guardado")),
+    );
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let outcome = engine.run_task(
+        "click guardar",
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 5,
+            max_duration: None,
+            cancel: None,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("Guardado".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    assert!(matches!(outcome, TaskOutcome::Completed { .. }));
+    let kinds: Vec<_> = engine.events().iter().map(|e| e.kind).collect();
+    assert!(
+        kinds.contains(&EventKind::VerificationPassed),
+        "goal-flow acts must be verified, not trusted: {kinds:?}"
+    );
+}

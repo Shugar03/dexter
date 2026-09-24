@@ -179,6 +179,60 @@ pub fn digest_worthy(e: &Element) -> bool {
     )
 }
 
+/// Order-independent fingerprint of what the world contains — the change
+/// detector behind per-act verification. Element ids are excluded on
+/// purpose (AX ids regenerate per observation and would mark every world
+/// "changed"); bounds are quantized to an 8px grid so sub-cell jitter
+/// doesn't flip the signature but a real move/resize does. Sorted window
+/// titles, a screenshot-presence bit and per-role counts ride along.
+pub fn signature(obs: &Observation) -> u64 {
+    use std::collections::BTreeMap;
+    use std::hash::{Hash, Hasher};
+    type Item<'e> = (
+        &'e str,
+        &'e str,
+        &'e str,
+        Option<bool>,
+        bool,
+        Option<(i64, i64, i64, i64)>,
+    );
+    let cell = |v: f64| (v / 8.0).floor() as i64;
+    let mut items: Vec<Item> = obs
+        .elements
+        .iter()
+        .map(|e| {
+            (
+                e.role.as_deref().unwrap_or(""),
+                e.name.as_deref().unwrap_or(""),
+                e.value.as_deref().unwrap_or(""),
+                e.enabled,
+                e.focused,
+                e.bounds
+                    .map(|b| (cell(b.x), cell(b.y), cell(b.w), cell(b.h))),
+            )
+        })
+        .collect();
+    items.sort_unstable();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    items.hash(&mut h);
+    let mut titles: Vec<&str> = obs
+        .windows
+        .iter()
+        .map(|w| w.title.as_deref().unwrap_or(""))
+        .collect();
+    titles.sort_unstable();
+    titles.hash(&mut h);
+    obs.screenshot.is_some().hash(&mut h);
+    let mut role_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &obs.elements {
+        *role_counts
+            .entry(e.role.as_deref().unwrap_or(""))
+            .or_default() += 1;
+    }
+    role_counts.hash(&mut h);
+    h.finish()
+}
+
 /// Render an observation as compact text — the `state` a decision engine
 /// (e.g. Laya) consumes. Interactive/named elements come first, truncation is
 /// explicit, and no values are included beyond short labels.

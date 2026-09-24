@@ -158,47 +158,22 @@ impl SimDriver {
                 element,
             } => {
                 let s = self.state.lock().unwrap();
-                let entry = s
+                let stored = s
                     .obs_cache
                     .iter()
                     .find(|(id, _)| *id == *observation)
-                    .ok_or_else(|| {
-                        DriverError::StaleReference(format!(
-                            "observation {} not held — re-observe",
-                            observation.0
-                        ))
-                    })?;
-                let stored = entry.1.iter().find(|e| e.id == *element).ok_or_else(|| {
-                    DriverError::StaleReference(format!(
-                        "element {} not in observation {}",
-                        element.0, observation.0
-                    ))
-                })?;
-                // Same contract as macOS: verify the element still matches
-                // in the *current* world.
-                let fresh = s
-                    .elements
-                    .iter()
-                    .find(|e| e.id == *element)
-                    .ok_or_else(|| {
-                        DriverError::StaleReference(format!("element {} vanished", element.0))
-                    })?;
-                if fresh.role != stored.role || fresh.name != stored.name {
-                    return Err(DriverError::StaleReference(format!(
-                        "element {} changed since observation {}",
-                        element.0, observation.0
-                    )));
-                }
+                    .map(|(_, els)| els.as_slice());
+                dexter_driver::resolve::resolve_element_ref(
+                    stored,
+                    &s.elements,
+                    *observation,
+                    *element,
+                )?;
                 Ok(*element)
             }
             Target::Semantic(_) | Target::Focused => {
                 let obs = self.snapshot();
-                let el =
-                    dexter_world_model::resolve_element(&obs, target).map_err(|e| match e {
-                        dexter_core::DexterError::Ambiguous(m) => DriverError::Ambiguous(m),
-                        dexter_core::DexterError::NotFound(m) => DriverError::NotFound(m),
-                        other => DriverError::Platform(other.to_string()),
-                    })?;
+                let el = dexter_driver::resolve::resolve_semantic(&obs, target)?;
                 Ok(el.id)
             }
             Target::Point { .. } | Target::Window { .. } => {

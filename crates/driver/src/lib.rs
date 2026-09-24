@@ -8,6 +8,11 @@ use dexter_core::{
     ObservationScope, Window,
 };
 
+/// Shared element-resolution semantics — one stale/ambiguity contract
+/// behind the seam. Adapters delegate identity rules here and keep
+/// only their mechanics (AX walks, DOM evals, in-memory state).
+pub mod resolve;
+
 /// Errors a driver can surface. Mapped to `ActionStatus` at the action layer.
 #[derive(Debug, thiserror::Error)]
 pub enum DriverError {

@@ -168,20 +168,16 @@ impl BrowserDriver {
                     let entry = cache.iter().find(|(id, _, _)| *id == *observation);
                     let (_, elements, tab) = entry.ok_or_else(|| {
                         DriverError::StaleReference(format!(
-                            "observation {} not held — re-observe",
+                            "observation {} is no longer held — re-observe",
                             observation.0
                         ))
                     })?;
-                    let stored = elements
-                        .iter()
-                        .find(|e| e.id == *element)
-                        .cloned()
-                        .ok_or_else(|| {
-                            DriverError::StaleReference(format!(
-                                "element {} not in observation {}",
-                                element.0, observation.0
-                            ))
-                        })?;
+                    let stored = dexter_driver::resolve::stored_element(
+                        Some(elements.as_slice()),
+                        *observation,
+                        *element,
+                    )?
+                    .clone();
                     (stored, tab.clone())
                 };
                 // Fresh walk + identity check — DOMs mutate. The walk
@@ -195,27 +191,19 @@ impl BrowserDriver {
                     )));
                 }
                 let (fresh_els, _) = self.walk()?;
-                let fresh = fresh_els.iter().find(|e| e.id == *element).ok_or_else(|| {
-                    DriverError::StaleReference(format!("element {} vanished", element.0))
-                })?;
-                if fresh.role != stored.role || fresh.name != stored.name {
-                    return Err(DriverError::StaleReference(format!(
-                        "element {} changed since observation {}",
-                        element.0, observation.0
-                    )));
-                }
+                dexter_driver::resolve::verify_identity(
+                    &stored,
+                    fresh_els.iter().find(|e| e.id == *element),
+                    *observation,
+                    *element,
+                )?;
                 Ok(*element)
             }
             Target::Semantic(_) | Target::Focused => {
                 // Fresh observation + world-model resolution (ambiguous /
                 // not-found fail closed, same as macOS).
                 let obs = self.observe(&ObservationScope::default())?;
-                let el =
-                    dexter_world_model::resolve_element(&obs, target).map_err(|e| match e {
-                        dexter_core::DexterError::Ambiguous(m) => DriverError::Ambiguous(m),
-                        dexter_core::DexterError::NotFound(m) => DriverError::NotFound(m),
-                        other => DriverError::Platform(other.to_string()),
-                    })?;
+                let el = dexter_driver::resolve::resolve_semantic(&obs, target)?;
                 Ok(el.id)
             }
             Target::Point { .. } | Target::Window { .. } => {
