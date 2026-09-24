@@ -300,6 +300,12 @@ Completion per subgoal:
   + values + enabled + focused + window titles, ids excluded since AX
   regenerates them) must differ. Act success alone never completes a
   subgoal: a no-op press loops until abstain, honestly.
+- **Already-satisfied intents** — if the destination control is
+  selected on entry (`goal_already_satisfied`: radio/tab/checkbox
+  carrying a truthy value and matching the goal's object terms), the
+  subgoal completes without acting. Found live: Clock reopened on
+  Cronómetro, the press was a no-op, and auto-completion correctly
+  refused to count it — the fix is checking, not pressing harder.
 
 `run_task` is a one-subgoal plan — CLI `task`, MCP `dexter_task` and
 `eval scenario` all route through `run_plan`, so sequential goals work
@@ -335,3 +341,21 @@ per-app hand-authoring, no model. Surfaces: `dexter map --app <sel>`
 does the bounded foreground borrow described above). `ax_limited: true`
 marks the menubar-only degradation — an agent reading the map knows the
 window layer is missing rather than absent.
+
+## The e_223 collision
+
+`calc-add`'s first spec used `text_present "223"` and completed in **0
+steps**: element ids render in the digest as `e_223`, so the predicate
+matched a handle, not the display. `done_when` on live apps should
+target `element_value` (or an exact element name), never a bare digest
+substring — `text_present` is for authored sim worlds where ids are
+small and stable.
+
+## Wake is part of the standard flow
+
+`dexter click`/`type`/`task`/`map` and the scenario runner all run the
+same bounded-borrow: scoped observe → no `window` elements →
+`driver.wake` (one activation) → settle → act → `restore`. Prep and
+teardown scripts therefore self-heal — a `dexter click` inside a prep
+wakes the app itself instead of failing `target not found` against a
+windowless menubar tree.

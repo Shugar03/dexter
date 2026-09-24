@@ -533,6 +533,36 @@ fn expr_tokens(goal: &str) -> Option<Vec<String>> {
     }
 }
 
+/// Is the goal's destination control already in its target state?
+/// Used by auto-completing subgoals: "ir a cronómetro" when the
+/// Cronómetro tab is already selected must not press it again — the
+/// intent is satisfied and the press would be an unverifiable no-op.
+/// Conservative: only toggleable/selectable roles carrying a selected
+/// value count; a matching enabled button is not "already done".
+pub fn goal_already_satisfied(obs: &Observation, goal: &str) -> bool {
+    let gp = parse_goal(goal);
+    let terms: Vec<&str> = if gp.objects.is_empty() {
+        return false;
+    } else {
+        gp.objects.iter().map(|s| s.as_str()).collect()
+    };
+    obs.elements.iter().any(|e| {
+        let selectable = matches!(
+            e.role.as_deref(),
+            Some("radio_button" | "tab" | "check_box" | "toggle")
+        );
+        let selected = e
+            .value
+            .as_deref()
+            .is_some_and(|v| matches!(v, "1" | "true" | "on" | "selected" | "checked"));
+        if !(selectable && selected) {
+            return false;
+        }
+        let label = e.label().unwrap_or("").to_lowercase();
+        terms.iter().any(|t| term_matches(&label, t))
+    })
+}
+
 /// Localized label synonyms for calculator operators — matched against
 /// element names, never assumed present.
 const OP_LABELS: &[(&str, &[&str])] = &[

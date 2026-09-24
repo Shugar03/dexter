@@ -3,7 +3,11 @@
 # keypad's own labels — no hand-authored script. done_when reads the
 # display value 223, so a wrong sequence fails honestly.
 #
-# Prep normalizes to Básica (Calculator persists mode across quit).
+# Prep normalizes to Básica (Calculator persists mode across quit) and
+# clears the display — a stale "223" would complete vacuously. The
+# done_when targets the static_text VALUE, not the digest text: a bare
+# text_present matches element ids like "e_223" (measured — first spec
+# version completed in 0 steps on exactly that collision).
 [scenario]
 id = "calc-add"
 driver = "macos"
@@ -13,10 +17,10 @@ app = "Calculadora"
 
 [live]
 app = "com.apple.calculator"
-prep = "osascript -e 'tell application id \"com.apple.calculator\" to quit' 2>/dev/null || true; sleep 0.5; open -a Calculator; sleep 0.8; dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true"
+prep = "osascript -e 'tell application id \"com.apple.calculator\" to quit' 2>/dev/null || true; sleep 0.5; open -a Calculator; sleep 0.8; dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true; dexter click --app com.apple.calculator --target '{\"role\":\"button\",\"name\":\"Borrar todo\"}' --approve 2>/dev/null || true"
 teardown = "osascript -e 'tell application id \"com.apple.calculator\" to quit' 2>/dev/null || true"
 settle_ms = 800
 
 [task]
-done_when = { type = "text_present", text = "223" }
+done_when = { type = "element_value", target = { role = "static_text" }, predicate = { contains = "223" } }
 max_steps = 14

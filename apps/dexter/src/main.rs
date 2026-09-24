@@ -727,6 +727,37 @@ fn resolve_target(driver: &dyn ComputerDriver, args: &ActionArgs) -> Result<Targ
     )
 }
 
+/// If the scoped app exposes no AX window content, borrow the stage:
+/// one bounded activation + settle. The handle restores the previous
+/// frontmost app — callers restore when done. `None` when the window
+/// layer is already visible or no wake was needed.
+fn wake_if_windowless(
+    engine: &Engine<Box<dyn ComputerDriver>>,
+    app: &Option<AppSelector>,
+    settle: Duration,
+) -> Option<dexter_driver::WakeHandle> {
+    let sel = app.as_ref()?;
+    let scope = ObservationScope {
+        app: Some(sel.clone()),
+        ..Default::default()
+    };
+    let obs = engine.driver().observe(&scope).ok()?;
+    if obs
+        .elements
+        .iter()
+        .any(|e| e.role.as_deref() == Some("window"))
+    {
+        return None;
+    }
+    let h = engine.driver().wake(sel).ok()?;
+    if h.activated {
+        std::thread::sleep(settle);
+        Some(h)
+    } else {
+        None
+    }
+}
+
 fn run_action(
     engine: &mut Engine<Box<dyn ComputerDriver>>,
     args: &ActionArgs,
@@ -760,7 +791,13 @@ fn run_action(
         max_attempts: Some(args.attempts),
         app: app.clone(),
     };
+    // Borrow the stage when the target's window layer is hidden —
+    // background-first with one bounded wake, then hand focus back.
+    let wake = wake_if_windowless(engine, &app, Duration::from_millis(800));
     let status = engine.run_step(&step, &cfg);
+    if let Some(h) = wake {
+        engine.driver().restore(&h);
+    }
     print_status(&status);
     if status.done() {
         Ok(())
@@ -947,13 +984,17 @@ fn run_task(
             done_when: (i == last).then(|| done_when.clone()),
         })
         .collect();
+    let app_sel = args.app.as_deref().map(AppSelector::parse);
+    // Same bounded-borrow contract as single actions: wake the app if
+    // its window layer is hidden, restore focus when the plan ends.
+    let wake = wake_if_windowless(engine, &app_sel, Duration::from_millis(800));
     let outcome = engine.run_plan(
         &subgoals,
         &generator,
         decider.as_ref(),
         &dexter_engine::TaskConfig {
             run: RunConfig {
-                app: args.app.as_deref().map(AppSelector::parse),
+                app: app_sel.clone(),
                 max_attempts: 1,
                 verify_delay: Duration::from_millis(250),
                 post_act_settle: Duration::ZERO,
@@ -967,6 +1008,9 @@ fn run_task(
             done_when,
         },
     );
+    if let Some(h) = wake {
+        engine.driver().restore(&h);
+    }
 
     use dexter_engine::{PlanOutcome, TaskOutcome};
     let outcome = match outcome {

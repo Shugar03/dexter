@@ -175,3 +175,21 @@ fn expression_path_requires_a_keypad() {
         .iter()
         .all(|c| !c.rationale.contains("expression sequence")));
 }
+
+#[test]
+fn already_satisfied_detects_selected_destination() {
+    use dexter_decision::goal_already_satisfied;
+    let mut tab = el(1, "radio_button", "Cronómetro", &["press"]);
+    tab.value = Some("1".into());
+    // The intent held before any act — don't press a selected tab.
+    assert!(goal_already_satisfied(
+        &obs(vec![tab.clone()]),
+        "ir a cronómetro"
+    ));
+    // Unselected → not satisfied, the press must happen.
+    tab.value = Some("0".into());
+    assert!(!goal_already_satisfied(&obs(vec![tab]), "ir a cronómetro"));
+    // A plain button can't be "already done" — only selectable roles.
+    let btn = el(2, "button", "Cronómetro", &["press"]);
+    assert!(!goal_already_satisfied(&obs(vec![btn]), "ir a cronómetro"));
+}

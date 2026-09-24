@@ -599,6 +599,15 @@ impl<D: ComputerDriver> Engine<D> {
                             );
                             return TaskOutcome::Completed { steps: step - 1 };
                         }
+                    } else if dexter_decision::goal_already_satisfied(&obs, goal) {
+                        // Inherited state: the destination control is
+                        // already selected — the intent held before we
+                        // acted, so pressing it would stall on a no-op.
+                        self.journal(
+                            EventKind::TaskCompleted,
+                            serde_json::json!({"steps": step - 1, "mode": "already_satisfied", "elapsed_ms": started.elapsed().as_millis() as u64}),
+                        );
+                        return TaskOutcome::Completed { steps: step - 1 };
                     }
                 }
             }
