@@ -282,6 +282,13 @@ enum EvalCommand {
         /// Baseline TOML to check against — nonzero exit on regression.
         #[arg(long)]
         check: Option<String>,
+        /// Export successful runs as Laya training rows (JSONL) — same
+        /// shape `eval export` emits, labelled by the decision taken.
+        #[arg(long)]
+        export: Option<String>,
+        /// Dump each run's event journal to `<dir>/<id>.jsonl`.
+        #[arg(long)]
+        journal_out: Option<String>,
     },
 }
 
@@ -401,25 +408,27 @@ fn build_driver(cli: &Cli) -> Result<Box<dyn ComputerDriver>> {
     match cli.driver.as_str() {
         "macos" => Ok(Box::new(MacOsDriver::new())),
         "browser" => match &cli.browser_url {
-            Some(url) => {
-                let label = if url.contains("4444") {
-                    "firefox"
-                } else if url.contains("9515") {
-                    "chrome"
-                } else {
-                    "browser"
-                };
-                Ok(Box::new(
-                    dexter_browser::BrowserDriver::connect_attach(url, label)
-                        .map_err(|e| anyhow::anyhow!("browser driver at {url}: {e}"))?,
-                ))
-            }
+            Some(url) => Ok(Box::new(
+                dexter_browser::BrowserDriver::connect_attach(url, browser_label(url))
+                    .map_err(|e| anyhow::anyhow!("browser driver at {url}: {e}"))?,
+            )),
             None => Ok(Box::new(
                 dexter_browser::BrowserDriver::safari()
                     .map_err(|e| anyhow::anyhow!("safaridriver: {e}"))?,
             )),
         },
         other => anyhow::bail!("unknown driver '{other}' — available: macos, browser"),
+    }
+}
+
+/// Driver label heuristic for a WebDriver endpoint URL.
+fn browser_label(url: &str) -> &'static str {
+    if url.contains("4444") {
+        "firefox"
+    } else if url.contains("9515") {
+        "chrome"
+    } else {
+        "browser"
     }
 }
 
@@ -542,6 +551,8 @@ fn run() -> Result<()> {
                 out,
                 history,
                 check,
+                export,
+                journal_out,
             } => eval_scenario(
                 &path,
                 &eng,
@@ -551,6 +562,9 @@ fn run() -> Result<()> {
                 out,
                 history,
                 check,
+                export,
+                journal_out,
+                cli.browser_url.clone(),
             ),
         },
         Command::Mcp {
@@ -1355,6 +1369,9 @@ fn eval_scenario(
     out: Option<String>,
     history: Option<String>,
     check: Option<String>,
+    export: Option<String>,
+    journal_out: Option<String>,
+    browser_url: Option<String>,
 ) -> Result<()> {
     use dexter_eval::scenario::*;
 
@@ -1379,15 +1396,99 @@ fn eval_scenario(
     let decider = build_decider(engine_name, &engine_path, min_confidence)?;
     let generator = dexter_decision::HeuristicGenerator::default();
 
+    if let Some(dir) = &journal_out {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating '{dir}'"))?;
+    }
+    let mut export_rows: Vec<String> = Vec::new();
+    let mut export_seen = std::collections::HashSet::new();
+    let mut export_skipped = 0usize;
+
     let mut all: Vec<ScenarioMetrics> = Vec::new();
     for file in &files {
         let text =
             std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
         let spec: ScenarioSpec =
             toml::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
-        let runs: Vec<ScenarioRun> = (0..reps.max(1))
-            .map(|_| run_scenario(&spec, &generator, decider.as_ref()))
-            .collect();
+
+        // Browser scenarios need a live endpoint — without one they are
+        // skipped (never failed), keeping the suite hermetic.
+        let browser = match spec.driver() {
+            "browser" => {
+                let Some(endpoint) = &browser_url else {
+                    println!(
+                        "{:<24} skipped — driver=browser needs --browser-url",
+                        spec.scenario.id
+                    );
+                    continue;
+                };
+                let bspec = spec.browser.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("{}: [browser] section required", file.display())
+                })?;
+                let url = match (&bspec.page, &bspec.url) {
+                    (Some(page), _) => {
+                        let abs = std::fs::canonicalize(file.parent().unwrap_or(root).join(page))
+                            .with_context(|| format!("resolving page '{page}'"))?;
+                        format!("file://{}", abs.display())
+                    }
+                    (None, Some(u)) => u.clone(),
+                    (None, None) => {
+                        anyhow::bail!("{}: [browser] needs page = or url =", file.display())
+                    }
+                };
+                Some((endpoint.clone(), url, bspec.settle_ms))
+            }
+            _ => None,
+        };
+
+        let mut runs: Vec<ScenarioRun> = Vec::new();
+        for rep in 0..reps.max(1) {
+            let run = match &browser {
+                Some((endpoint, url, settle_ms)) => {
+                    // Fresh session per rep — `connect` opens a new
+                    // window (closed on drop), so state is deterministic
+                    // and the user's live session is never hijacked.
+                    let driver =
+                        dexter_browser::BrowserDriver::connect(endpoint, browser_label(endpoint))
+                            .map_err(|e| anyhow::anyhow!("browser driver at {endpoint}: {e}"))?;
+                    driver
+                        .navigate(url)
+                        .map_err(|e| anyhow::anyhow!("navigate {url}: {e}"))?;
+                    std::thread::sleep(Duration::from_millis(*settle_ms));
+                    run_scenario_with(&spec, driver, &generator, decider.as_ref())
+                }
+                None => run_scenario(&spec, &generator, decider.as_ref()),
+            };
+            if let Some(dir) = &journal_out {
+                let name = if reps > 1 {
+                    format!("{}-rep{}.jsonl", spec.scenario.id, rep + 1)
+                } else {
+                    format!("{}.jsonl", spec.scenario.id)
+                };
+                let mut buf = String::new();
+                for ev in &run.events {
+                    buf.push_str(&serde_json::to_string(ev)?);
+                    buf.push('\n');
+                }
+                std::fs::write(std::path::Path::new(dir).join(name), buf)
+                    .with_context(|| format!("writing journal to '{dir}'"))?;
+            }
+            if export.is_some() && run.success {
+                let (rows, skipped) = rows_from_events(
+                    &run.events,
+                    &spec.scenario.id,
+                    spec.scenario.app.as_deref().unwrap_or(spec.driver()),
+                );
+                export_skipped += skipped;
+                for row in rows {
+                    // Deterministic sim reps emit identical rows — dedup.
+                    let line = serde_json::to_string(&row)?;
+                    if export_seen.insert(line.clone()) {
+                        export_rows.push(line);
+                    }
+                }
+            }
+            runs.push(run);
+        }
         let m = aggregate(&spec.scenario.id, spec.scenario.optimal_steps, runs);
         println!(
             "{:<24} ok {}/{}  steps {:>4.1} (opt {})  decide p50/p95 {:>3}/{}ms  rec {}  fails {}  appr {}  phys {}  {}",
@@ -1423,6 +1524,17 @@ fn eval_scenario(
         roll.physical_acts,
     );
 
+    if let Some(p) = &export {
+        let mut buf = export_rows.join("\n");
+        if !buf.is_empty() {
+            buf.push('\n');
+        }
+        std::fs::write(p, buf).with_context(|| format!("writing '{p}'"))?;
+        println!(
+            "{} rows exported to {p} ({export_skipped} unlabelable)",
+            export_rows.len()
+        );
+    }
     if let Some(p) = &out {
         let doc = serde_json::json!({
             "engine": engine_name,

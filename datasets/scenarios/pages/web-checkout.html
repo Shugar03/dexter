@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Carrito — dexter scenario</title>
+</head>
+<body>
+<main>
+  <h1>Tu carrito</h1>
+  <ul>
+    <li>Teclado mecánico — $89</li>
+    <li>Mouse — $45</li>
+  </ul>
+  <button id="checkout" type="button">Ir a pagar</button>
+  <section id="pago" hidden>
+    <h2>Pago</h2>
+    <p>Total: $134</p>
+    <button id="pagar" type="button">Pagar</button>
+  </section>
+  <p id="confirmado" hidden>Pedido confirmado</p>
+</main>
+<script>
+// Two-step depth: the pay control only exists after checkout reveals
+// the payment section — the agent must chain, not just click once.
+document.getElementById('checkout').addEventListener('click', () => {
+  document.getElementById('pago').hidden = false;
+  document.getElementById('checkout').hidden = true;
+});
+document.getElementById('pagar').addEventListener('click', () => {
+  document.getElementById('pago').hidden = true;
+  document.getElementById('confirmado').hidden = false;
+});
+</script>
+</body>
+</html>

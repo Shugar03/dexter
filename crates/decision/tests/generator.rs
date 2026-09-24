@@ -225,6 +225,47 @@ fn bounded_candidate_count() {
     assert!(cands.len() <= 12);
 }
 
+#[test]
+fn edit_penalty_lifts_once_the_field_was_filled() {
+    // Fill→submit is the canonical web form: after the SetValue lands,
+    // the goal's remaining intent is the press — a submit control that
+    // matches a goal term must become actable instead of staying
+    // penalized under the edit verb forever.
+    let o = obs(vec![
+        el(1, "text_field", "Usuario", &["set_value", "focus"]),
+        el(2, "button", "Entrar", &["press"]),
+    ]);
+    let goal = "escribir \"demo\" en usuario y entrar";
+
+    let pre = gen().generate(&o, goal, &empty());
+    let entrar = |cands: &[dexter_decision::CandidateAction]| {
+        cands
+            .iter()
+            .find(|c| matches!(&c.action, Action::Click { .. }))
+            .expect("a click candidate on Entrar")
+            .prior
+    };
+    assert!(
+        entrar(&pre) < 0.65,
+        "before the edit, the press is weak evidence"
+    );
+
+    let mut hist = GenHistory::default();
+    hist.attempts.push(Action::SetValue {
+        target: Target::Semantic(dexter_core::SemanticTarget {
+            role: Some("text_field".into()),
+            name: Some("Usuario".into()),
+            ..Default::default()
+        }),
+        value: "demo".into(),
+    });
+    let post = gen().generate(&o, goal, &hist);
+    assert!(
+        entrar(&post) >= 0.65,
+        "after the edit, pressing Entrar must cross the act threshold"
+    );
+}
+
 /// Regressions found by the macOS AX dataset eval — each case was a
 /// real MISS against a live TextEdit/Finder tree.
 

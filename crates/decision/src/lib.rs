@@ -549,8 +549,14 @@ impl CandidateGenerator for HeuristicGenerator {
                 prior += 0.1;
             }
             // Edit goal against a non-editable element is weak evidence —
-            // pressing the "Documento" menu won't type anything.
-            if want_edit && !editable {
+            // pressing the "Documento" menu won't type anything. Once an
+            // edit was actually attempted, though, the goal's remaining
+            // intent is the press — the penalty no longer applies.
+            let edit_done = hist
+                .attempts
+                .iter()
+                .any(|a| matches!(a, Action::SetValue { .. } | Action::TypeText { .. }));
+            if want_edit && !editable && !edit_done {
                 prior *= 0.5;
             }
             // Delta bonus: element not present in the previous observation.

@@ -1,0 +1,17 @@
+# web-checkout — two-step depth on a live DOM: the pay control only
+# exists after "Ir a pagar" reveals the payment section (hidden
+# elements are filtered by the walker). Needs --browser-url.
+[scenario]
+id = "web-checkout"
+driver = "browser"
+goal = "pagar el pedido"
+optimal_steps = 2
+app = "browser"
+
+[browser]
+page = "pages/web-checkout.html"
+settle_ms = 500
+
+[task]
+done_when = { type = "text_present", text = "Pedido confirmado" }
+max_steps = 8

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Acceso — dexter scenario</title>
+</head>
+<body>
+<main>
+  <h1>Acceso</h1>
+  <form id="login" onsubmit="return false">
+    <label for="user">Usuario</label>
+    <input id="user" type="text" autocomplete="off">
+    <label for="pass">Clave</label>
+    <input id="pass" type="password">
+    <button id="entrar" type="button">Entrar</button>
+  </form>
+  <p id="error" hidden>Completa el usuario</p>
+  <p id="welcome" hidden>Bienvenido</p>
+</main>
+<script>
+// A minimal but real gate: Entrar without a user shows the error
+// text; with a user it reveals the welcome state.
+document.getElementById('entrar').addEventListener('click', () => {
+  const ok = document.getElementById('user').value.trim() !== '';
+  document.getElementById('error').hidden = ok;
+  document.getElementById('welcome').hidden = !ok;
+});
+</script>
+</body>
+</html>

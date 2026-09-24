@@ -869,6 +869,7 @@ dependencies = [
  "dexter-decision",
  "dexter-driver",
  "dexter-engine",
+ "dexter-laya",
  "dexter-policy",
  "dexter-sim",
  "dexter-world-model",

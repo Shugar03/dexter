@@ -105,8 +105,35 @@ name = "Buscar"
 actions = ["set_value", "focus"]
 "#;
 
+const WEB_LOGIN: &str = r#"
+[scenario]
+id = "web-login"
+driver = "browser"
+goal = "escribir \"demo\" en usuario y entrar"
+optimal_steps = 2
+app = "browser"
+
+[browser]
+page = "pages/web-login.html"
+settle_ms = 500
+
+[task]
+done_when = { type = "text_present", text = "Bienvenido" }
+max_steps = 8
+"#;
+
 fn spec(toml_text: &str) -> ScenarioSpec {
     toml::from_str(toml_text).expect("scenario spec parses")
+}
+
+#[test]
+fn spec_parses_browser_driver_section() {
+    let s = spec(WEB_LOGIN);
+    assert_eq!(s.driver(), "browser");
+    let b = s.browser.as_ref().expect("browser section parsed");
+    assert_eq!(b.page.as_deref(), Some("pages/web-login.html"));
+    assert_eq!(b.settle_ms, 500);
+    assert_eq!(spec(ABSENT).driver(), "sim", "absent driver key = sim");
 }
 
 #[test]
@@ -216,4 +243,49 @@ fn baseline_check_bites_on_regression() {
     )
     .unwrap();
     assert!(check_baseline(std::slice::from_ref(&m), &suite_gate).is_empty());
+}
+
+#[test]
+fn baseline_flags_scenarios_missing_from_results() {
+    let s = spec(WIZARD);
+    let run = run_scenario(&s, &HeuristicGenerator::default(), &RuleBased::default());
+    let m = aggregate(&s.scenario.id, s.scenario.optimal_steps, vec![run]);
+    let base: Baseline = toml::from_str(
+        r#"
+        [scenario.wizard-install]
+        min_success = 1.0
+
+        [scenario.renamed-away]
+        min_success = 1.0
+        "#,
+    )
+    .unwrap();
+    let violations = check_baseline(std::slice::from_ref(&m), &base);
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].scenario, "renamed-away");
+    assert!(violations[0].message.contains("missing"));
+}
+
+#[test]
+fn successful_run_exports_training_rows() {
+    let s = spec(WIZARD);
+    let run = run_scenario(&s, &HeuristicGenerator::default(), &RuleBased::default());
+    assert!(run.success);
+    let (rows, skipped) = rows_from_events(&run.events, &s.scenario.id, "sim");
+    // Two act decisions: the checkbox, then Continuar.
+    assert_eq!(skipped, 0);
+    assert_eq!(rows.len(), 2);
+    let r0 = &rows[0];
+    assert_eq!(r0.id, "wizard-install#step1");
+    assert_eq!(r0.gold_route, None);
+    let gi = r0.gold_index.expect("act decision yields a gold index");
+    assert!(gi < r0.n_candidates, "gold points at an offered option");
+    assert_eq!(r0.options.len(), r0.n_candidates + 4, "options + routes");
+    assert!(r0.options[gi].contains("términos"));
+
+    // Route decisions label too — a correct wait is a training row.
+    let d = spec(DOWNLOAD);
+    let drun = run_scenario(&d, &HeuristicGenerator::default(), &RuleBased::default());
+    let (drows, _) = rows_from_events(&drun.events, &d.scenario.id, "sim");
+    assert!(drows.iter().any(|r| r.gold_route == Some("wait")));
 }

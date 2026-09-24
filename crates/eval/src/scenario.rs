@@ -6,8 +6,9 @@
 //! engine already writes — success, steps, phase latencies, recoveries —
 //! so this layer adds aggregation, not instrumentation.
 
-use dexter_core::{Element, ElementId, ExpectedState, SemanticTarget};
-use dexter_decision::{CandidateGenerator, DecisionEngine};
+use dexter_core::{Element, ElementId, Event, ExpectedState, SemanticTarget};
+use dexter_decision::{CandidateGenerator, Decision, DecisionContext, DecisionEngine};
+use dexter_driver::ComputerDriver;
 use dexter_engine::{Engine, RunConfig, TaskConfig, TaskOutcome};
 use dexter_sim::{Effect, SimDriver};
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,19 @@ use std::time::Duration;
 pub struct ScenarioSpec {
     pub scenario: ScenarioMeta,
     pub task: TaskSpec,
+    /// Sim world — absent for `driver = "browser"` scenarios.
+    #[serde(default)]
     pub world: WorldSpec,
+    /// Live-browser target — only read when `scenario.driver = "browser"`.
+    #[serde(default)]
+    pub browser: Option<BrowserSpec>,
+}
+
+impl ScenarioSpec {
+    /// Which driver the scenario runs on. Absent = sim (hermetic).
+    pub fn driver(&self) -> &str {
+        self.scenario.driver.as_deref().unwrap_or("sim")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +44,26 @@ pub struct ScenarioMeta {
     pub optimal_steps: Option<u32>,
     /// Provenance label (like `meta.app` on eval items).
     pub app: Option<String>,
+    /// Driver backend: absent/`"sim"` for the programmable world,
+    /// `"browser"` for a live WebDriver session.
+    #[serde(default)]
+    pub driver: Option<String>,
+}
+
+/// Live-browser target for `driver = "browser"` scenarios.
+#[derive(Debug, Deserialize)]
+pub struct BrowserSpec {
+    /// HTML file next to the spec (resolved to a `file://` URL).
+    pub page: Option<String>,
+    /// Any URL — used verbatim when `page` is absent.
+    pub url: Option<String>,
+    /// Post-navigation settle before the task loop starts.
+    #[serde(default = "default_settle_ms")]
+    pub settle_ms: u64,
+}
+
+fn default_settle_ms() -> u64 {
+    500
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,15 +238,29 @@ pub struct ScenarioRun {
     /// Actions executed via `Mechanism::Coordinates` — on sim that means
     /// the engine reached for physical input where semantics should do.
     pub physical_acts: usize,
+    /// The run's journal — the raw material for `--export` rows and
+    /// `--journal-out` dumps.
+    pub events: Vec<Event>,
 }
 
-/// Run one scenario once through the real closed loop.
+/// Run one scenario once through the real closed loop, on the
+/// programmable sim world it declares.
 pub fn run_scenario(
     spec: &ScenarioSpec,
     generator: &dyn CandidateGenerator,
     decider: &dyn DecisionEngine,
 ) -> ScenarioRun {
-    let driver = build_driver(spec);
+    run_scenario_with(spec, build_driver(spec), generator, decider)
+}
+
+/// Same run on any driver — the browser surface injects a live
+/// `BrowserDriver` here after navigating to the scenario's page.
+pub fn run_scenario_with<D: ComputerDriver>(
+    spec: &ScenarioSpec,
+    driver: D,
+    generator: &dyn CandidateGenerator,
+    decider: &dyn DecisionEngine,
+) -> ScenarioRun {
     let mut engine = Engine::new(
         driver,
         dexter_policy::Policy::embedded(),
@@ -267,8 +314,11 @@ pub fn run_scenario(
         action_failures: 0,
         approvals: 0,
         physical_acts: 0,
+        events: Vec::new(),
     };
-    measure(&engine.events(), &mut run);
+    let events = engine.events();
+    measure(&events, &mut run);
+    run.events = events;
     run
 }
 
@@ -313,6 +363,112 @@ fn measure(events: &[dexter_core::Event], run: &mut ScenarioRun) {
             _ => {}
         }
     }
+}
+
+// ----- training-row export ----------------------------------------------
+
+/// One Laya training row — the same shape `eval export` emits, with the
+/// scenario provenance fields appended.
+#[derive(Debug, Serialize)]
+pub struct ScenarioRow {
+    /// `"<scenario>#step<N>"`.
+    pub id: String,
+    /// Provenance group (leave-one-app-out filters key on this).
+    pub app: String,
+    /// Always `"scenario"` — lets a merged dataset keep its origin.
+    pub source: &'static str,
+    /// 1-based step within the task — sequential context the frozen
+    /// datasets never carry.
+    pub step: u32,
+    /// `[GOAL]/[WORLD_STATE]/[LAST_ERROR]` — exactly what Laya sees.
+    pub state: String,
+    /// Candidate + route option texts, inference-identical.
+    pub options: Vec<String>,
+    pub n_candidates: usize,
+    /// Absolute option index (candidates first, then route options).
+    pub gold_index: Option<usize>,
+    pub gold_route: Option<&'static str>,
+}
+
+/// Rebuild training rows from a run's journal: pair each
+/// `CandidatesGenerated` context with the following `DecisionMade`, and
+/// label the row with the decision the engine took. Callers decide which
+/// runs qualify — exporting a failed trajectory mislabels it.
+///
+/// Returns (rows, skipped): a row is skipped when the engine invented an
+/// action not among the offered candidates (`candidate_index: None`) —
+/// no honest label exists for it.
+pub fn rows_from_events(
+    events: &[Event],
+    scenario_id: &str,
+    app: &str,
+) -> (Vec<ScenarioRow>, usize) {
+    let mut rows = Vec::new();
+    let mut skipped = 0;
+    let mut last_ctx: Option<DecisionContext> = None;
+    for ev in events {
+        match ev.kind {
+            dexter_core::EventKind::CandidatesGenerated => {
+                last_ctx = ev
+                    .data
+                    .get("context")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+            }
+            dexter_core::EventKind::DecisionMade => {
+                let (Some(ctx), Some(decision)) = (
+                    last_ctx.as_ref(),
+                    ev.data
+                        .get("decision")
+                        .and_then(|v| serde_json::from_value::<Decision>(v.clone()).ok()),
+                ) else {
+                    continue;
+                };
+                let n_cands = ctx.candidates.len();
+                let (gold_index, gold_route) = match &decision {
+                    Decision::Act {
+                        candidate_index, ..
+                    } => match candidate_index {
+                        Some(i) if *i < n_cands => (Some(*i), None),
+                        _ => {
+                            skipped += 1;
+                            continue;
+                        }
+                    },
+                    Decision::Route { route, .. } => {
+                        let variant = crate::route_variant(route);
+                        let slot = dexter_laya::ROUTE_VARIANT_ORDER
+                            .iter()
+                            .position(|v| *v == variant);
+                        match slot {
+                            Some(s) => (Some(n_cands + s), Some(variant)),
+                            None => {
+                                skipped += 1;
+                                continue;
+                            }
+                        }
+                    }
+                };
+                let (state, q) = dexter_laya::build_question(ctx);
+                let options = match q {
+                    dexter_decision::Question::Choice { options, .. } => options,
+                    _ => continue,
+                };
+                rows.push(ScenarioRow {
+                    id: format!("{scenario_id}#step{}", ctx.step),
+                    app: app.to_string(),
+                    source: "scenario",
+                    step: ctx.step,
+                    state,
+                    options,
+                    n_candidates: n_cands,
+                    gold_index,
+                    gold_route,
+                });
+            }
+            _ => {}
+        }
+    }
+    (rows, skipped)
 }
 
 // ----- aggregation -----------------------------------------------------
@@ -480,8 +636,18 @@ pub struct Violation {
 }
 
 /// Compare measured metrics against the baseline; empty = pass.
+/// A scenario named in the baseline but absent from the results is a
+/// violation — a skipped or renamed-away spec must not pass silently.
 pub fn check_baseline(metrics: &[ScenarioMetrics], base: &Baseline) -> Vec<Violation> {
     let mut out = Vec::new();
+    for id in base.scenario.keys() {
+        if !metrics.iter().any(|m| m.id == *id) {
+            out.push(Violation {
+                scenario: id.clone(),
+                message: "missing from results (skipped or deleted)".into(),
+            });
+        }
+    }
     for m in metrics {
         let Some(b) = base.scenario.get(&m.id) else {
             continue;

@@ -9,7 +9,9 @@ license.workspace = true
 [dependencies]
 dexter-core.workspace = true
 dexter-decision.workspace = true
+dexter-driver.workspace = true
 dexter-engine.workspace = true
+dexter-laya.workspace = true
 dexter-policy.workspace = true
 dexter-sim.workspace = true
 dexter-world-model.workspace = true
@@ -18,5 +20,4 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-dexter-driver.workspace = true
 toml.workspace = true

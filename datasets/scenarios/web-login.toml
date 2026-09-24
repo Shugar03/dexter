@@ -1,0 +1,18 @@
+# web-login — a real DOM form over WebDriver: set_value → press →
+# welcome text. The same loop the sim suite measures, on a live
+# browser surface. Needs --browser-url; skipped (never failed)
+# without one, so the CI gate stays hermetic.
+[scenario]
+id = "web-login"
+driver = "browser"
+goal = "escribir \"demo\" en usuario y entrar"
+optimal_steps = 2
+app = "browser"
+
+[browser]
+page = "pages/web-login.html"
+settle_ms = 500
+
+[task]
+done_when = { type = "text_present", text = "Bienvenido" }
+max_steps = 8
