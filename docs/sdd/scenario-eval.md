@@ -108,10 +108,11 @@ settle_ms = 1200               # post-prep AND post-act settle
   exposes window content over AX **only while the app is frontmost**:
   a background or lazy-launched app reports a menubar-only tree even
   when its CG window is on-screen. The runner detects that (no `window`
-  elements in the probe), pays one bounded activation through the
-  driver's `wake`/`restore` seam to force the render, and after the
-  scenario finishes **restores the previously frontmost app** — the
-  stage is borrowed once and handed back.
+  elements in the probe), pays one **policy-gated** activation through
+  `Engine::borrow_stage` (the `[live] app` declaration is the seeded
+  grant — operator consent for activation), and after the scenario
+  finishes **restores the previously frontmost app** — the stage is
+  borrowed once and handed back.
 - **Activation is a privilege of the frontmost** — macOS coalesces or
   denies `activate` requests issued by non-frontmost processes. When
   the operator is working in another app, Dexter cannot summon windows
@@ -123,7 +124,10 @@ settle_ms = 1200               # post-prep AND post-act settle
 - `ComputerDriver::wake`/`restore` is the platform seam: the macOS
   driver implements bounded activation + frontmost restore via
   `NSRunningApplication` (no Apple Events, no Automation grant), other
-  drivers default to no-op. `dexter map` and MCP `dexter_map` reuse it.
+  drivers default to no-op. Callers never invoke it directly —
+  `dexter map`, MCP `dexter_map` and the eval probe all go through
+  `Engine::borrow_stage`, which evaluates the launch-or-activate route
+  against policy first.
 
 ### What the first live run caught
 
@@ -338,7 +342,9 @@ inferences (calculator, document editor, menu-driven). It answers "what
 is this app and what can it do" in one call — heuristic and honest, no
 per-app hand-authoring, no model. Surfaces: `dexter map --app <sel>`
 (pretty JSON) and MCP `dexter_map` (`app` required; `wake` default true
-does the bounded foreground borrow described above). `ax_limited: true`
+requests the bounded foreground borrow through policy — the response's
+`stage` field reports `activated`/`denied`/`needs_approval` so an agent
+can tell a full map from a windowless one). `ax_limited: true`
 marks the menubar-only degradation — an agent reading the map knows the
 window layer is missing rather than absent.
 
@@ -355,7 +361,9 @@ small and stable.
 
 `dexter click`/`type`/`task`/`map` and the scenario runner all run the
 same bounded-borrow: scoped observe → no `window` elements →
-`driver.wake` (one activation) → settle → act → `restore`. Prep and
+policy-gated `borrow_stage` (one activation, only for a route that
+declares `requires_foreground`) → settle → act → `restore`. Prep and
 teardown scripts therefore self-heal — a `dexter click` inside a prep
 wakes the app itself instead of failing `target not found` against a
-windowless menubar tree.
+windowless menubar tree — and a `deny` on `launch_app` refuses every
+activation, map probes included.

@@ -10,15 +10,29 @@ The security posture is: **the model proposes; the runtime disposes.**
   TOML policy engine. Rules are evaluated in order; the default for
   mutating actions is `require_approval`, never allow.
 - **Scoped, single-use approvals.** Approvals are SHA-bound fingerprints
-  of the *exact* serialized action plus app context, consumed once, and
-  expire after a TTL. Approving "click Save in TextEdit" does not approve
-  clicking anything else, in any other app, later.
+  of the *exact* serialized route — action kind, mechanism, tier,
+  sensitivity, resolved target identity and non-secret parameters —
+  consumed once, and expire after a TTL. Approving "click Save in
+  TextEdit" does not approve clicking anything else, in any other app,
+  or through a different mechanism, later.
+- **Visible side effects are authorized.** Foregrounding an app is a
+  policy-evaluated stage borrow, not a precondition: a `deny` on
+  `launch_app` refuses every activation — step wakes, `dexter_map`
+  probes and eval borrows included — and an unapproved one surfaces its
+  own fingerprint. No code path calls `driver.wake` unauthenticated.
+- **Agents cannot self-serve approvals.** `dexter mcp --no-grants`
+  removes the `dexter_grant` tool, so the channel that returns a
+  `needs_approval` fingerprint cannot also grant it; approvals must
+  arrive out of band.
 - **Coordinates are opt-in.** Coordinate-level input (`point:x,y`,
   physical keyboard injection) only reaches the driver when the caller
   explicitly sets `allow_coordinates`. There is no silent fallback from
   a semantic target to screen pixels.
 - **Fail-closed targets.** Ambiguous semantic matches and stale element
   references are errors, not guesses.
+- **Fail-closed policy files.** An unknown or typo'd TOML key is a load
+  error listing the valid fields — a malformed rule can never silently
+  match more than it says.
 - **No simulated success.** An action reports `Success` only when the
   driver performed it; expected effects are verified against fresh
   observations. `UNCERTAIN` never counts as verified.

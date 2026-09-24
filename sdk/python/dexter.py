@@ -159,45 +159,91 @@ class Dexter:
         app: Optional[str] = None,
         window: Optional[int] = None,
         max_elements: Optional[int] = None,
+        vision: Optional[bool] = None,
+        include_menu: Optional[bool] = None,
     ) -> dict:
-        """Snapshot the world: windows[], elements[], digest."""
+        """Snapshot the world: windows[], elements[], digest.
+
+        `vision=True` appends inert OCR elements (evidence only — no
+        live handle). `include_menu=False` skips the menubar walk when
+        only window controls are needed.
+        """
         args = {k: v for k, v in {
             "app": app, "window": window, "max_elements": max_elements,
+            "vision": vision, "include_menu": include_menu,
         }.items() if v is not None}
         return self._call("dexter_observe", args)
 
-    def candidates(self, goal: str) -> list:
-        """Ranked plausible actions for a goal — you decide which."""
-        return self._call("dexter_candidates", {"goal": goal})
+    def map(self, app: str, wake: Optional[bool] = None) -> dict:
+        """Capability map of an app — windows, controls, editable
+        fields, menu verbs. The `stage` field reports what the
+        policy-gated activation borrow did; `wake=False` maps
+        background content only."""
+        args: dict = {"app": app}
+        if wake is not None:
+            args["wake"] = wake
+        return self._call("dexter_map", args)
 
-    def act(self, action: dict, app: Optional[str] = None) -> dict:
-        """Policy-gated action execution + verification."""
-        args = {"action": action}
+    def candidates(
+        self,
+        goal: str,
+        app: Optional[str] = None,
+        max: Optional[int] = None,
+    ) -> list:
+        """Ranked plausible actions for a goal — you decide which."""
+        args: dict = {"goal": goal}
         if app is not None:
             args["app"] = app
+        if max is not None:
+            args["max"] = max
+        return self._call("dexter_candidates", args)
+
+    def act(
+        self,
+        action: dict,
+        app: Optional[str] = None,
+        expect: Optional[dict] = None,
+    ) -> dict:
+        """Policy-gated action execution + verification. `expect` is an
+        explicit ExpectedState checked on the post-act world."""
+        args: dict = {"action": action}
+        if app is not None:
+            args["app"] = app
+        if expect is not None:
+            args["expect"] = expect
         return self._call("dexter_act", args)
 
     def grant(self, fingerprint: str) -> dict:
-        """Grant a `needs_approval` fingerprint — the human path."""
+        """Grant a `needs_approval` fingerprint — the human path.
+        Absent when the server runs with `--no-grants`."""
         return self._call("dexter_grant", {"fingerprint": fingerprint})
 
-    def verify(self, expected: dict) -> dict:
+    def verify(self, expected: dict, app: Optional[str] = None) -> dict:
         """Check an ExpectedState — VERIFIED / FAILED / UNCERTAIN."""
-        return self._call("dexter_verify", {"expected": expected})
+        args: dict = {"expected": expected}
+        if app is not None:
+            args["app"] = app
+        return self._call("dexter_verify", args)
 
     def task(
         self,
         goal: str,
         done: dict,
+        app: Optional[str] = None,
         max_steps: Optional[int] = None,
         max_secs: Optional[int] = None,
+        window: Optional[int] = None,
     ) -> dict:
         """Hand the whole observe→decide→act→verify loop to Dexter."""
         args = {"goal": goal, "done": done}
+        if app is not None:
+            args["app"] = app
         if max_steps is not None:
             args["max_steps"] = max_steps
         if max_secs is not None:
             args["max_secs"] = max_secs
+        if window is not None:
+            args["window"] = window
         return self._call("dexter_task", args)
 
     def cancel(self) -> dict:

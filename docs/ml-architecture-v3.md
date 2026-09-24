@@ -2055,19 +2055,19 @@ The rest of Dexter must not depend on the provider.
 
 # 60. MCP
 
-Expose:
+Expose (implemented as `dexter_*` tools — `docs/for-agents.md`):
 
 ```text
-computer.observe
-computer.click
-computer.type
-computer.keypress
-computer.scroll
-computer.wait
-computer.read
-computer.execute_task
-computer.get_state
-computer.request_human
+dexter_observe        # structured observation + digest
+dexter_map            # per-app capability map
+dexter_candidates     # ranked plausible actions for a goal
+dexter_act            # policy-gated act + verify
+dexter_verify         # three-valued expectation check
+dexter_task           # closed loop: decide -> act -> verify
+dexter_journal        # live audit trail
+dexter_cancel         # cooperative cancel
+dexter_status         # liveness + capability probe
+dexter_grant          # operator grant (absent under --no-grants)
 ```
 
 The external agent communicates with Dexter semantically.

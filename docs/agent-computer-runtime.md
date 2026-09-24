@@ -802,19 +802,23 @@ dexter run \
   --task "Open the hotel PMS and check today's arrivals"
 ```
 
-MCP:
+MCP (herramientas reales implementadas — ver `docs/for-agents.md`):
 
 ```text
-computer.observe
-computer.click
-computer.type
-computer.scroll
-computer.press
-computer.windows
-computer.execute_task
+dexter_observe
+dexter_map
+dexter_candidates
+dexter_act
+dexter_verify
+dexter_task
+dexter_journal
+dexter_cancel
+dexter_status
+dexter_grant
 ```
 
-El MCP no debe saltarse Policy Engine ni Verification.
+El MCP no debe saltarse Policy Engine ni Verification — toda activación
+visible (stage borrow) también pasa por policy.
 
 ---
 

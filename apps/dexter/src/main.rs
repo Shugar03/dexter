@@ -635,24 +635,37 @@ fn run() -> Result<()> {
                 .observe(&scope)
                 .context("map observe failed")?;
             // AX exposes window content only while the app is frontmost
-            // — if the map is windowless, wake once, re-observe, then
-            // hand focus back. Same contract as the live-scenario runner.
+            // — the borrow goes through policy like any visible side
+            // effect. A denied or unapproved activation maps the
+            // windowless world and says why on stderr; it never
+            // activates unauthenticated.
             if !obs
                 .elements
                 .iter()
                 .any(|e| e.role.as_deref() == Some("window"))
             {
-                let handle = engine
-                    .driver()
-                    .wake(&AppSelector::parse(&app))
-                    .context("map wake failed")?;
-                if handle.activated {
-                    std::thread::sleep(Duration::from_millis(800));
-                    obs = engine
-                        .driver()
-                        .observe(&scope)
-                        .context("map re-observe failed")?;
-                    engine.driver().restore(&handle);
+                let cfg = RunConfig::default();
+                match engine.borrow_stage(&AppSelector::parse(&app), &cfg, &scope) {
+                    Ok(dexter_engine::StageBorrow::Activated { handle, obs: new }) => {
+                        if let Some(o) = new {
+                            obs = o;
+                        }
+                        engine.driver().restore(&handle);
+                    }
+                    Ok(dexter_engine::StageBorrow::Denied { reason }) => {
+                        eprintln!("map: stage borrow denied — {reason}");
+                    }
+                    Ok(dexter_engine::StageBorrow::NeedsApproval {
+                        fingerprint,
+                        reason,
+                    }) => {
+                        eprintln!(
+                            "map: activation needs approval — {reason} \
+                             (grant fingerprint {fingerprint} out of band, then retry)"
+                        );
+                    }
+                    Ok(dexter_engine::StageBorrow::Clear) => {}
+                    Err(e) => eprintln!("map: stage borrow failed — {e}"),
                 }
             }
             let map = dexter_world_model::app_map(&obs);
@@ -1946,17 +1959,42 @@ fn eval_scenario(
                     let probe = match probe {
                         Ok(obs) if no_window(&obs) => {
                             // AX only exposes window content while the
-                            // app is frontmost — bounded wake: activate
-                            // once, re-settle, re-probe. Frontmost is
-                            // restored after all reps via the handle.
-                            let drv = MacOsDriver::new();
-                            if let Ok(h) = drv.wake(&dexter_core::AppSelector::parse(&lspec.app)) {
-                                if h.activated {
-                                    wake_handle = Some(h);
+                            // app is frontmost — the borrow goes through
+                            // policy like any visible side effect, with
+                            // the scenario's `[live] app` declaration as
+                            // the seeded grant (same consent
+                            // run_scenario_with gives the engine).
+                            // Frontmost is restored after all reps via
+                            // the handle.
+                            let sel = dexter_core::AppSelector::parse(&lspec.app);
+                            let mut probe_engine = Engine::new(
+                                MacOsDriver::new(),
+                                Policy::embedded(),
+                                Duration::from_secs(60),
+                            );
+                            let ctx = dexter_policy::ActionContext {
+                                app: Some(sel.clone()),
+                                target_hint: None,
+                            };
+                            let fp = dexter_policy::fingerprint_route(
+                                &dexter_engine::stage_route(&sel),
+                                &ctx,
+                            );
+                            probe_engine.grant_approval(&fp);
+                            match probe_engine.borrow_stage(&sel, &RunConfig::default(), &scope) {
+                                Ok(dexter_engine::StageBorrow::Activated { handle, obs: new }) => {
+                                    wake_handle = Some(handle);
                                     std::thread::sleep(Duration::from_millis(lspec.settle_ms));
+                                    match new {
+                                        Some(o) => Ok(o),
+                                        None => probe_engine.driver().observe(&scope),
+                                    }
                                 }
+                                // Denied/unapproved/no-op borrow — the
+                                // windowless obs falls through to the
+                                // skip below; nothing was activated.
+                                _ => Ok(obs),
                             }
-                            drv.observe(&scope)
                         }
                         other => other,
                     };

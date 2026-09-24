@@ -365,31 +365,61 @@ impl DexterMcp {
             ..Default::default()
         };
         let runtime = self.runtime.clone();
+        let approve_all = self.runtime.config.approve_all;
         let map = tokio::task::spawn_blocking(move || {
-            let engine = runtime.engine.lock().map_err(err)?;
-            let driver = engine.driver();
-            let mut obs = driver.observe(&scope).map_err(err)?;
+            let mut engine = runtime.engine.lock().map_err(err)?;
+            let mut obs = engine.driver().observe(&scope).map_err(err)?;
             // Window content only exists while the app is frontmost —
-            // borrow the stage once, read, hand it back.
+            // the borrow goes through policy like any visible side
+            // effect: a denied/unapproved activation means the map is
+            // built from the windowless world and says so, it never
+            // activates unauthenticated.
+            let mut stage = serde_json::json!("not_needed");
             if wake
                 && !obs
                     .elements
                     .iter()
                     .any(|e| e.role.as_deref() == Some("window"))
             {
-                if let Ok(h) = driver.wake(&selector) {
-                    if h.activated {
-                        std::thread::sleep(std::time::Duration::from_millis(800));
-                        obs = driver.observe(&scope).map_err(err)?;
-                        driver.restore(&h);
+                let cfg = RunConfig {
+                    approve_all,
+                    ..Default::default()
+                };
+                match engine.borrow_stage(&selector, &cfg, &scope) {
+                    Ok(dexter_engine::StageBorrow::Activated { handle, obs: new }) => {
+                        if let Some(o) = new {
+                            obs = o;
+                        }
+                        stage = serde_json::json!("activated");
+                        engine.driver().restore(&handle);
+                    }
+                    Ok(dexter_engine::StageBorrow::Denied { reason }) => {
+                        stage = serde_json::json!({"denied": reason});
+                    }
+                    Ok(dexter_engine::StageBorrow::NeedsApproval {
+                        fingerprint,
+                        reason,
+                    }) => {
+                        stage = serde_json::json!({
+                            "needs_approval": reason,
+                            "fingerprint": fingerprint,
+                        });
+                    }
+                    Ok(dexter_engine::StageBorrow::Clear) => {
+                        stage = serde_json::json!("clear");
+                    }
+                    Err(e) => {
+                        stage = serde_json::json!({"error": e.to_string()});
                     }
                 }
             }
-            Ok::<_, McpError>(dexter_world_model::app_map(&obs))
+            let mut map = serde_json::to_value(dexter_world_model::app_map(&obs)).map_err(err)?;
+            map["stage"] = stage;
+            Ok::<_, McpError>(map)
         })
         .await
         .map_err(|e| err(format!("join: {e}")))??;
-        Ok(v2(serde_json::to_value(map).map_err(err)?))
+        Ok(v2(map))
     }
 
     /// Ranked menu of plausible actions for a goal — the agent stays the

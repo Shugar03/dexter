@@ -30,10 +30,11 @@ This is not a screenshot-and-mouse-move toy:
 
 ## Status
 
-Early development (pre-0.1). macOS driver works; the full closed loop
+Early development (pre-0.1). macOS (Accessibility + CGEvent) and
+browser (W3C WebDriver, DOM actions) drivers work; the full closed loop
 (observe → candidates → decide → act → verify) runs via CLI and MCP.
-Browser, Windows and Linux drivers are on the
-[roadmap](ROADMAP.md).
+A deterministic sim driver backs the hermetic test suite. Windows and
+Linux drivers are on the [roadmap](ROADMAP.md).
 
 ## Install
 
@@ -151,6 +152,15 @@ action = "click"
 app = "bundle:com.apple.Terminal"
 decision = "allow"
 
+# Rules can also scope on mechanism, sensitivity and structured targets.
+# Note: [rule.target] opens a sub-table — keep decision/reason above it.
+[[rule]]
+action = "click"
+mechanism = "accessibility"     # coordinate routes never match this
+decision = "allow"
+[rule.target]
+role = "button"
+
 [[rule]]
 action = "*"
 app = "name:System Settings"
@@ -160,6 +170,8 @@ reason = "never touch system settings"
 
 Run with `dexter --policy dexter.toml <command>`. Without a file, the
 embedded policy allows reads and requires approval for every mutation.
+Parsing is fail-closed: an unknown or typo'd key is a load error, not a
+silently wider rule.
 
 ### Intrusiveness tiers
 
@@ -214,10 +226,12 @@ journal's writer dies mid-run — no orphaned windows.
 
 ## MCP tools
 
-`dexter_observe`, `dexter_candidates`, `dexter_act`, `dexter_grant`,
-`dexter_verify`, `dexter_task`, `dexter_cancel`, `dexter_journal`,
-`dexter_status`. A `needs_approval` response carries a fingerprint a
-human grants via `dexter_grant` — then the agent retries.
+`dexter_observe`, `dexter_map`, `dexter_candidates`, `dexter_act`,
+`dexter_grant`, `dexter_verify`, `dexter_task`, `dexter_cancel`,
+`dexter_journal`, `dexter_status`. A `needs_approval` response carries a
+fingerprint a human grants via `dexter_grant` — then the agent retries.
+Launch with `--no-grants` to remove `dexter_grant` entirely, so an
+autonomous agent cannot serve its own human-in-the-loop hook.
 
 `sdk/python/dexter.py` wraps all of it in a zero-dependency Python
 client — see `docs/for-agents.md` for per-client MCP configs.

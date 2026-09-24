@@ -2,6 +2,11 @@
 
 ## Contract
 
+> V2 note: `act` below is the deprecated v1 seam, kept one release for
+> unmigrated drivers. The engine calls `plan`/`execute` —
+> `docs/sdd/execution-routing-v2.md` is the normative contract; this
+> table still documents the mechanism ladder each macOS route plans.
+
 `ComputerDriver::act(&Action, &ActContext) -> Result<ActionResult, DriverError>`
 
 - `ActionResult.status.ok()` is the only success signal; non-success

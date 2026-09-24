@@ -19,8 +19,11 @@ is set:
 - `ElementAbsent`: matches>0 → FAILED; 0 → VERIFIED, or UNCERTAIN when
   partial.
 - `ElementValue`: some match satisfies predicate → VERIFIED; matches
-  exist but none satisfies → FAILED; 0 matches → FAILED/UNCERTAIN when
-  partial.
+  exist but none satisfies → FAILED, or UNCERTAIN when the tree is
+  partial (the satisfying element may sit outside the walked subtree);
+  0 matches → FAILED/UNCERTAIN when partial. A predicate over a
+  redacted (secure-field) value is UNCERTAIN `redacted_value`, never
+  FAILED — the runtime cannot see the value it would be judging.
 - `TextPresent`: digest is a rendering of the same partial data — the
   presence check is definitive for what was collected, so partial trees
   → UNCERTAIN on absence only.

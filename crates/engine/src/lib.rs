@@ -361,6 +361,39 @@ impl<D: ComputerDriver> Engine<D> {
         status
     }
 
+    /// Public stage-borrow entry for read surfaces (`dexter_map`,
+    /// `dexter map`): mapping an app wants its window tree, which some
+    /// platforms only expose while it is frontmost — the borrow is a
+    /// visible side effect, so it goes through the same policy path as
+    /// a step's wake. Callers get the verdict honestly: `Denied` /
+    /// `NeedsApproval` mean map the windowless world, never activate
+    /// anyway. The caller restores the returned handle.
+    pub fn borrow_stage(
+        &mut self,
+        app: &AppSelector,
+        cfg: &RunConfig,
+        scope: &ObservationScope,
+    ) -> Result<StageBorrow, DriverError> {
+        let ctx = ActionContext {
+            app: Some(app.clone()),
+            target_hint: None,
+        };
+        match self.authorize_stage(app, &ctx, cfg, scope) {
+            StageOutcome::Clear => Ok(StageBorrow::Clear),
+            StageOutcome::Activated { handle, obs } => Ok(StageBorrow::Activated { handle, obs }),
+            StageOutcome::Refused { reason } => Ok(StageBorrow::Denied { reason }),
+            StageOutcome::Approval {
+                fingerprint,
+                reason,
+                ..
+            } => Ok(StageBorrow::NeedsApproval {
+                fingerprint,
+                reason,
+            }),
+            StageOutcome::Errored(e) => Err(e),
+        }
+    }
+
     /// Authorize and perform a stage borrow — foregrounding `app` is a
     /// visible side effect, so it goes through `evaluate_route` like
     /// any mutation: the route it asks for is the launch-or-activate it
@@ -2016,6 +2049,25 @@ pub fn stage_route(app: &AppSelector) -> ExecutionRoute {
         sensitivity: Sensitivity::Standard,
         requires_foreground: false,
     }
+}
+
+/// The verdict a caller-facing stage borrow reports — the public
+/// counterpart of `StageOutcome`, minus internals.
+pub enum StageBorrow {
+    /// No activation happened — already on stage, or wake was a no-op.
+    Clear,
+    /// The app was activated; `obs` is the world the wake produced
+    /// (`None` when the post-wake observe failed). The caller restores
+    /// `handle` when done.
+    Activated {
+        handle: WakeHandle,
+        obs: Option<Observation>,
+    },
+    /// Policy denied the activation.
+    Denied { reason: String },
+    /// Activation needs an approval — grant the fingerprint out of
+    /// band, then retry.
+    NeedsApproval { fingerprint: String, reason: String },
 }
 
 /// What `authorize_stage` concluded — the wake is a side effect with

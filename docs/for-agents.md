@@ -52,7 +52,12 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
 3. **`dexter_act {action}`** — runs policy → act → verify. Statuses:
    `done`, `needs_approval` (carries a `fingerprint` plus the redacted
    `action` summary — a human calls `dexter_grant {fingerprint}`, then
-   you retry), `denied`, `failed`, `error`. The grant binds the exact
+   you retry), `denied`, `failed`, `error`. Foregrounding an app is a
+   *separate* authorization: if the action's chosen route needs the
+   stage and the app isn't frontmost, Dexter borrows it through policy
+   first — a `needs_approval` may therefore carry the stage
+   fingerprint (a `launch_app`-activate route) rather than the
+   action's. The grant binds the exact
    action: kind, mechanism, tier, sensitivity, resolved target
    identity, every non-secret parameter (chord, url, app, window op,
    button/click count, invoke name, deltas, drag destination, wait
@@ -76,6 +81,21 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
    engine health (`ready`/`degraded`/`down` — probe a `laya` worker
    before trusting `dexter_task` with a goal), journal stats, whether a
    task is running. Never blocks on the engine lock.
+9. **`dexter_map {app, wake?}`** — a capability map of the app:
+   windows, controls, editable fields, navigation, menu verbs and
+   inferred capabilities, without you parsing raw elements. `app` is
+   required (name, bundle id or pid). Some platforms only expose window
+   content while the app is frontmost, so when the map comes back
+   windowless and `wake` is true (default), Dexter asks policy for a
+   stage borrow — the same launch-or-activate authorization a step's
+   wake uses. The response carries a `stage` field telling you what
+   happened: `"not_needed"` (window content already visible, or
+   `wake:false`), `"activated"` (borrowed and restored),
+   `"clear"` (borrow was a no-op), `{"needs_approval": reason,
+   "fingerprint"}` (a human grants the fingerprint, then retry),
+   `{"denied": reason}` or `{"error": reason}`. A denied or unapproved
+   borrow never activates the app — the map is built from the
+   windowless world. Pass `wake:false` to map background content only.
 
 ## Python SDK
 
@@ -242,7 +262,14 @@ itself is journaled verbatim — don't embed secrets in goals.
 
 ## Policy
 
-A TOML file (`--policy file.toml`) can scope rules by app, action type,
-target pattern and intrusiveness. The embedded default: reads free,
-mutations need approval, physical denied. Decisions from `dexter_task`'s
-engine are proposals — policy gates every one.
+A TOML file (`--policy file.toml`) scopes rules by app, action type,
+intrusiveness tier, `mechanism` (`accessibility`/`dom`/`api`/
+`vision`/`coordinates`/`native_automation`), `sensitivity`
+(`standard`/`secrets`/`destructive`) and a structured `[rule.target]`
+table (`role`/`name`/`identifier`). Every field must be
+spelled exactly — an unknown key fails the file at load, so a typo'd
+rule can never silently match more than it says. A rule with
+`mechanism` only matches routes that declare one. The embedded
+default: reads free, mutations need approval, physical denied.
+Decisions from `dexter_task`'s engine are proposals — policy gates
+every one, including the stage borrow a foreground route needs.

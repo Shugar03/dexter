@@ -41,6 +41,7 @@ async fn handshake_and_tool_list() {
         "dexter_candidates",
         "dexter_cancel",
         "dexter_status",
+        "dexter_map",
     ] {
         assert!(names.contains(&expected.to_string()), "missing {expected}");
     }
@@ -567,6 +568,96 @@ async fn second_concurrent_task_is_rejected() {
         .text
         .clone();
     assert!(text.contains("cancelled"), "first task cancelled: {text}");
+    client.cancel().await.ok();
+}
+
+/// `dexter_map` borrows the stage to read window content — that
+/// activation is a visible side effect and must pass through policy.
+/// A windowless world under embedded policy surfaces a grantable
+/// stage fingerprint instead of waking the app; a deny maps the
+/// windowless world and reports why.
+#[tokio::test]
+async fn map_stage_borrow_is_policy_gated() {
+    // Sim world has no `role:"window"` element → windowless → the map
+    // wants a stage borrow. Embedded policy: launch_app is mutating.
+    let client = client_server("").await;
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_map".into(),
+            arguments: Some(json!({"app": "other-app"}).as_object().unwrap().clone()),
+        })
+        .await
+        .expect("map call");
+    let text = res.content[0].raw.as_text().expect("text");
+    let v: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert!(
+        v["stage"]["fingerprint"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("sha256:"),
+        "unapproved borrow must surface its fingerprint: {v}"
+    );
+    assert!(v["stage"]["needs_approval"].is_string(), "{v}");
+    client.cancel().await.ok();
+
+    // Under deny-all the borrow is refused outright — the map still
+    // returns (windowless world), and no activation occurred.
+    let client = client_server(
+        r#"
+        [[rule]]
+        action = "*"
+        decision = "deny"
+        reason = "locked down"
+    "#,
+    )
+    .await;
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_map".into(),
+            arguments: Some(json!({"app": "other-app"}).as_object().unwrap().clone()),
+        })
+        .await
+        .expect("map call");
+    let text = res.content[0].raw.as_text().expect("text");
+    let v: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert!(
+        v["stage"]["denied"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("locked down"),
+        "denied borrow must say why: {v}"
+    );
+    client.cancel().await.ok();
+}
+
+/// `wake: false` maps the windowless world without asking for a stage
+/// borrow at all — the opt-out must not even evaluate activation.
+#[tokio::test]
+async fn map_with_wake_disabled_skips_the_borrow() {
+    let client = client_server(
+        r#"
+        [[rule]]
+        action = "*"
+        decision = "deny"
+        reason = "locked down"
+    "#,
+    )
+    .await;
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_map".into(),
+            arguments: Some(
+                json!({"app": "other-app", "wake": false})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        })
+        .await
+        .expect("map call");
+    let text = res.content[0].raw.as_text().expect("text");
+    let v: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(v["stage"], "not_needed", "{v}");
     client.cancel().await.ok();
 }
 

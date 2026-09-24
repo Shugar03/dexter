@@ -192,6 +192,16 @@
   declared `app` — declaring a live app is operator consent for
   activating it, and `stage_route` is public so harnesses and
   operators can reproduce the exact fingerprint.
+- The remaining read surfaces that woke apps directly now go through
+  the same gate: `Engine::borrow_stage` is the public entry, and MCP
+  `dexter_map`, CLI `dexter map` and the eval runner's liveness probe
+  all call it instead of `driver.wake`. A denied or unapproved map
+  borrow returns the windowless map with a `stage` field
+  (`activated`/`denied`/`needs_approval`/`not_needed`/`clear`) — never
+  an unauthenticated activation; `wake: false` skips the borrow
+  entirely. The eval probe keeps its `[live] app` declaration as the
+  seeded grant. No code path outside `authorize_stage` calls
+  `driver.wake` anymore.
 
 ### Fixed (runtime-reliability-v2 review, round 2)
 

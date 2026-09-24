@@ -52,7 +52,7 @@ apps custom), fricción de permisos, límites reales del input en background.
 **Objetivo:** convertir el slice en un runtime usable por agentes reales y
 publicar la primera release.
 
-- Servidor MCP (`rmcp`, stdio): `computer.observe`, `click`, `type`, `scroll`, `press`, `windows`, `execute_task` — nunca salta Policy ni Verification
+- ✅ Servidor MCP (`rmcp`, stdio): `dexter_observe`, `dexter_map`, `dexter_candidates`, `dexter_act`, `dexter_grant`, `dexter_verify`, `dexter_task`, `dexter_cancel`, `dexter_journal`, `dexter_status` — nunca salta Policy ni Verification; `--no-grants` retira la auto-aprobación
 - Recovery ladder pasos 1–3: retry → refresh observation → alternative semantic target
 - Event log completo + recording/replay de escenarios
 - ✅ Intrusiveness tiers (`background`/`visual`/`physical` derivados del target) — physical gated aparte (`defaults.physical`, matcher `intrusiveness` en rules, `--coords` = consent explícito, deny explícito siempre gana)
@@ -76,8 +76,10 @@ tarea real en una app macOS nativa, con aprobación humana en acciones sensibles
 - ✅ Observación DOM normalizada al mismo `Element` (walker in-page:
   rol ARIA/tag, accessible name, bounds, acciones)
 - ✅ DOM actions como `Mechanism::Dom` — background-safe real
-- Pendiente: multi-tab/iframe flatten, `/actions` endpoint para casos
-  que DOM-dispatch no cubre, sesiones protegidas (cookies/credenciales)
+- ✅ Multi-tab (cada tab es una `window`; `focus` cambia de tab) e
+  iframes same-origin aplanados en la observación
+- Pendiente: `/actions` endpoint para casos que DOM-dispatch no cubre,
+  sesiones protegidas (cookies/credenciales)
 
 **Criterio de salida:** una tarea web completa sin usar coordenadas salvo fallback.
 
