@@ -42,6 +42,42 @@
   object per clipboard/app lookup; stale-resolution `.expect()`
   replaced with a fail-closed error.
 
+### Fixed (runtime-reliability-v2 review, round 6)
+
+- `Target::Element` resolution under `window_scope` on macOS: the
+  observation cache now records how element ids were minted
+  (`Minted::{AppWide, Window { cg_bounds }}`), and resolution re-walks
+  the same way — `collect_window` for scoped tokens, `collect` for
+  app-wide. Previously a scoped token was resolved against a full-app
+  walk whose ids name different elements whenever the pinned window
+  isn't first in `AXWindows` order (order that activation can
+  reorder), so element acts on a non-first pinned window
+  deterministically failed `StaleReference`. A moved/closed pinned
+  window is now an honest stale — never an app-wide fallback.
+- Navigate URLs are redacted in every journal-visible field: the
+  action summary logs origin+path plus `[redacted]` for the query or
+  fragment and a SHA-256 digest of the full URL; `ActionResult.detail`
+  is redacted on all three drivers; training-row action scrubbing
+  redacts `Navigate.url` too. The full URL remains bound by the
+  policy fingerprint and reaches the navigation itself.
+- MCP `dexter_observe` no longer pays a menubar walk when `window`
+  is set — menu elements are bounds-filtered out of scoped
+  observations anyway (the rule `Engine::observe_scoped` already
+  applies).
+- `Action::Navigate` uses `/usr/bin/open` like `apps::launch` instead
+  of a PATH-resolved `open`.
+
+### Changed (runtime-reliability-v2 review, round 6)
+
+- Browser and sim element-handle routes fill the target descriptor's
+  role/name/identifier from the cached observation or live state
+  (`TargetDescriptor::enrich_element`) — a grant or audit line reads
+  "button Pay now", not "element 3", while the observation-bound
+  handle still drives stale-token validation.
+- `execution-routing-v2.md` documents that route order is also
+  policy-preference order: `Deny`/`RequireApproval` short-circuits
+  the remaining routes — no route-shopping around a decision.
+
 ### Fixed (runtime-reliability-v2 review, round 2)
 
 - `kCGMouseEventClickState` corrected to field 1 (`CGEventTypes.h`) —

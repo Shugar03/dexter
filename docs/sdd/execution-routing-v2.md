@@ -73,7 +73,11 @@ plans and executes only the first route. Engine v2 never calls it.
   not wake an app, move focus, inject input, mutate the clipboard, launch or
   terminate anything.
 - Routes are ordered highest fidelity first: API, DOM, Accessibility, native
-  automation, vision-derived point, coordinates.
+  automation, vision-derived point, coordinates. Route order is also
+  policy-preference order: a `Deny` or `RequireApproval` on a route
+  short-circuits the remaining candidates — the engine never route-shops
+  around an explicit decision (a denied semantic route must not quietly
+  fall back to a more intrusive one).
 - A route contains the concrete action that will execute. A semantic request
   is narrowed to an observation-bound element whenever possible.
 - A route that cannot be executed without foreground declares

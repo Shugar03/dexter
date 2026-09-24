@@ -1051,6 +1051,40 @@ fn clipboard_write_then_read_via_engine() {
 }
 
 #[test]
+fn navigate_url_query_never_reaches_the_journal() {
+    // Query strings carry signed tokens — the policy fingerprint binds
+    // the full URL, but the journal must keep only the redacted form
+    // in the action summary and the result detail alike.
+    let sim = SimDriver::new(vec![el(1, "button", "Save")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Navigate {
+            url: "https://app.test/callback?session=hunter2tok".into(),
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    assert!(engine.run_step(&step, &cfg()).done());
+    let journal: Vec<String> = engine
+        .events()
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap())
+        .collect();
+    assert!(
+        !journal.iter().any(|l| l.contains("hunter2tok")),
+        "the signed query must never reach the journal"
+    );
+    assert!(
+        journal
+            .iter()
+            .any(|l| l.contains("https://app.test/callback?[redacted]")),
+        "the redacted origin+path stays operator-legible"
+    );
+}
+
+#[test]
 fn clipboard_write_needs_approval_under_default_policy() {
     // The secrets floor: no matching rule → approval required, even
     // though clipboard is a semantic (background) action.

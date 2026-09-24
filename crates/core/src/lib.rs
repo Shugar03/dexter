@@ -30,3 +30,15 @@ pub struct Point {
     pub x: f64,
     pub y: f64,
 }
+
+/// Journal-safe form of a URL: scheme, origin and path stay legible for
+/// the operator, while the query string and fragment — where signed
+/// tokens and session parameters live — are stripped and marked. The
+/// approval fingerprint still binds the full URL, so an approved
+/// navigation can't drift to different query parameters.
+pub fn redact_url(url: &str) -> String {
+    match url.find(['?', '#']) {
+        Some(i) => format!("{}{}[redacted]", &url[..i], &url[i..i + 1]),
+        None => url.to_string(),
+    }
+}

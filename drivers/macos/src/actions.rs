@@ -34,9 +34,23 @@ struct Resolved {
     detail: String,
 }
 
+/// How an observation's element ids were minted — a `Target::Element`
+/// token is only comparable to a tree walked the same way.
+#[derive(Clone, Copy)]
+pub(crate) enum Minted {
+    /// Full app tree (`ax::collect`) — ids span every window + menubar.
+    AppWide,
+    /// One window's subtree (`ax::collect_window`) — ids are dense over
+    /// that subtree and name a *different* element in a full walk when
+    /// the pinned window isn't first in `AXWindows` order.
+    Window { cg_bounds: dexter_core::Rect },
+}
+
+#[derive(Clone)]
 struct ObsEntry {
     pid: Option<i32>,
     elements: Vec<Element>,
+    minted: Minted,
 }
 
 /// Cache of past observation *data* (never AXUIElement pointers — those are
@@ -52,18 +66,29 @@ impl ObsCache {
         }
     }
 
-    pub fn store(&self, obs: ObservationId, pid: Option<i32>, elements: Vec<Element>) {
+    pub fn store(
+        &self,
+        obs: ObservationId,
+        pid: Option<i32>,
+        elements: Vec<Element>,
+        minted: Minted,
+    ) {
         let mut g = self.inner.lock().unwrap();
         g.retain(|(id, _)| *id != obs);
-        g.push_front((obs, ObsEntry { pid, elements }));
+        g.push_front((
+            obs,
+            ObsEntry {
+                pid,
+                elements,
+                minted,
+            },
+        ));
         g.truncate(4);
     }
 
-    fn get(&self, obs: ObservationId) -> Option<(Option<i32>, Vec<Element>)> {
+    fn get(&self, obs: ObservationId) -> Option<ObsEntry> {
         let g = self.inner.lock().unwrap();
-        g.iter()
-            .find(|(id, _)| *id == obs)
-            .map(|(_, e)| (e.pid, e.elements.clone()))
+        g.iter().find(|(id, _)| *id == obs).map(|(_, e)| e.clone())
     }
 }
 
@@ -114,19 +139,37 @@ fn resolve_element(
         } => {
             let entry = cache.get(*observation);
             let stored = dexter_driver::resolve::stored_element(
-                entry.as_ref().map(|(_, els)| els.as_slice()),
+                entry.as_ref().map(|e| e.elements.as_slice()),
                 *observation,
                 *element,
             )?
             .clone();
-            let pid = entry.and_then(|(pid, _)| pid).ok_or_else(|| {
+            let entry = entry.expect("stored_element passed — observation is cached");
+            let pid = entry.pid.ok_or_else(|| {
                 DriverError::NotFound(
                     "observation was not app-scoped — cannot re-resolve element".into(),
                 )
             })?;
             let app = AXUIElement::application(pid);
             let _ = app.set_messaging_timeout(1.5);
-            let tree = ax::collect(&app, ACTION_WALK_DEPTH, ACTION_WALK_MAX, true);
+            // Re-walk the way the token was minted: scoped ids are dense
+            // over the pinned window's subtree, so in a full walk they
+            // name a different element whenever that window isn't first
+            // in `AXWindows` order (and `AXWindows` order itself shifts
+            // — activation reorders it). A moved/closed pinned window
+            // is an honest stale, not a fallback to app-wide ids.
+            let tree = match entry.minted {
+                Minted::Window { cg_bounds } => {
+                    ax::collect_window(&app, cg_bounds, ACTION_WALK_DEPTH, ACTION_WALK_MAX)
+                        .map_err(|e| {
+                            DriverError::StaleReference(format!(
+                                "the scoped window moved or closed since observation {}: {e}",
+                                observation.0
+                            ))
+                        })?
+                }
+                Minted::AppWide => ax::collect(&app, ACTION_WALK_DEPTH, ACTION_WALK_MAX, true),
+            };
             let fresh_idx = tree.elements.iter().position(|e| e.id == *element);
             dexter_driver::resolve::verify_identity(
                 &stored,
@@ -387,14 +430,16 @@ pub fn act(
             "Action::Observe is an engine directive, not a driver action".into(),
         )),
         Action::Navigate { url } => {
-            let status = std::process::Command::new("open")
+            let status = std::process::Command::new("/usr/bin/open")
                 .arg(url)
                 .status()
                 .map_err(|e| DriverError::Platform(format!("open: {e}")))?;
             if status.success() {
                 Ok(ActionResult::success(
                     Mechanism::NativeAutomation,
-                    Some(format!("opened {url}")),
+                    // Query strings carry signed tokens — the detail is
+                    // journaled, so it logs the redacted form.
+                    Some(format!("opened {}", dexter_core::redact_url(url))),
                 ))
             } else {
                 Ok(ActionResult::failure(
@@ -1224,5 +1269,37 @@ mod tests {
         };
         let result = act(&click, &ActContext::default(), &ObsCache::new(), None).unwrap();
         assert_eq!(result.status, ActionStatus::Unsupported);
+    }
+
+    #[test]
+    fn obs_cache_records_id_minting() {
+        // A `Target::Element` token is only comparable to a tree
+        // walked the way its observation minted ids: scoped ids are
+        // dense over one window's subtree, app-wide ids span every
+        // window + menubar. The cache must remember which walk to
+        // re-run or resolution compares tokens across namespaces.
+        let cache = ObsCache::new();
+        let bounds = dexter_core::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        cache.store(
+            ObservationId(1),
+            Some(42),
+            vec![],
+            Minted::Window { cg_bounds: bounds },
+        );
+        let scoped = cache.get(ObservationId(1)).unwrap();
+        assert!(
+            matches!(scoped.minted, Minted::Window { cg_bounds } if cg_bounds == bounds),
+            "scoped observation must record the window bounds to re-walk"
+        );
+        cache.store(ObservationId(2), Some(42), vec![], Minted::AppWide);
+        assert!(matches!(
+            cache.get(ObservationId(2)).unwrap().minted,
+            Minted::AppWide
+        ));
     }
 }

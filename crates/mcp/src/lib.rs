@@ -243,7 +243,11 @@ impl DexterMcp {
             max_elements,
             window,
             vision: params.vision.unwrap_or(false),
-            include_menu: params.include_menu.unwrap_or(true),
+            // Menu elements are bounds-filtered out of a scoped
+            // observation — the menubar walk is pure cost under
+            // `window` (the same rule `Engine::observe_scoped`
+            // applies), even if the caller asked for it.
+            include_menu: window.is_none() && params.include_menu.unwrap_or(true),
             ..Default::default()
         };
         let max_out = max_elements.min(500);

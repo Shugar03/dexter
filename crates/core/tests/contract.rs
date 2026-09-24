@@ -377,3 +377,27 @@ fn event_records_carry_schema_version_2() {
     let parsed = serde_json::from_value::<Event>(v1).unwrap();
     assert_eq!(parsed.schema_version, 1);
 }
+
+#[test]
+fn redact_url_strips_query_and_fragment() {
+    // Journal-visible URL form: origin+path stays legible, the token-
+    // bearing suffix is replaced — the full URL is bound only by the
+    // policy fingerprint and the navigation itself.
+    assert_eq!(
+        redact_url("https://app.test/callback?session=tok"),
+        "https://app.test/callback?[redacted]"
+    );
+    assert_eq!(
+        redact_url("https://app.test/page#frag"),
+        "https://app.test/page#[redacted]"
+    );
+    // Query wins when both exist — everything from `?` is stripped.
+    assert_eq!(
+        redact_url("https://app.test/cb?t=1#f"),
+        "https://app.test/cb?[redacted]"
+    );
+    assert_eq!(
+        redact_url("https://app.test/plain"),
+        "https://app.test/plain"
+    );
+}

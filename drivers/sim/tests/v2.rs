@@ -391,3 +391,30 @@ fn click_enforces_the_shared_count_contract() {
     let r = d.act(&click(MouseButton::Left, 2), &ctx()).unwrap();
     assert_eq!(r.status, ActionStatus::Success);
 }
+
+#[test]
+fn element_route_descriptor_carries_semantic_identity() {
+    // A grant or audit line should read "button Save", not "element 1"
+    // — the element handle stays for stale-token validation while
+    // role/name give the record its semantic identity.
+    let d = SimDriver::new(vec![el(1, "button", "Save", &["press"])]);
+    let obs = d.observe(&ObservationScope::default()).unwrap();
+    let plan = d
+        .plan(
+            &Action::Click {
+                target: Target::Element {
+                    observation: obs.id,
+                    element: ElementId(1),
+                },
+                button: MouseButton::Left,
+                count: 1,
+            },
+            &ctx(),
+        )
+        .unwrap();
+    let t = &plan.routes[0].target;
+    assert_eq!(t.element, Some(ElementId(1)));
+    assert_eq!(t.observation, Some(obs.id));
+    assert_eq!(t.role.as_deref(), Some("button"));
+    assert_eq!(t.name.as_deref(), Some("Save"));
+}

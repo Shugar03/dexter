@@ -108,6 +108,21 @@ impl TargetDescriptor {
         };
         Self::from_target(target)
     }
+
+    /// Fill identity fields from a resolved element — drivers call this
+    /// for element-handle routes so a grant or audit line reads the
+    /// element's semantic identity, not only its ephemeral id.
+    pub fn enrich_element(&mut self, el: &crate::Element) {
+        if self.role.is_none() {
+            self.role = el.role.clone();
+        }
+        if self.name.is_none() {
+            self.name = el.name.clone();
+        }
+        if self.identifier.is_none() {
+            self.identifier = el.identifier.clone();
+        }
+    }
 }
 
 /// One concrete way to perform an action — the unit policy authorizes

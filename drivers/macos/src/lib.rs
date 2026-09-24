@@ -130,7 +130,7 @@ impl ComputerDriver for MacOsDriver {
             let app = AXUIElement::application(pid);
             // Per-call AX timeout so a hung app can't freeze the runtime.
             let _ = app.set_messaging_timeout(1.5);
-            let tree = match scope.window {
+            let (tree, minted) = match scope.window {
                 Some(win_id) => {
                     let cg_bounds = obs
                         .windows
@@ -143,25 +143,31 @@ impl ComputerDriver for MacOsDriver {
                     match ax::collect_window(&app, cg_bounds, scope.max_depth, scope.max_elements) {
                         Ok(tree) => {
                             obs.windows.retain(|w| w.id == win_id);
-                            tree
+                            (tree, actions::Minted::Window { cg_bounds })
                         }
                         // The app doesn't expose that window via AX
                         // (degraded AXWindows, same-bounds ambiguity) —
                         // walk the full tree; callers bounds-filter the
                         // result, which is still correct, just slower.
-                        Err(_) => ax::collect(
-                            &app,
-                            scope.max_depth,
-                            scope.max_elements,
-                            scope.include_menu,
+                        Err(_) => (
+                            ax::collect(
+                                &app,
+                                scope.max_depth,
+                                scope.max_elements,
+                                scope.include_menu,
+                            ),
+                            actions::Minted::AppWide,
                         ),
                     }
                 }
-                None => ax::collect(
-                    &app,
-                    scope.max_depth,
-                    scope.max_elements,
-                    scope.include_menu,
+                None => (
+                    ax::collect(
+                        &app,
+                        scope.max_depth,
+                        scope.max_elements,
+                        scope.include_menu,
+                    ),
+                    actions::Minted::AppWide,
                 ),
             };
             obs.elements_truncated = tree.truncated;
@@ -190,7 +196,8 @@ impl ComputerDriver for MacOsDriver {
             {
                 vision::augment(&mut obs, scope);
             }
-            self.obs_cache.store(id, Some(pid), obs.elements.clone());
+            self.obs_cache
+                .store(id, Some(pid), obs.elements.clone(), minted);
 
             if scope.screenshot {
                 let path = scope

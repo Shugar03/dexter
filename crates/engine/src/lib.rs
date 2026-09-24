@@ -1272,7 +1272,15 @@ pub(crate) mod audit {
             }),
             Action::Observe => serde_json::json!({"type": "observe"}),
             Action::Wait { millis } => serde_json::json!({"type": "wait", "millis": millis}),
-            Action::Navigate { url } => serde_json::json!({"type": "navigate", "url": url}),
+            Action::Navigate { url } => serde_json::json!({
+                "type": "navigate",
+                // Origin+path stay operator-legible; the query/fragment
+                // — where signed tokens live — is stripped like a
+                // payload, and the digest keeps audit correlation to
+                // the exact URL the fingerprint binds.
+                "url": dexter_core::redact_url(url),
+                "url_sha256": dexter_policy::payload_digest(url),
+            }),
             Action::Invoke { target, action } => {
                 serde_json::json!({"type": "invoke", "target": target, "action": action})
             }
@@ -1347,6 +1355,10 @@ pub(crate) mod audit {
             Action::TypeText { text, .. } => token(text),
             Action::SetValue { value, .. } => token(value),
             Action::WriteClipboardText { text } => token(text),
+            // Not a free-text payload, but query strings carry the
+            // same token class — keep origin+path (a useful training
+            // signal), strip the rest like the journal does.
+            Action::Navigate { url } => *url = dexter_core::redact_url(url),
             _ => {}
         }
     }

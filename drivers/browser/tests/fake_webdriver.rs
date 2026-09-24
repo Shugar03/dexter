@@ -986,3 +986,31 @@ fn click_enforces_the_shared_count_contract() {
         .unwrap();
     assert_eq!(r.status, dexter_core::ActionStatus::Unsupported);
 }
+
+#[test]
+fn element_route_descriptor_carries_semantic_identity() {
+    // The element handle rides alone from `Target::Element` — plan()
+    // fills role/name from the cached observation so the grant and
+    // audit record read "button Pay now", not "element 3".
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+    let obs = driver.observe(&ObservationScope::default()).unwrap();
+    let plan = driver
+        .plan(
+            &Action::Click {
+                target: Target::Element {
+                    observation: obs.id,
+                    element: dexter_core::ElementId(3),
+                },
+                button: MouseButton::Left,
+                count: 1,
+            },
+            &ActContext::default(),
+        )
+        .expect("plan");
+    let t = &plan.routes[0].target;
+    assert_eq!(t.element, Some(dexter_core::ElementId(3)));
+    assert_eq!(t.observation, Some(obs.id));
+    assert_eq!(t.role.as_deref(), Some("button"));
+    assert_eq!(t.name.as_deref(), Some("Pay now"));
+}

@@ -371,7 +371,7 @@ impl ComputerDriver for SimDriver {
             )),
             Action::Navigate { url } => Ok(ActionResult::success(
                 Mechanism::Api,
-                Some(format!("navigated to {url}")),
+                Some(format!("navigated to {}", dexter_core::redact_url(url))),
             )),
             Action::Click {
                 target,
@@ -827,10 +827,24 @@ impl ComputerDriver for SimDriver {
             }
             Action::Observe => return Ok(ExecutionPlan::legacy(action)),
         };
-        Ok(ExecutionPlan {
+        let mut plan = ExecutionPlan {
             requested: action.clone(),
             routes,
-        })
+        };
+        // Element-handle routes carry only the id — fill the semantic
+        // identity so a grant or audit line reads "button Save", not
+        // "element 1" (same legibility the engine enrichment gives).
+        {
+            let s = self.state.lock().unwrap();
+            for route in &mut plan.routes {
+                if let Some(el_id) = route.target.element {
+                    if let Some(found) = s.elements.iter().find(|e| e.id == el_id) {
+                        route.target.enrich_element(found);
+                    }
+                }
+            }
+        }
+        Ok(plan)
     }
 
     /// The authorized route's action is exactly what `act` performs —

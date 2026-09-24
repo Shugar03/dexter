@@ -441,6 +441,22 @@ impl ComputerDriver for BrowserDriver {
             Action::Drag { .. } => dom(TargetDescriptor::from_action(action)),
             Action::Observe => ExecutionPlan::legacy(action),
         };
+        // Element-handle routes carry only the minted id — fill the
+        // semantic identity from the cached observation so a grant or
+        // audit line reads "button Pay now", not "element 3".
+        let mut plan = plan;
+        for route in &mut plan.routes {
+            if let (Some(obs), Some(el)) = (route.target.observation, route.target.element) {
+                let cache = self.obs_cache.lock().unwrap();
+                if let Some(found) = cache
+                    .iter()
+                    .find(|(id, _, _)| *id == obs)
+                    .and_then(|(_, els, _)| els.iter().find(|e| e.id == el))
+                {
+                    route.target.enrich_element(found);
+                }
+            }
+        }
         Ok(plan)
     }
 
@@ -460,7 +476,9 @@ impl ComputerDriver for BrowserDriver {
                 self.client.lock().unwrap().navigate(url)?;
                 Ok(ActionResult::success(
                     Mechanism::Dom,
-                    Some(format!("navigated to {url}")),
+                    // Query strings carry signed tokens — the detail is
+                    // journaled, so it reports the redacted form.
+                    Some(format!("navigated to {}", dexter_core::redact_url(url))),
                 ))
             }
             Action::Click {
