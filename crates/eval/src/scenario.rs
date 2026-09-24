@@ -287,6 +287,9 @@ pub fn run_scenario_with<D: ComputerDriver>(
         dexter_policy::Policy::embedded(),
         Duration::from_secs(60),
     );
+    // Scenario runs feed `rows_from_events` — they need the full
+    // decision context, which the audit trail deliberately redacts.
+    engine.set_trace_mode(dexter_engine::TraceMode::Training);
     for fp in &spec.task.grants {
         engine.grant_approval(fp);
     }
@@ -347,6 +350,8 @@ pub fn run_scenario_with<D: ComputerDriver>(
             TaskOutcome::Completed { steps } => ("completed".to_string(), *steps),
             TaskOutcome::Abstained { .. } => ("abstained".to_string(), 0),
             TaskOutcome::Escalated { .. } => ("escalated".to_string(), 0),
+            TaskOutcome::NeedsApproval { .. } => ("needs_approval".to_string(), 0),
+            TaskOutcome::Denied { .. } => ("denied".to_string(), 0),
             TaskOutcome::Failed { .. } => ("failed".to_string(), 0),
             TaskOutcome::MaxSteps => ("max_steps".to_string(), spec.task.max_steps),
             TaskOutcome::Cancelled => ("cancelled".to_string(), 0),

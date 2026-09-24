@@ -10,8 +10,9 @@
 //! behind `allow_coordinates`.
 
 use dexter_core::{
-    Action, ActionResult, ActionStatus, Element, ElementId, Mechanism, Observation, ObservationId,
-    ObservationScope, SemanticTarget, Target, Window,
+    Action, ActionResult, ActionStatus, Element, ElementId, ExecutionPlan, ExecutionRoute,
+    Intrusiveness, Mechanism, Observation, ObservationId, ObservationScope, SemanticTarget,
+    Sensitivity, Target, TargetDescriptor, Window,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
 use std::collections::VecDeque;
@@ -444,5 +445,90 @@ impl ComputerDriver for SimDriver {
                 ))
             }
         }
+    }
+
+    /// Read-only route declaration: one route per action, its mechanism
+    /// exactly what `act` reports. `resolve` reaches element-shaped
+    /// targets only — point and window targets are categorically
+    /// unresolvable, so they declare no route; an empty plan is the
+    /// honest "unsupported" and the engine still judges the action's
+    /// own tier, keeping refusal a policy verdict. Coordinate paths
+    /// exist only under `allow_coordinates`. `Observe` stays legacy:
+    /// `act` rejects it as an engine directive.
+    fn plan(&self, action: &Action, ctx: &ActContext) -> Result<ExecutionPlan, DriverError> {
+        let resolvable = |t: &Target| {
+            matches!(
+                t,
+                Target::Element { .. } | Target::Semantic(_) | Target::Focused
+            )
+        };
+        let route = |mechanism: Mechanism,
+                     intrusiveness: Intrusiveness,
+                     requires_foreground: bool| ExecutionRoute {
+            action: action.clone(),
+            target: TargetDescriptor::from_action(action),
+            mechanism: Some(mechanism),
+            intrusiveness,
+            sensitivity: Sensitivity::Standard,
+            requires_foreground,
+        };
+        let api = || route(Mechanism::Api, Intrusiveness::Background, false);
+        let coords = || route(Mechanism::Coordinates, Intrusiveness::Physical, true);
+        let routes = match action {
+            Action::Wait { .. } => {
+                vec![route(
+                    Mechanism::NativeAutomation,
+                    Intrusiveness::Background,
+                    false,
+                )]
+            }
+            Action::Navigate { .. } => {
+                vec![route(Mechanism::Api, Intrusiveness::Visual, false)]
+            }
+            Action::Click { target, .. } => match target {
+                Target::Point { .. } if ctx.allow_coordinates => vec![coords()],
+                t if resolvable(t) => vec![api()],
+                _ => vec![],
+            },
+            Action::Key { .. } if ctx.allow_coordinates => vec![coords()],
+            Action::Key { .. } => vec![],
+            Action::Scroll { target, .. } => match target {
+                Some(t) if resolvable(t) => vec![api()],
+                Some(_) => vec![],
+                // `act` scrolls by coordinates unconditionally — the
+                // route is declared whether or not coordinates were
+                // opted into, so policy sees the physical tier.
+                None => vec![coords()],
+            },
+            // `act` types into `Target::Focused` when no target is given —
+            // the descriptor mirrors that resolution.
+            Action::TypeText { target, .. } if target.as_ref().is_none_or(resolvable) => {
+                let mut r = api();
+                if target.is_none() {
+                    r.target = TargetDescriptor::from_target(Some(&Target::Focused));
+                }
+                vec![r]
+            }
+            Action::TypeText { .. } => vec![],
+            Action::SetValue { target, .. } | Action::Focus { target } if resolvable(target) => {
+                vec![api()]
+            }
+            Action::SetValue { .. } | Action::Focus { .. } => vec![],
+            Action::Observe => return Ok(ExecutionPlan::legacy(action)),
+        };
+        Ok(ExecutionPlan {
+            requested: action.clone(),
+            routes,
+        })
+    }
+
+    /// The authorized route's action is exactly what `act` performs —
+    /// the declared mechanism already mirrors its report.
+    fn execute(
+        &self,
+        route: &ExecutionRoute,
+        ctx: &ActContext,
+    ) -> Result<ActionResult, DriverError> {
+        self.act(&route.action, ctx)
     }
 }

@@ -5,7 +5,7 @@
 
 use dexter_mcp::DexterMcp;
 use dexter_policy::Policy;
-use dexter_sim::SimDriver;
+use dexter_sim::{Effect, SimDriver};
 use rmcp::model::CallToolRequestParam;
 use rmcp::service::{RunningService, ServiceExt};
 use serde_json::json;
@@ -205,29 +205,38 @@ async fn operator_opt_in_allows_coords() {
 #[tokio::test]
 async fn act_needs_approval_returns_grantable_fingerprint() {
     // Embedded policy -> mutation requires approval. The fingerprint the
-    // agent receives is what a human grants out-of-band.
-    let client = client_server("").await; // empty file = embedded default
-    let res = client
-        .call_tool(CallToolRequestParam {
-            name: "dexter_act".into(),
-            arguments: Some(
-                json!({
-                    "action": {"type":"click","target":{"name":"Save"},"button":"left"},
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-            ),
-        })
-        .await
-        .expect("call");
+    // agent receives is what a human grants out-of-band — opaque in v2.
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::new(
+        Policy::from_toml("").unwrap(), // empty file = embedded default
+        Box::new(SimDriver::new(vec![save_button()])),
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    let act = || CallToolRequestParam {
+        name: "dexter_act".into(),
+        arguments: Some(
+            json!({
+                "action": {"type":"click","target":{"name":"Save"},"button":"left"},
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    };
+    let res = client.call_tool(act()).await.expect("call");
     let text = res.content[0].raw.as_text().expect("text content");
     let status: serde_json::Value = serde_json::from_str(&text.text).unwrap();
     assert_eq!(status["status"], "needs_approval");
-    assert!(status["fingerprint"].as_str().unwrap().contains("Save"));
-
-    // Grant it, then verify the journal shows the approval path.
     let fp = status["fingerprint"].as_str().unwrap().to_string();
+    assert!(fp.starts_with("sha256:"), "{fp}");
+
+    // Grant it, retry — the identical act now runs to done.
     client
         .call_tool(CallToolRequestParam {
             name: "dexter_grant".into(),
@@ -235,7 +244,12 @@ async fn act_needs_approval_returns_grantable_fingerprint() {
         })
         .await
         .expect("grant");
+    let res = client.call_tool(act()).await.expect("retry");
+    let text = res.content[0].raw.as_text().expect("text content");
+    let status: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(status["status"], "done", "{status}");
 
+    // The journal shows the approval path.
     let res = client
         .call_tool(CallToolRequestParam {
             name: "dexter_journal".into(),
@@ -541,5 +555,242 @@ async fn second_concurrent_task_is_rejected() {
         .text
         .clone();
     assert!(text.contains("cancelled"), "first task cancelled: {text}");
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
+async fn observe_reports_output_truncation() {
+    let elements: Vec<dexter_core::Element> = (1..=501u64)
+        .map(|i| dexter_core::Element {
+            id: dexter_core::ElementId(i),
+            role: Some("button".into()),
+            name: Some(format!("Button {i}")),
+            actions: vec!["press".into()],
+            enabled: Some(true),
+            ..Default::default()
+        })
+        .collect();
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let server = DexterMcp::new(
+        Policy::from_toml("").unwrap(),
+        Box::new(SimDriver::new(elements)),
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_observe".into(),
+            arguments: Some(json!({"max_elements": 600}).as_object().unwrap().clone()),
+        })
+        .await
+        .expect("observe");
+    let text = res.content[0].raw.as_text().expect("text");
+    let v: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(v["element_count"], 501);
+    assert_eq!(v["elements_returned"], 500);
+    assert_eq!(v["elements_output_truncated"], true);
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
+async fn journal_never_contains_typed_secret() {
+    let secret = "DEXTER_SECRET_SENTINEL";
+    let field = dexter_core::Element {
+        id: dexter_core::ElementId(1),
+        role: Some("text_field".into()),
+        name: Some("Body".into()),
+        actions: vec!["set_value".into(), "focus".into()],
+        enabled: Some(true),
+        focused: true,
+        ..Default::default()
+    };
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::new(
+        Policy::from_toml(
+            r#"
+            [defaults]
+            mutating = "allow"
+            "#,
+        )
+        .unwrap(),
+        Box::new(SimDriver::new(vec![field])),
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_act".into(),
+            arguments: Some(
+                json!({
+                    "action": {"type":"type_text","text":secret,"target":{"role":"text_field","name":"Body"}},
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        })
+        .await
+        .expect("act");
+    let text = res.content[0].raw.as_text().expect("text content");
+    let status: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(status["status"], "done", "{status}");
+
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_journal".into(),
+            arguments: None,
+        })
+        .await
+        .expect("journal");
+    let text = res.content[0].raw.as_text().expect("text content");
+    let journal: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    let serialized = serde_json::to_string(&journal).unwrap();
+    assert!(!serialized.contains(secret), "journal leaked typed secret");
+    client.cancel().await.ok();
+}
+
+/// v2 round-trip: the element id observe emits (`"e_1"`) feeds straight
+/// into dexter_act's untagged Element target — no parsing, no
+/// re-observation required.
+#[tokio::test]
+async fn observe_element_id_round_trips_into_act() {
+    let button = dexter_core::Element {
+        id: dexter_core::ElementId(1),
+        role: Some("button".into()),
+        name: Some("Save".into()),
+        actions: vec!["press".into()],
+        enabled: Some(true),
+        ..Default::default()
+    };
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::new(
+        Policy::from_toml(
+            r#"
+            [defaults]
+            mutating = "allow"
+            "#,
+        )
+        .unwrap(),
+        Box::new(SimDriver::new(vec![button])),
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_observe".into(),
+            arguments: None,
+        })
+        .await
+        .expect("observe");
+    let text = res.content[0].raw.as_text().expect("text");
+    let v: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    let element = v["elements"][0]["id"].as_str().expect("element id");
+    assert_eq!(element, "e_1");
+    let observation = v["observation"].as_u64().expect("observation id");
+
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_act".into(),
+            arguments: Some(
+                json!({
+                    "action": {
+                        "type": "click",
+                        "target": {"observation": observation, "element": element},
+                        "button": "left",
+                    },
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        })
+        .await
+        .expect("act");
+    let text = res.content[0].raw.as_text().expect("text content");
+    let status: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(status["status"], "done", "{status}");
+    client.cancel().await.ok();
+}
+
+/// A task that hits the approval gate returns `needs_approval` and
+/// releases the engine — granting the fingerprint and re-invoking the
+/// task consumes the grant and completes.
+#[tokio::test]
+async fn task_needs_approval_then_grant_and_retry() {
+    let sim = SimDriver::new(vec![save_button()]);
+    // One press spawns the "Saved" label done_when verifies on.
+    sim.on_press(
+        dexter_core::SemanticTarget {
+            name: Some("Save".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(dexter_core::Element {
+            role: Some("static_text".into()),
+            name: Some("Saved".into()),
+            ..Default::default()
+        }),
+    );
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::new(Policy::embedded(), Box::new(sim));
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    let task = || CallToolRequestParam {
+        name: "dexter_task".into(),
+        arguments: Some(
+            json!({
+                "goal": "click save",
+                "done": {"type":"element_exists","target":{"name":"Saved"}},
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    };
+    let res = client.call_tool(task()).await.expect("task");
+    let text = res.content[0].raw.as_text().expect("text");
+    let mut status: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(status["status"], "needs_approval", "{status}");
+    assert!(status["fingerprint"].is_string(), "{status}");
+
+    // Grant + retry: the replanned route produces the same fingerprint,
+    // the grant is consumed and the press completes the task. If a step
+    // pauses on approval again, grant once more — the contract is that
+    // the task pauses cleanly (never spins) and grant+retry progresses.
+    let mut grants = 0;
+    while status["status"] == "needs_approval" && grants < 3 {
+        let fp = status["fingerprint"].as_str().unwrap().to_string();
+        client
+            .call_tool(CallToolRequestParam {
+                name: "dexter_grant".into(),
+                arguments: Some(json!({"fingerprint": fp}).as_object().unwrap().clone()),
+            })
+            .await
+            .expect("grant");
+        grants += 1;
+        let res = client.call_tool(task()).await.expect("task retry");
+        let text = res.content[0].raw.as_text().expect("text");
+        status = serde_json::from_str(&text.text).unwrap();
+    }
+    assert_eq!(status["status"], "completed", "{status}");
     client.cancel().await.ok();
 }

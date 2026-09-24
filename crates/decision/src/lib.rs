@@ -24,7 +24,7 @@
 //!   engines (Laya) express themselves through; the engine-internal
 //!   `decide()` call stays opaque.
 
-use dexter_core::{Action, Element, MouseButton, Observation, SemanticTarget, Target};
+use dexter_core::{Action, Element, MouseButton, Observation, Target};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -166,6 +166,10 @@ pub enum Answer {
 pub struct GenHistory {
     /// Actions already executed in this task (in order).
     pub attempts: Vec<Action>,
+    /// Display label each attempted action resolved to at decision time
+    /// (parallel to `attempts`) — element targets carry no name, so the
+    /// engine records the label it resolved when the world was fresh.
+    pub attempt_names: Vec<Option<String>>,
     /// Last step's failure summary, if any.
     pub last_error: Option<String>,
     /// Previous observation, for delta signals (new elements get a
@@ -626,11 +630,9 @@ fn expr_next_candidate(
     let mut pressed: Vec<String> = hist
         .attempts
         .iter()
-        .filter_map(|a| match a {
-            Action::Click {
-                target: Target::Semantic(st),
-                ..
-            } => st.name.clone(),
+        .zip(hist.attempt_names.iter())
+        .filter_map(|(a, n)| match a {
+            Action::Click { .. } => n.clone(),
             _ => None,
         })
         .collect();
@@ -662,20 +664,15 @@ fn expr_next_candidate(
     // generic path or an abstain can take over.
     let stalled = pressed.last().is_some_and(|p| expr_step_matches(step, p))
         || (hist.last_error.is_some()
+            && matches!(hist.attempts.last(), Some(Action::Click { .. }))
             && hist
-                .attempts
+                .attempt_names
                 .last()
-                .and_then(|a| match a {
-                    Action::Click {
-                        target: Target::Semantic(st),
-                        ..
-                    } => st.name.clone(),
-                    _ => None,
-                })
+                .and_then(|n| n.clone())
                 .is_some_and(|n| expr_step_matches(step, &n)));
     Some(CandidateAction {
         action: Action::Click {
-            target: element_target(el),
+            target: element_target(obs, el),
             button: MouseButton::Left,
         },
         rationale: format!(
@@ -818,22 +815,32 @@ fn is_pressable(el: &Element) -> bool {
 }
 
 /// The target Dexter would pass to an action on this element.
-fn element_target(el: &Element) -> Target {
-    Target::Semantic(SemanticTarget {
-        role: el.role.clone(),
-        name: el.name.clone(),
-        ..Default::default()
-    })
+fn element_target(obs: &Observation, el: &Element) -> Target {
+    Target::Element {
+        observation: obs.id,
+        element: el.id,
+    }
 }
 
-/// Does `attempted` already contain an action on this same element?
+/// Does `attempted` point at `el`? Element targets match by id; semantic
+/// targets (attempts recorded by external engines) match role+name.
+fn same_element_target(attempted: &Target, el: &Element) -> bool {
+    match attempted {
+        Target::Element { element, .. } => element == &el.id,
+        Target::Semantic(st) => st.role == el.role && st.name == el.name,
+        _ => false,
+    }
+}
+
+/// Does `attempts` already contain an action on this same element?
 fn already_tried(el: &Element, attempts: &[Action]) -> bool {
-    let wanted = element_target(el);
     attempts.iter().any(|a| match a {
         Action::Click { target, .. }
         | Action::Focus { target }
-        | Action::SetValue { target, .. } => target == &wanted,
-        Action::TypeText { target, .. } => target.as_ref() == Some(&wanted),
+        | Action::SetValue { target, .. } => same_element_target(target, el),
+        Action::TypeText { target, .. } => {
+            target.as_ref().is_some_and(|t| same_element_target(t, el))
+        }
         _ => false,
     })
 }
@@ -879,10 +886,10 @@ impl CandidateGenerator for HeuristicGenerator {
                     let action = match &gp.quoted {
                         Some(text) => Action::TypeText {
                             text: text.clone(),
-                            target: Some(element_target(el)),
+                            target: Some(element_target(obs, el)),
                         },
                         None => Action::Focus {
-                            target: element_target(el),
+                            target: element_target(obs, el),
                         },
                     };
                     out.push(CandidateAction {
@@ -954,7 +961,7 @@ impl CandidateGenerator for HeuristicGenerator {
                 prior *= 0.35;
             }
             let prior = prior.min(1.0);
-            let target = element_target(el);
+            let target = element_target(obs, el);
             let role = el.role.as_deref().unwrap_or("?");
             let name = el.label().unwrap_or("?");
             let base = format!(

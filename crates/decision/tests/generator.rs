@@ -1,7 +1,7 @@
 //! Candidate-generator behavior tests: verb/object parsing, action
 //! variety, coverage-based ranking, focused/delta/repeat signals.
 
-use dexter_core::{Action, Element, ElementId, MouseButton, Observation, Target};
+use dexter_core::{Action, Element, ElementId, MouseButton, Observation, ObservationId, Target};
 use dexter_decision::{CandidateGenerator, GenHistory, HeuristicGenerator};
 
 fn el(id: u64, role: &str, name: &str, actions: &[&str]) -> Element {
@@ -45,10 +45,10 @@ fn coverage_breaks_ties_between_similar_labels() {
     let first = &cands[0];
     match &first.action {
         Action::Click {
-            target: Target::Semantic(st),
+            target: Target::Element { element, .. },
             ..
-        } => assert_eq!(st.name.as_deref(), Some("Open invoice 1042")),
-        other => panic!("expected semantic click, got {other:?}"),
+        } => assert_eq!(element, &ElementId(2)),
+        other => panic!("expected element-bound click, got {other:?}"),
     }
     // The gold strictly outranks the distractors (they tie with each
     // other, which is correct — both match 2/3 terms).
@@ -125,9 +125,9 @@ fn press_goal_prefers_button_over_pressable_field() {
     let cands = gen().generate(&o, "submit the flight search", &empty());
     match &cands[0].action {
         Action::Click {
-            target: Target::Semantic(st),
+            target: Target::Element { element, .. },
             button: MouseButton::Left,
-        } => assert_eq!(st.name.as_deref(), Some("Search")),
+        } => assert_eq!(element, &ElementId(2)),
         other => panic!("expected click on Search button, got {other:?}"),
     }
 }
@@ -144,8 +144,8 @@ fn focused_editable_gets_bonus() {
     // Both are "Email" fields; the focused one must rank first.
     match &cands[0].action {
         Action::Focus {
-            target: Target::Semantic(st),
-        } => assert_eq!(st.name.as_deref(), Some("Email")),
+            target: Target::Element { element, .. },
+        } => assert_eq!(element, &ElementId(1)),
         other => panic!("{other:?}"),
     }
     assert!(cands[0].prior > cands[1].prior);
@@ -171,9 +171,9 @@ fn repeated_attempt_is_penalized() {
     // The already-tried element drops below the untried alternative.
     match &cands[0].action {
         Action::Click {
-            target: Target::Semantic(st),
+            target: Target::Element { element, .. },
             ..
-        } => assert_eq!(st.name.as_deref(), Some("Cancel upload")),
+        } => assert_eq!(element, &ElementId(2)),
         other => panic!("{other:?}"),
     }
 }
@@ -193,9 +193,9 @@ fn delta_bonus_lifts_newly_appeared_element() {
     // Both match one object term; the newly appeared one gets the bonus.
     match &cands[0].action {
         Action::Click {
-            target: Target::Semantic(st),
+            target: Target::Element { element, .. },
             ..
-        } => assert_eq!(st.name.as_deref(), Some("Discard draft")),
+        } => assert_eq!(element, &ElementId(2)),
         other => panic!("{other:?}"),
     }
 }
@@ -227,9 +227,9 @@ fn phrase_verb_log_in() {
     let cands = gen().generate(&o, "log in to my account", &empty());
     match &cands[0].action {
         Action::Click {
-            target: Target::Semantic(st),
+            target: Target::Element { element, .. },
             ..
-        } => assert_eq!(st.name.as_deref(), Some("Log in")),
+        } => assert_eq!(element, &ElementId(1)),
         other => panic!("{other:?}"),
     }
 }
@@ -298,9 +298,9 @@ fn quantifier_distinguishes_close_from_close_all() {
     let cands = gen().generate(&o, "cerrar todas las ventanas", &empty());
     match &cands[0].action {
         Action::Click {
-            target: Target::Semantic(st),
+            target: Target::Element { element, .. },
             ..
-        } => assert_eq!(st.name.as_deref(), Some("Cerrar todo")),
+        } => assert_eq!(element, &ElementId(2)),
         other => panic!("{other:?}"),
     }
 }
@@ -329,9 +329,9 @@ fn digits_are_identifiers_not_words() {
     let cands = gen().generate(&o, "open invoice 1042", &empty());
     match &cands[0].action {
         Action::Click {
-            target: Target::Semantic(st),
+            target: Target::Element { element, .. },
             ..
-        } => assert_eq!(st.name.as_deref(), Some("Open invoice 1042")),
+        } => assert_eq!(element, &ElementId(2)),
         other => panic!("{other:?}"),
     }
 }
@@ -348,9 +348,35 @@ fn bare_verb_label_does_not_beat_specific_object_match() {
     assert_eq!(cands.len(), 1);
     match &cands[0].action {
         Action::Click {
-            target: Target::Semantic(st),
+            target: Target::Element { element, .. },
             ..
-        } => assert_eq!(st.name.as_deref(), Some("Nuevo")),
+        } => assert_eq!(element, &ElementId(2)),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn candidates_bind_duplicate_labels_to_observed_elements() {
+    let mut o = obs(vec![
+        el(1, "button", "Save", &["press"]),
+        el(2, "button", "Save", &["press"]),
+    ]);
+    o.id = ObservationId(77);
+    let cands = gen().generate(&o, "click save", &empty());
+    let mut ids: Vec<_> = cands
+        .iter()
+        .filter_map(|c| match &c.action {
+            Action::Click {
+                target:
+                    Target::Element {
+                        observation,
+                        element,
+                    },
+                ..
+            } => Some((observation.0, element.0)),
+            _ => None,
+        })
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![(77, 1), (77, 2)]);
 }

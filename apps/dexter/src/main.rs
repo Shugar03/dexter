@@ -1126,6 +1126,23 @@ fn run_task(
             );
             anyhow::bail!("task escalated")
         }
+        TaskOutcome::NeedsApproval {
+            fingerprint,
+            reason,
+        } => {
+            println!(
+                "{}",
+                serde_json::json!({"status": "needs_approval", "fingerprint": fingerprint, "reason": reason})
+            );
+            anyhow::bail!("task needs approval")
+        }
+        TaskOutcome::Denied { reason } => {
+            println!(
+                "{}",
+                serde_json::json!({"status": "denied", "reason": reason})
+            );
+            anyhow::bail!("task denied by policy")
+        }
         TaskOutcome::Failed { reason } => {
             println!(
                 "{}",

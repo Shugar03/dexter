@@ -1,9 +1,12 @@
 //! Hermetic end-to-end: sim world + engine loop + policy + verifier.
 
 use dexter_core::*;
+use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
 use dexter_engine::{Engine, RunConfig, Step, StepStatus};
 use dexter_policy::{ActionContext, Policy};
 use dexter_sim::{Effect, SimDriver};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 fn el(id: u64, role: &str, name: &str) -> Element {
@@ -219,7 +222,9 @@ fn scenario_stops_at_first_failure() {
 #[test]
 fn fingerprint_matches_policy_binding() {
     // The engine's fingerprint must be the same string a caller would
-    // pre-compute for grants — this is the binding contract.
+    // pre-compute for grants — this is the binding contract. v2: opaque
+    // (sha256) — the grant binds the canonical route tuple, not a
+    // readable payload.
     let action = Action::Click {
         target: Target::Semantic(SemanticTarget {
             name: Some("Guardar".into()),
@@ -232,8 +237,9 @@ fn fingerprint_matches_policy_binding() {
         target_hint: None,
     };
     let fp = dexter_policy::fingerprint(&action, &ctx);
-    assert!(fp.contains("Guardar"));
-    assert!(fp.contains("click"));
+    assert!(fp.starts_with("sha256:"), "{fp}");
+    assert_eq!(fp, dexter_policy::fingerprint(&action, &ctx));
+    assert!(!fp.contains("Guardar"), "{fp}");
 }
 
 #[test]
@@ -629,4 +635,105 @@ fn run_plan_auto_complete_requires_world_change() {
         PlanOutcome::Failed { .. } => {}
         other => panic!("expected Failed (world never changed), got {other:?}"),
     }
+}
+
+struct DelayedVerifyDriver {
+    execute_count: Arc<AtomicU32>,
+    observe_count: Arc<AtomicU32>,
+}
+
+impl ComputerDriver for DelayedVerifyDriver {
+    fn capabilities(&self) -> DriverCapabilities {
+        DriverCapabilities {
+            name: "test",
+            element_tree: true,
+            screenshots: false,
+            background_input: true,
+        }
+    }
+
+    fn windows(&self) -> Result<Vec<Window>, DriverError> {
+        Ok(vec![])
+    }
+
+    fn observe(&self, _scope: &ObservationScope) -> Result<Observation, DriverError> {
+        let n = self.observe_count.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut obs = Observation::default();
+        if self.execute_count.load(Ordering::SeqCst) > 0 && n >= 2 {
+            obs.elements.push(el(1, "static_text", "Done"));
+        }
+        Ok(obs)
+    }
+
+    fn act(&self, _action: &Action, _ctx: &ActContext) -> Result<ActionResult, DriverError> {
+        self.execute_count.fetch_add(1, Ordering::SeqCst);
+        Ok(ActionResult::success(
+            Mechanism::Api,
+            Some("executed".into()),
+        ))
+    }
+}
+
+#[test]
+fn task_returns_needs_approval_without_spinning() {
+    // Embedded policy requires approval for every mutation — the task
+    // must surface that as an outcome immediately, not burn max_steps
+    // re-deciding around a wall it cannot cross.
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    let sim = SimDriver::new(vec![el(1, "button", "Guardar")]);
+    let mut engine = Engine::new(sim, Policy::embedded(), Duration::from_secs(60));
+    let outcome = engine.run_task(
+        "click guardar",
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 5,
+            max_duration: None,
+            cancel: None,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("Guardado".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    match outcome {
+        TaskOutcome::NeedsApproval { fingerprint, .. } => {
+            assert!(fingerprint.starts_with("sha256:"), "{fingerprint}");
+        }
+        other => panic!("expected NeedsApproval, got {other:?}"),
+    }
+    // The button was never touched — approval precedes execution.
+    assert!(engine.driver().pressed().is_empty());
+}
+
+#[test]
+fn verification_poll_executes_mutation_once() {
+    let execute_count = Arc::new(AtomicU32::new(0));
+    let observe_count = Arc::new(AtomicU32::new(0));
+    let driver = DelayedVerifyDriver {
+        execute_count: execute_count.clone(),
+        observe_count,
+    };
+    let mut engine = Engine::new(driver, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Navigate {
+            url: "https://example.test".into(),
+        },
+        expect: Some(ExpectedState::ElementExists {
+            target: SemanticTarget {
+                name: Some("Done".into()),
+                ..Default::default()
+            },
+        }),
+        max_attempts: Some(3),
+        app: None,
+    };
+    assert!(engine.run_step(&step, &cfg()).done());
+    assert_eq!(execute_count.load(Ordering::SeqCst), 1);
 }

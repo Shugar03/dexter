@@ -187,3 +187,12 @@ fn uncertain_verification_is_not_success() {
     assert_eq!(v.status, VerificationStatus::Uncertain);
     assert_ne!(v.status, VerificationStatus::Verified);
 }
+
+#[test]
+fn element_id_accepts_v1_number_and_v2_string() {
+    let v1: ElementId = serde_json::from_str("4").unwrap();
+    let v2: ElementId = serde_json::from_str("\"e_4\"").unwrap();
+    assert_eq!(v1, ElementId(4));
+    assert_eq!(v2, ElementId(4));
+    assert_eq!(serde_json::to_string(&ElementId(4)).unwrap(), "\"e_4\"");
+}

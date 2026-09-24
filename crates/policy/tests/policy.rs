@@ -300,6 +300,53 @@ fn fingerprint_distinguishes_actions() {
 }
 
 #[test]
+fn structured_target_rule_distinguishes_save_from_delete() {
+    // A `target` matcher sees the resolved element label — "Delete" is
+    // denied while an otherwise identical "Save" click falls through to
+    // the default. This is the rule shape that makes target filtering
+    // real (v1's target_hint was never populated).
+    let policy = Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "click"
+        target = "delete"
+        decision = "deny"
+        reason = "destructive control"
+    "#,
+    )
+    .unwrap();
+    let click_on = |name: &str| Action::Click {
+        target: Target::Semantic(dexter_core::SemanticTarget {
+            name: Some(name.into()),
+            ..Default::default()
+        }),
+        button: dexter_core::MouseButton::Left,
+    };
+    match policy.evaluate(&click_on("Delete"), &ctx(None)) {
+        PolicyDecision::Deny { reason } => assert!(reason.contains("destructive")),
+        other => panic!("expected Deny, got {other:?}"),
+    }
+    match policy.evaluate(&click_on("Save"), &ctx(None)) {
+        PolicyDecision::RequireApproval { .. } => {}
+        other => panic!("expected default RequireApproval, got {other:?}"),
+    }
+}
+
+#[test]
+fn fingerprint_is_opaque_and_contains_no_payload() {
+    let secret = "DEXTER_SECRET_SENTINEL";
+    let action = Action::TypeText {
+        text: secret.into(),
+        target: Some(Target::Focused),
+    };
+    let fp = dexter_policy::fingerprint(&action, &ctx(Some("TextEdit")));
+    assert!(fp.starts_with("sha256:"), "{fp}");
+    assert_eq!(fp.len(), "sha256:".len() + 64, "{fp}");
+    assert!(!fp.contains(secret), "{fp}");
+    assert!(!fp.contains("type_text"), "{fp}");
+}
+
+#[test]
 fn nonexistent_file_fails_closed() {
     let err = Policy::load(std::path::Path::new("/nonexistent/policy.toml"));
     assert!(matches!(

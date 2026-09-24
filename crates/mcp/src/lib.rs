@@ -185,6 +185,12 @@ fn err(e: impl std::fmt::Display) -> McpError {
     McpError::internal_error(e.to_string(), None)
 }
 
+/// Stamp the v2 contract version on a tool response object.
+fn v2(mut v: serde_json::Value) -> Json<serde_json::Value> {
+    v["contract_version"] = 2.into();
+    Json(v)
+}
+
 #[tool_router]
 impl DexterMcp {
     pub fn new(policy: Policy, driver: Box<dyn ComputerDriver>) -> Self {
@@ -249,6 +255,11 @@ impl DexterMcp {
         // Structured element list alongside the digest — agents target
         // `element` ids programmatically instead of parsing text. Capped
         // to keep the payload sane; the digest always stays complete-ish.
+        let total_worthy = obs
+            .elements
+            .iter()
+            .filter(|e| dexter_world_model::digest_worthy(e))
+            .count();
         let elements: Vec<serde_json::Value> = obs
             .elements
             .iter()
@@ -281,10 +292,13 @@ impl DexterMcp {
                 })
             })
             .collect();
-        Ok(Json(serde_json::json!({
+        let elements_returned = elements.len();
+        Ok(v2(serde_json::json!({
             "observation": obs.id.0,
             "windows": windows,
             "element_count": obs.elements.len(),
+            "elements_returned": elements_returned,
+            "elements_output_truncated": total_worthy > elements_returned,
             "elements": elements,
             "elements_truncated": obs.elements_truncated,
             "ax_limited": obs.ax_limited,
@@ -336,7 +350,7 @@ impl DexterMcp {
         })
         .await
         .map_err(|e| err(format!("join: {e}")))??;
-        Ok(Json(serde_json::to_value(map).map_err(err)?))
+        Ok(v2(serde_json::to_value(map).map_err(err)?))
     }
 
     /// Ranked menu of plausible actions for a goal — the agent stays the
@@ -380,7 +394,7 @@ impl DexterMcp {
                 })
             })
             .collect();
-        Ok(Json(serde_json::json!({
+        Ok(v2(serde_json::json!({
             "observation": obs.id.0,
             "candidates": candidates,
             "note": "priors are heuristic hints — the agent decides; \
@@ -475,7 +489,7 @@ impl DexterMcp {
     ) -> Result<Json<serde_json::Value>, McpError> {
         let mut engine = self.runtime.engine.lock().map_err(err)?;
         engine.grant_approval(&params.fingerprint);
-        Ok(Json(serde_json::json!({
+        Ok(v2(serde_json::json!({
             "granted": true,
             "fingerprint": params.fingerprint,
         })))
@@ -504,7 +518,7 @@ impl DexterMcp {
         })
         .await
         .map_err(|e| err(format!("join: {e}")))??;
-        Ok(Json(serde_json::json!({
+        Ok(v2(serde_json::json!({
             "status": format!("{:?}", v.status),
             "checks": v.checks,
         })))
@@ -604,6 +618,17 @@ impl DexterMcp {
                         "route": format!("{route:?}"),
                         "reason": reason,
                     }),
+                    TaskOutcome::NeedsApproval {
+                        fingerprint,
+                        reason,
+                    } => serde_json::json!({
+                        "status": "needs_approval",
+                        "fingerprint": fingerprint,
+                        "reason": reason,
+                    }),
+                    TaskOutcome::Denied { reason } => {
+                        serde_json::json!({"status": "denied", "reason": reason})
+                    }
                     TaskOutcome::Failed { reason } => {
                         serde_json::json!({"status": "failed", "reason": reason})
                     }
@@ -624,7 +649,7 @@ impl DexterMcp {
                 v
             }
         };
-        Ok(Json(status))
+        Ok(v2(status))
     }
 
     /// Ask the running `dexter_task` to stop between steps (cooperative —
@@ -642,7 +667,7 @@ impl DexterMcp {
             }
             None => false,
         };
-        Ok(Json(serde_json::json!({"cancelled": cancelled})))
+        Ok(v2(serde_json::json!({"cancelled": cancelled})))
     }
 
     /// Audit journal for this session — every observation, policy check,
@@ -653,7 +678,7 @@ impl DexterMcp {
     )]
     async fn dexter_journal(&self) -> Result<Json<serde_json::Value>, McpError> {
         let journal = self.runtime.journal.lock().map_err(err)?;
-        Ok(Json(serde_json::json!({
+        Ok(v2(serde_json::json!({
             "events": journal.events,
             "dropped": journal.dropped,
         })))
@@ -681,7 +706,7 @@ impl DexterMcp {
         .await
         .map_err(|e| err(format!("join: {e}")))??;
         let caps = &self.runtime.caps;
-        Ok(Json(serde_json::json!({
+        Ok(v2(serde_json::json!({
             "driver": {
                 "name": caps.name,
                 "element_tree": caps.element_tree,
@@ -733,7 +758,7 @@ fn status_json(status: StepStatus) -> Result<Json<serde_json::Value>, McpError> 
             serde_json::json!({"status": "error", "error": error.to_string()})
         }
     };
-    Ok(Json(v))
+    Ok(v2(v))
 }
 
 #[tool_handler]

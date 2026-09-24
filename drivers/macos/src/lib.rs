@@ -21,7 +21,10 @@ mod windows;
 pub mod permissions;
 
 use accessibility::AXUIElement;
-use dexter_core::{Action, ActionResult, Observation, ObservationId, ObservationScope, Window};
+use dexter_core::{
+    Action, ActionResult, ExecutionPlan, ExecutionRoute, Observation, ObservationId,
+    ObservationScope, Window,
+};
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError, WakeHandle};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
@@ -179,5 +182,17 @@ impl ComputerDriver for MacOsDriver {
 
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
         actions::act(action, ctx, &self.obs_cache)
+    }
+
+    fn plan(&self, action: &Action, ctx: &ActContext) -> Result<ExecutionPlan, DriverError> {
+        actions::plan(action, ctx, &self.obs_cache)
+    }
+
+    fn execute(
+        &self,
+        route: &ExecutionRoute,
+        ctx: &ActContext,
+    ) -> Result<ActionResult, DriverError> {
+        actions::act(&route.action, ctx, &self.obs_cache)
     }
 }

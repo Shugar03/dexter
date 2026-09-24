@@ -110,17 +110,21 @@ fn keypad() -> Vec<Element> {
 fn history_with(pressed: &[&str]) -> GenHistory {
     GenHistory {
         attempts: pressed.iter().map(|n| press(n)).collect(),
+        attempt_names: pressed.iter().map(|n| Some(n.to_string())).collect(),
         ..Default::default()
     }
 }
 
-fn top_label(cands: &[dexter_decision::CandidateAction]) -> String {
+fn top_label(o: &Observation, cands: &[dexter_decision::CandidateAction]) -> String {
     match &cands[0].action {
         Action::Click {
-            target: Target::Semantic(st),
+            target: Target::Element { element, .. },
             ..
-        } => st.name.clone().unwrap_or_default(),
-        other => panic!("expected semantic click, got {other:?}"),
+        } => o
+            .element(*element)
+            .and_then(|e| e.name.clone())
+            .unwrap_or_default(),
+        other => panic!("expected element-bound click, got {other:?}"),
     }
 }
 
@@ -128,30 +132,27 @@ fn top_label(cands: &[dexter_decision::CandidateAction]) -> String {
 fn expression_goal_presses_next_keypad_key() {
     let g = HeuristicGenerator::default();
     let goal = "calcular 134 más 89";
+    let world = obs(keypad());
 
     // Fresh world → first operand's first digit.
-    let cands = g.generate(&obs(keypad()), goal, &GenHistory::default());
-    assert_eq!(top_label(&cands), "1");
+    let cands = g.generate(&world, goal, &GenHistory::default());
+    assert_eq!(top_label(&world, &cands), "1");
 
     // 1,3,4 pressed → operator next (localized label).
-    let cands = g.generate(&obs(keypad()), goal, &history_with(&["1", "3", "4"]));
-    assert_eq!(top_label(&cands), "Sumar");
+    let cands = g.generate(&world, goal, &history_with(&["1", "3", "4"]));
+    assert_eq!(top_label(&world, &cands), "Sumar");
 
     // Operator pressed → second operand's digits.
-    let cands = g.generate(
-        &obs(keypad()),
-        goal,
-        &history_with(&["1", "3", "4", "Sumar", "8"]),
-    );
-    assert_eq!(top_label(&cands), "9");
+    let cands = g.generate(&world, goal, &history_with(&["1", "3", "4", "Sumar", "8"]));
+    assert_eq!(top_label(&world, &cands), "9");
 
     // Both operands + op → equals.
     let cands = g.generate(
-        &obs(keypad()),
+        &world,
         goal,
         &history_with(&["1", "3", "4", "Sumar", "8", "9"]),
     );
-    assert_eq!(top_label(&cands), "Es igual a");
+    assert_eq!(top_label(&world, &cands), "Es igual a");
 }
 
 #[test]

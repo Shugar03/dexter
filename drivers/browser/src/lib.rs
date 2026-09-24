@@ -15,8 +15,9 @@ mod walker;
 mod webdriver;
 
 use dexter_core::{
-    Action, ActionResult, ActionStatus, AppSelector, Element, ElementId, Mechanism, Observation,
-    ObservationId, ObservationScope, Rect, Target, Window,
+    Action, ActionResult, ActionStatus, AppSelector, Element, ElementId, ExecutionPlan,
+    ExecutionRoute, Intrusiveness, Mechanism, Observation, ObservationId, ObservationScope, Rect,
+    Sensitivity, Target, TargetDescriptor, Window,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
 use serde_json::json;
@@ -326,6 +327,68 @@ impl ComputerDriver for BrowserDriver {
         Ok(obs)
     }
 
+    /// Routes mirror `act`: everything dispatches through the DOM —
+    /// including `Key` chords and unscoped `Scroll`, which the action
+    /// shape classes as physical but here are honestly background.
+    /// `Target::Point` has no route at all: this driver never emits
+    /// coordinates. `execute` forwards the authorized route to `act`,
+    /// so a declared mechanism is always what the act reports.
+    fn plan(&self, action: &Action, _ctx: &ActContext) -> Result<ExecutionPlan, DriverError> {
+        let single = |mechanism, intrusiveness, desc: TargetDescriptor| {
+            ExecutionPlan::single(
+                action,
+                ExecutionRoute {
+                    action: action.clone(),
+                    target: desc,
+                    mechanism: Some(mechanism),
+                    intrusiveness,
+                    sensitivity: Sensitivity::Standard,
+                    requires_foreground: false,
+                },
+            )
+        };
+        let dom = |desc| single(Mechanism::Dom, Intrusiveness::Background, desc);
+        let plan = match action {
+            Action::Wait { .. } => single(
+                Mechanism::Api,
+                Intrusiveness::Background,
+                TargetDescriptor::from_action(action),
+            ),
+            Action::Navigate { .. } => single(
+                Mechanism::Dom,
+                Intrusiveness::Visual,
+                TargetDescriptor::from_action(action),
+            ),
+            Action::Click {
+                target: Target::Point { .. },
+                ..
+            } => ExecutionPlan {
+                requested: action.clone(),
+                routes: vec![],
+            },
+            Action::Click { .. } | Action::SetValue { .. } => {
+                dom(TargetDescriptor::from_action(action))
+            }
+            Action::Focus {
+                target: Target::Window { .. },
+            } => single(
+                Mechanism::Api,
+                Intrusiveness::Visual,
+                TargetDescriptor::from_action(action),
+            ),
+            Action::Focus { .. } => dom(TargetDescriptor::from_action(action)),
+            Action::TypeText { target, .. } => {
+                let t = target.clone().unwrap_or(Target::Focused);
+                dom(TargetDescriptor::from_target(Some(&t)))
+            }
+            Action::Key { .. } | Action::Scroll { .. } => {
+                dom(TargetDescriptor::from_action(action))
+            }
+            Action::Observe => ExecutionPlan::legacy(action),
+        };
+        Ok(plan)
+    }
+
     fn act(&self, action: &Action, _ctx: &ActContext) -> Result<ActionResult, DriverError> {
         match action {
             Action::Wait { millis } => {
@@ -482,5 +545,15 @@ impl ComputerDriver for BrowserDriver {
                 ))
             }
         }
+    }
+
+    /// The authorized route's action is exactly what `act` performs —
+    /// the declared mechanism already mirrors its report.
+    fn execute(
+        &self,
+        route: &ExecutionRoute,
+        ctx: &ActContext,
+    ) -> Result<ActionResult, DriverError> {
+        self.act(&route.action, ctx)
     }
 }

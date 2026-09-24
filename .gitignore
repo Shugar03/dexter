@@ -8,3 +8,4 @@ events.jsonl
 out/
 workers/laya/.venv/
 __pycache__/
+.tgrep/

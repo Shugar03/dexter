@@ -251,7 +251,7 @@ fn action_names(el: &AXUIElement) -> Vec<String> {
 
 /// Roles that must never leak their value — password/secure fields are
 /// redacted at collection time, before anything reaches the process.
-fn is_sensitive_role(role: &str) -> bool {
+pub(crate) fn is_sensitive_role(role: &str) -> bool {
     let r = role.to_lowercase();
     r.contains("secure") || r.contains("password")
 }

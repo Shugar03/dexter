@@ -46,6 +46,7 @@ serde_json = "1"
 toml = "0.8"
 thiserror = "2"
 regex = "1"
+sha2 = "0.10"
 
 # macOS FFI
 accessibility = "0.2"

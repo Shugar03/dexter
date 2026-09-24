@@ -1,24 +1,27 @@
 //! `dexter-engine` — the runtime loop every interface shares:
 //!
 //! ```text
-//! policy.evaluate ─┬─ Deny            → StepStatus::Denied
-//!                  ├─ RequireApproval → grant? → else NeedsApproval
-//!                  └─ Allow           → driver.act
-//!                                       ├─ no expect → Done
-//!                                       └─ expect    → re-observe → verify
-//!                                                        ├─ VERIFIED → Done
-//!                                                        └─ FAILED/UNCERTAIN → bounded retry
+//! driver.plan ─► routes (concrete mechanism + tier + target)
+//!       └─► per route: policy.evaluate_route ─┬─ Deny            → Denied
+//!                                             ├─ RequireApproval → grant? → else NeedsApproval
+//!                                             └─ Allow           → driver.execute (at most once)
+//!                                                                    ├─ no expect → Done
+//!                                                                    └─ expect    → verify-poll
+//!                                                                          ├─ VERIFIED → Done
+//!                                                                          └─ else → bounded polls, never re-execute
 //! ```
 //!
-//! `UNCERTAIN` is never success. `FOREGROUND_REQUIRED` / `UNSUPPORTED` /
-//! `PERMISSION_DENIED` are not retried — they are verdicts, not transient
-//! failures. Every step writes structured events into the journal.
+//! `UNCERTAIN` is never success. A mutating action executes **once** per
+//! step: a delayed verification polls the world, it never repeats the
+//! mutation. `FOREGROUND_REQUIRED` / `UNSUPPORTED` / `PERMISSION_DENIED`
+//! are verdicts, not transient failures. Every step writes structured
+//! events into the journal — payloads are digested, never plaintext.
 
 use dexter_core::{
-    Action, ActionResult, AppSelector, Event, EventKind, ExpectedState, Observation,
-    ObservationScope, Rect, Target, Verification, VerificationStatus,
+    Action, ActionResult, ActionStatus, AppSelector, Event, EventKind, ExecutionRoute,
+    ExpectedState, Observation, ObservationScope, Rect, Target, Verification, VerificationStatus,
 };
-use dexter_driver::{ActContext, ComputerDriver, DriverError};
+use dexter_driver::{ActContext, ComputerDriver, DriverError, WakeHandle};
 use dexter_policy::{ActionContext, ApprovalStore, Policy, PolicyDecision};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
@@ -119,6 +122,18 @@ impl Default for RunConfig {
     }
 }
 
+/// What the journal captures. `Audit` (default) redacts payloads and
+/// decision contexts — the public trail agents and operators read.
+/// `Training` keeps the full decision context (`CandidatesGenerated`
+/// `context`, full `DecisionMade`) for the eval harness to replay —
+/// a private capture, never the MCP-facing journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TraceMode {
+    #[default]
+    Audit,
+    Training,
+}
+
 /// The audit journal — bounded and shareable. MCP serves
 /// `dexter_journal` off this handle so audit reads never contend with
 /// the engine lock mid-task.
@@ -154,6 +169,7 @@ pub struct Engine<D: ComputerDriver> {
     /// immediately so a presence overlay (or any consumer) can tail the
     /// journal while the task is still running.
     journal_sink: Option<std::io::BufWriter<std::fs::File>>,
+    trace: TraceMode,
 }
 
 impl<D: ComputerDriver> Engine<D> {
@@ -164,7 +180,15 @@ impl<D: ComputerDriver> Engine<D> {
             approvals: ApprovalStore::new(approval_ttl),
             journal: Default::default(),
             journal_sink: None,
+            trace: TraceMode::Audit,
         }
+    }
+
+    /// Switch the journal to full-context capture (`Training`) — the
+    /// eval harness uses it to replay decision contexts; the default
+    /// `Audit` mode redacts payloads and contexts.
+    pub fn set_trace_mode(&mut self, mode: TraceMode) {
+        self.trace = mode;
     }
 
     /// Stream every event to `path` (truncated at open) as it happens —
@@ -234,7 +258,7 @@ impl<D: ComputerDriver> Engine<D> {
         // presence overlay can draw the cursor where the act lands.
         // run_plan already holds a live observation; single steps take
         // one here — cosmetic only, a failed observe never blocks the act.
-        let obs = if bounds_need_observation(&step.action) {
+        let mut obs = if bounds_need_observation(&step.action) {
             let scope = ObservationScope {
                 app: step.app.clone().or_else(|| cfg.app.clone()),
                 max_elements: cfg.observe_max_elements,
@@ -244,12 +268,62 @@ impl<D: ComputerDriver> Engine<D> {
         } else {
             None
         };
-        self.run_step_inner(step, cfg, obs.as_ref())
+        // Windowless borrow — macOS only surfaces an app's AX window
+        // tree while it is frontmost. Centralized here so CLI, MCP and
+        // SDK paths share the contract; `WakeGuard` restores focus on
+        // every return path.
+        let app = step.app.clone().or_else(|| cfg.app.clone());
+        let scope = ObservationScope {
+            app: app.clone(),
+            max_elements: cfg.observe_max_elements,
+            ..Default::default()
+        };
+        let wake = self.maybe_wake(app.as_ref(), &mut obs, &scope);
+        let status = self.run_step_inner(step, cfg, obs.as_ref());
+        if let Some(h) = wake {
+            self.driver.restore(&h);
+        }
+        status
+    }
+
+    /// Borrow the stage once when a scoped observation shows no window
+    /// content — some platforms (macOS) only expose an app's AX window
+    /// tree while it is frontmost. On wake the observation is refreshed
+    /// in place so callers act on the world the wake produced. The
+    /// caller restores the returned handle — every terminal path
+    /// funnels through a single point that hands focus back.
+    fn maybe_wake(
+        &self,
+        app: Option<&AppSelector>,
+        obs: &mut Option<Observation>,
+        scope: &ObservationScope,
+    ) -> Option<WakeHandle> {
+        let app = app?;
+        let windowed = obs.as_ref().is_some_and(|o| {
+            o.elements
+                .iter()
+                .any(|e| e.role.as_deref() == Some("window"))
+        });
+        if windowed {
+            return None;
+        }
+        let handle = self.driver.wake(app).ok()?;
+        if !handle.activated {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(800));
+        *obs = self.driver.observe(scope).ok().or_else(|| obs.take());
+        Some(handle)
     }
 
     /// `obs` is the live observation when one exists (the `run_task` loop);
     /// it lets the journal carry the target's on-screen bounds so an
     /// overlay can render presence without touching the machine.
+    ///
+    /// v2 execution contract: plan → authorize the concrete route →
+    /// execute **once** → verify by polling. A slow world never causes
+    /// a second mutation; a second mutation requires a fresh plan and a
+    /// fresh grant.
     fn run_step_inner(
         &mut self,
         step: &Step,
@@ -261,85 +335,111 @@ impl<D: ComputerDriver> Engine<D> {
             app: app.clone(),
             target_hint: None,
         };
-        let fp = dexter_policy::fingerprint(&step.action, &ctx);
-        let intrusiveness = step.action.intrusiveness();
-        let bounds = target_bounds(&step.action, obs);
-        self.journal(
-            EventKind::ActionProposed,
-            serde_json::json!({
-                "action": &step.action,
-                "app": &app,
-                "fingerprint": &fp,
-                "intrusiveness": intrusiveness,
-                "target_bounds": bounds,
-            }),
-        );
-
-        match self.policy.evaluate(&step.action, &ctx) {
-            PolicyDecision::Allow => {}
-            PolicyDecision::Deny { reason } => {
-                self.journal(
-                    EventKind::PolicyChecked,
-                    serde_json::json!({
-                        "decision": "deny",
-                        "reason": &reason,
-                        "intrusiveness": intrusiveness,
-                    }),
-                );
-                return StepStatus::Denied { reason };
-            }
-            PolicyDecision::RequireApproval { reason } => {
-                if cfg.approve_all {
-                    self.journal(
-                        EventKind::HumanApprovalRequired,
-                        serde_json::json!({
-                            "fingerprint": &fp,
-                            "reason": &reason,
-                            "granted": "approve_all",
-                        }),
-                    );
-                } else if !self.approvals.check_and_consume(&fp) {
-                    self.journal(
-                        EventKind::HumanApprovalRequired,
-                        serde_json::json!({"fingerprint": &fp, "reason": &reason}),
-                    );
-                    return StepStatus::NeedsApproval {
-                        fingerprint: fp,
-                        reason,
-                    };
-                }
-                self.journal(
-                    EventKind::PolicyChecked,
-                    serde_json::json!({
-                        "decision": "approved",
-                        "fingerprint": &fp,
-                        "intrusiveness": intrusiveness,
-                    }),
-                );
-            }
-        }
-
         let act_ctx = ActContext {
             app: app.clone(),
             allow_coordinates: cfg.allow_coordinates,
         };
-        let max_attempts = step.max_attempts.unwrap_or(cfg.max_attempts).max(1);
-        let mut last_detail = String::new();
-        let mut last_verification: Option<Verification> = None;
 
-        for attempt in 1..=max_attempts {
-            if attempt > 1 {
+        // PLAN — read-only: the driver declares the route space, each
+        // route carrying its real mechanism and tier. No routes is an
+        // honest "unsupported"; the verdict still belongs to policy, so
+        // evaluate the action's declared tier rather than erroring blind.
+        let plan = match self.driver.plan(&step.action, &act_ctx) {
+            Ok(p) => p,
+            Err(e) => {
                 self.journal(
-                    EventKind::RecoveryStarted,
-                    serde_json::json!({"attempt": attempt}),
+                    EventKind::ActionFailed,
+                    serde_json::json!({"error": e.to_string(), "stage": "plan"}),
                 );
+                return StepStatus::Errored { error: e };
             }
-            let result = match self.driver.act(&step.action, &act_ctx) {
+        };
+        let mut routes: Vec<ExecutionRoute> = if plan.routes.is_empty() {
+            vec![ExecutionRoute::legacy(&step.action)]
+        } else {
+            plan.routes
+        };
+        // Element-bound routes carry only ids unless the driver
+        // resolved them — fill role/name/identifier from the live
+        // observation so policy `target` matchers and the grant
+        // fingerprint see semantic identity, not ephemeral handles.
+        for route in &mut routes {
+            enrich_descriptor(&mut route.target, obs);
+        }
+
+        let bounds = target_bounds(&step.action, obs);
+        let mut executed: Option<ActionResult> = None;
+        let mut last_refusal = String::from("no route executed");
+
+        // AUTHORIZE + EXECUTE — each route independently. One approval
+        // covers exactly one route's execution: a fallback route is a
+        // new authorization question, not a silent escalation.
+        for (index, route) in routes.iter().enumerate() {
+            let fp = dexter_policy::fingerprint_route(route, &ctx);
+            self.journal(
+                EventKind::ActionProposed,
+                serde_json::json!({
+                    "action": audit::action_summary(&route.action),
+                    "app": &app,
+                    "fingerprint": &fp,
+                    "intrusiveness": route.intrusiveness,
+                    "mechanism": route.mechanism,
+                    "route": index,
+                    "of": routes.len(),
+                    "target_bounds": bounds,
+                }),
+            );
+
+            match self.policy.evaluate_route(route, &ctx) {
+                PolicyDecision::Allow => {}
+                PolicyDecision::Deny { reason } => {
+                    self.journal(
+                        EventKind::PolicyChecked,
+                        serde_json::json!({
+                            "decision": "deny",
+                            "reason": &reason,
+                            "intrusiveness": route.intrusiveness,
+                        }),
+                    );
+                    return StepStatus::Denied { reason };
+                }
+                PolicyDecision::RequireApproval { reason } => {
+                    if cfg.approve_all {
+                        self.journal(
+                            EventKind::HumanApprovalRequired,
+                            serde_json::json!({
+                                "fingerprint": &fp,
+                                "reason": &reason,
+                                "granted": "approve_all",
+                            }),
+                        );
+                    } else if !self.approvals.check_and_consume(&fp) {
+                        self.journal(
+                            EventKind::HumanApprovalRequired,
+                            serde_json::json!({"fingerprint": &fp, "reason": &reason}),
+                        );
+                        return StepStatus::NeedsApproval {
+                            fingerprint: fp,
+                            reason,
+                        };
+                    }
+                    self.journal(
+                        EventKind::PolicyChecked,
+                        serde_json::json!({
+                            "decision": "approved",
+                            "fingerprint": &fp,
+                            "intrusiveness": route.intrusiveness,
+                        }),
+                    );
+                }
+            }
+
+            let result = match self.driver.execute(route, &act_ctx) {
                 Ok(r) => r,
                 Err(e) => {
                     self.journal(
                         EventKind::ActionFailed,
-                        serde_json::json!({"error": e.to_string(), "attempt": attempt}),
+                        serde_json::json!({"error": e.to_string(), "route": index}),
                     );
                     return StepStatus::Errored { error: e };
                 }
@@ -350,28 +450,90 @@ impl<D: ComputerDriver> Engine<D> {
                     "status": format!("{:?}", result.status),
                     "mechanism": format!("{:?}", result.mechanism),
                     "detail": &result.detail,
-                    "attempt": attempt,
+                    "route": index,
                 }),
             );
 
-            if !result.status.ok() {
-                // Non-success statuses are verdicts, not transient errors —
-                // retrying would repeat the same refusal.
-                return StepStatus::Failed {
-                    reason: format!("{:?}: {}", result.status, result.detail.unwrap_or_default()),
-                    attempts: attempt,
-                };
+            // A declared mechanism is a promise: if the driver used a
+            // different one, the act that ran is not the act that was
+            // authorized — report the mismatch instead of laundering it.
+            if let Some(declared) = route.mechanism {
+                if result.mechanism != declared {
+                    self.journal(
+                        EventKind::ActionFailed,
+                        serde_json::json!({
+                            "error": format!(
+                                "authorized mechanism {declared:?} but driver used {:?}",
+                                result.mechanism
+                            ),
+                            "route": index,
+                        }),
+                    );
+                    return StepStatus::Failed {
+                        reason: format!(
+                            "mechanism mismatch: authorized {declared:?}, executed {:?}",
+                            result.mechanism
+                        ),
+                        attempts: (index + 1) as u32,
+                    };
+                }
             }
 
-            let Some(expected) = &step.expect else {
-                return StepStatus::Done {
-                    result,
-                    verification: None,
-                    attempts: attempt,
-                };
+            if result.status.ok() {
+                executed = Some(result);
+                break;
+            }
+            last_refusal = format!("{:?}: {}", result.status, result.detail.unwrap_or_default());
+            // Unsupported is the one verdict another route may fix —
+            // anything else is final.
+            if result.status == ActionStatus::Unsupported && index + 1 < routes.len() {
+                self.journal(
+                    EventKind::RecoveryStarted,
+                    serde_json::json!({
+                        "strategy": "next_route",
+                        "trigger": "unsupported",
+                        "route": index + 1,
+                    }),
+                );
+                continue;
+            }
+            return StepStatus::Failed {
+                reason: last_refusal,
+                attempts: (index + 1) as u32,
             };
+        }
 
-            // Settle, re-observe, verify.
+        let Some(result) = executed else {
+            return StepStatus::Failed {
+                reason: format!("every planned route refused — last: {last_refusal}"),
+                attempts: routes.len() as u32,
+            };
+        };
+
+        let Some(expected) = &step.expect else {
+            return StepStatus::Done {
+                result,
+                verification: None,
+                attempts: 1,
+            };
+        };
+
+        // VERIFY-POLL — the world may need time to reach the expected
+        // state; re-observe, never re-execute. `max_attempts` is the v1
+        // alias for the poll bound (renamed `verify_attempts` upstream).
+        let verify_attempts = step.max_attempts.unwrap_or(cfg.max_attempts).max(1);
+        let mut last_detail = String::new();
+        for attempt in 1..=verify_attempts {
+            if attempt > 1 {
+                self.journal(
+                    EventKind::RecoveryStarted,
+                    serde_json::json!({
+                        "strategy": "verify_poll",
+                        "trigger": "unverified",
+                        "attempt": attempt,
+                    }),
+                );
+            }
             std::thread::sleep(cfg.verify_delay);
             let scope = ObservationScope {
                 app: app.clone(),
@@ -415,15 +577,13 @@ impl<D: ComputerDriver> Engine<D> {
                 }
                 other => {
                     last_detail = format!("{:?}: {}", other, verification.checks.join(" | "));
-                    last_verification = Some(verification);
                 }
             }
         }
 
-        let _ = last_verification;
         StepStatus::Failed {
             reason: format!("verification never reached VERIFIED — last: {last_detail}"),
-            attempts: max_attempts,
+            attempts: verify_attempts,
         }
     }
 
@@ -533,6 +693,9 @@ impl<D: ComputerDriver> Engine<D> {
 
     /// The per-goal closed loop shared by `run_task` and `run_plan`.
     /// `task_started` is the plan-level clock for `max_duration`.
+    /// Borrows the stage once when the app's first observation is
+    /// windowless and hands focus back on every outcome — the one-path
+    /// wake/restore contract for CLI, MCP and SDK callers.
     fn run_goal(
         &mut self,
         goal: &str,
@@ -541,6 +704,34 @@ impl<D: ComputerDriver> Engine<D> {
         decider: &dyn dexter_decision::DecisionEngine,
         cfg: &TaskConfig,
         task_started: Instant,
+    ) -> TaskOutcome {
+        let scope = ObservationScope {
+            app: cfg.run.app.clone(),
+            max_elements: cfg.run.observe_max_elements,
+            ..Default::default()
+        };
+        let mut obs = self.driver.observe(&scope).ok();
+        let wake = self.maybe_wake(cfg.run.app.as_ref(), &mut obs, &scope);
+        // The wake-check observation doubles as step 1's — observing is
+        // not free (drivers tick, AX walks cost), so the loop must not
+        // pay for a second one.
+        let outcome = self.run_goal_loop(goal, done, generator, decider, cfg, task_started, obs);
+        if let Some(h) = wake {
+            self.driver.restore(&h);
+        }
+        outcome
+    }
+
+    #[allow(clippy::too_many_arguments)] // single call site; a params struct is noise
+    fn run_goal_loop(
+        &mut self,
+        goal: &str,
+        done: &Completion,
+        generator: &dyn dexter_decision::CandidateGenerator,
+        decider: &dyn dexter_decision::DecisionEngine,
+        cfg: &TaskConfig,
+        task_started: Instant,
+        mut initial_obs: Option<Observation>,
     ) -> TaskOutcome {
         use dexter_decision::{Decision, DecisionContext, GenHistory, Route};
         let started = task_started;
@@ -582,7 +773,11 @@ impl<D: ComputerDriver> Engine<D> {
                     };
                 }
             }
-            let obs = match self.driver.observe(&scope) {
+            let obs = match initial_obs
+                .take()
+                .map(Ok)
+                .unwrap_or_else(|| self.driver.observe(&scope))
+            {
                 Ok(o) => o,
                 Err(e) => {
                     self.journal(
@@ -646,16 +841,20 @@ impl<D: ComputerDriver> Engine<D> {
                 last_error: last_error.clone(),
                 step,
             };
-            // The full decision context is journaled — this is what makes
-            // a trace replayable offline (eval harness re-feeds it to any
-            // DecisionEngine without touching the machine).
+            // The full decision context is journaled in Training mode —
+            // this is what makes a trace replayable offline (eval harness
+            // re-feeds it to any DecisionEngine without touching the
+            // machine). The public audit trail gets digests instead.
             self.journal(
                 EventKind::CandidatesGenerated,
-                serde_json::json!({
-                    "count": ctx.candidates.len(),
-                    "step": step,
-                    "context": &ctx,
-                }),
+                match self.trace {
+                    TraceMode::Training => serde_json::json!({
+                        "count": ctx.candidates.len(),
+                        "step": step,
+                        "context": &ctx,
+                    }),
+                    TraceMode::Audit => audit::candidates_summary(&ctx),
+                },
             );
             let decision = match decider.decide(&ctx) {
                 Ok(d) => d,
@@ -673,7 +872,10 @@ impl<D: ComputerDriver> Engine<D> {
                 EventKind::DecisionMade,
                 serde_json::json!({
                     "engine": decider.name(),
-                    "decision": &decision,
+                    "decision": match self.trace {
+                        TraceMode::Training => serde_json::to_value(&decision).unwrap_or_default(),
+                        TraceMode::Audit => audit::decision_summary(&decision),
+                    },
                     "step": step,
                 }),
             );
@@ -683,6 +885,7 @@ impl<D: ComputerDriver> Engine<D> {
                     action, rationale, ..
                 } => {
                     let mutating = is_mutating(&action);
+                    hist.attempt_names.push(attempt_label(&action, &obs));
                     hist.attempts.push(action.clone());
                     let status = self.run_step_inner(
                         &Step {
@@ -705,6 +908,29 @@ impl<D: ComputerDriver> Engine<D> {
                             if matches!(done, Completion::FirstVerifiedAct) && mutating {
                                 pending_sig = Some(world_signature(&obs));
                             }
+                        }
+                        StepStatus::NeedsApproval {
+                            fingerprint,
+                            reason,
+                        } => {
+                            // Policy pause is an outcome, not an error —
+                            // the caller grants and retries; spinning
+                            // here would burn the step budget denied.
+                            self.journal(
+                                EventKind::TaskFailed,
+                                serde_json::json!({"outcome": "needs_approval", "fingerprint": &fingerprint, "reason": &reason, "step": step}),
+                            );
+                            return TaskOutcome::NeedsApproval {
+                                fingerprint,
+                                reason,
+                            };
+                        }
+                        StepStatus::Denied { reason } => {
+                            self.journal(
+                                EventKind::TaskFailed,
+                                serde_json::json!({"outcome": "denied", "reason": &reason, "step": step}),
+                            );
+                            return TaskOutcome::Denied { reason };
                         }
                         other => {
                             last_error = Some(format!("{other:?}"));
@@ -770,6 +996,93 @@ impl<D: ComputerDriver> Engine<D> {
     }
 }
 
+/// Journal payload shaping — the audit contract is that typed values,
+/// set values and secrets never appear in any event, in any mode.
+/// `Training` keeps *contexts* (candidate lists, digests) for replay;
+/// action payloads are digested even there.
+pub(crate) mod audit {
+    use dexter_core::Action;
+
+    /// The journal-visible shape of an action: structure and target are
+    /// kept; payload content becomes `{len, sha256}` so approvals and
+    /// audits can reference it without ever exposing it.
+    pub fn action_summary(action: &Action) -> serde_json::Value {
+        let payload = |field: &str, text: &str| {
+            serde_json::json!({
+                field: {
+                    "len": text.len(),
+                    "sha256": dexter_policy::payload_digest(text),
+                }
+            })
+        };
+        match action {
+            Action::Click { target, button } => {
+                serde_json::json!({"type": "click", "target": target, "button": button})
+            }
+            Action::TypeText { text, target } => serde_json::json!({
+                "type": "type_text",
+                "target": target,
+                "payload": payload("text", text),
+            }),
+            Action::Key { chord } => serde_json::json!({"type": "key", "chord": chord}),
+            Action::Scroll { delta, target } => {
+                serde_json::json!({"type": "scroll", "delta": delta, "target": target})
+            }
+            Action::Focus { target } => {
+                serde_json::json!({"type": "focus", "target": target})
+            }
+            Action::SetValue { target, value } => serde_json::json!({
+                "type": "set_value",
+                "target": target,
+                "payload": payload("value", value),
+            }),
+            Action::Observe => serde_json::json!({"type": "observe"}),
+            Action::Wait { millis } => serde_json::json!({"type": "wait", "millis": millis}),
+            Action::Navigate { url } => serde_json::json!({"type": "navigate", "url": url}),
+        }
+    }
+
+    /// A decision with its action redacted — same outer shape as the
+    /// `Decision` serde (`{"type": ...}`) so overlay consumers read it
+    /// identically.
+    pub fn decision_summary(decision: &dexter_decision::Decision) -> serde_json::Value {
+        match decision {
+            dexter_decision::Decision::Act {
+                action,
+                candidate_index,
+                rationale,
+            } => serde_json::json!({
+                "type": "act",
+                "action": action_summary(action),
+                "candidate_index": candidate_index,
+                "rationale": rationale,
+            }),
+            dexter_decision::Decision::Route { route, rationale } => serde_json::json!({
+                "type": "route",
+                "route": route,
+                "rationale": rationale,
+            }),
+        }
+    }
+
+    /// The `CandidatesGenerated` payload for the public audit trail:
+    /// counts and digests, no world contents and no candidate payloads.
+    pub fn candidates_summary(ctx: &dexter_decision::DecisionContext) -> serde_json::Value {
+        serde_json::json!({
+            "goal": ctx.goal,
+            "step": ctx.step,
+            "count": ctx.candidates.len(),
+            "state_digest_sha256": dexter_policy::payload_digest(&ctx.state_digest),
+            "candidates": ctx.candidates.iter().map(|c| serde_json::json!({
+                "action": action_summary(&c.action),
+                "rationale": c.rationale,
+                "prior": c.prior,
+            })).collect::<Vec<_>>(),
+            "last_error": ctx.last_error,
+        })
+    }
+}
+
 /// Char budget for the digest handed to decision engines — sized so
 /// Laya-class encoders (8192 tokens) never overflow on big AX trees.
 const STATE_BUDGET: usize = 14_000;
@@ -829,6 +1142,11 @@ pub enum TaskOutcome {
         route: dexter_decision::Route,
         reason: String,
     },
+    /// A step required human approval — the task pauses instead of
+    /// burning its step budget. Grant the fingerprint and retry.
+    NeedsApproval { fingerprint: String, reason: String },
+    /// Policy denied a step outright — a verdict, not a transient error.
+    Denied { reason: String },
     /// Runtime/driver/decision failure.
     Failed { reason: String },
     /// Step bound reached without `done_when` verifying.
@@ -882,6 +1200,47 @@ impl PlanOutcome {
             PlanOutcome::Failed { inner, .. } => *inner,
         }
     }
+}
+
+/// Fill a route descriptor's semantic fields from the element the
+/// target ids point at — only when they belong to *this* observation
+/// (foreign ids are never resolved across worlds). Drivers that already
+/// resolved keep their values.
+fn enrich_descriptor(desc: &mut dexter_core::TargetDescriptor, obs: Option<&Observation>) {
+    let (Some(el_id), Some(obs_id)) = (desc.element, desc.observation) else {
+        return;
+    };
+    let Some(obs) = obs else { return };
+    if obs.id != obs_id {
+        return;
+    }
+    if let Some(el) = obs.elements.iter().find(|e| e.id == el_id) {
+        if desc.role.is_none() {
+            desc.role = el.role.clone();
+        }
+        if desc.name.is_none() {
+            desc.name = el.name.clone();
+        }
+        if desc.identifier.is_none() {
+            desc.identifier = el.identifier.clone();
+        }
+    }
+}
+
+/// The label an attempted action resolved to on this observation —
+/// element targets carry no name, so the engine resolves it while the
+/// world that produced the candidate is still at hand.
+fn attempt_label(action: &Action, obs: &Observation) -> Option<String> {
+    let target = match action {
+        Action::Click { target, .. }
+        | Action::Focus { target }
+        | Action::SetValue { target, .. } => Some(target),
+        Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
+        _ => None,
+    }?;
+    dexter_world_model::resolve_element(obs, target)
+        .ok()
+        .and_then(|e| e.label().map(str::to_string))
 }
 
 /// Does this action mutate the world (as opposed to observing or

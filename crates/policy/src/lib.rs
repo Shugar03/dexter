@@ -5,8 +5,11 @@
 //! the crate has no notion of "trusted caller": the CLI, MCP and SDK all
 //! pass through the same `evaluate` path.
 
-use dexter_core::{Action, AppSelector, DexterError, Intrusiveness};
+use dexter_core::{
+    Action, AppSelector, DexterError, ExecutionRoute, Intrusiveness, TargetDescriptor,
+};
 use serde::Deserialize;
+use sha2::Digest;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -79,6 +82,11 @@ struct RawRule {
     app: Option<String>,
     /// Optional intrusiveness filter. Absent = matches any level.
     intrusiveness: Option<Intrusiveness>,
+    /// Optional target filter: case-insensitive substring matched
+    /// against the resolved target's role, name or identifier. This is
+    /// what lets a rule distinguish "Save" from "Delete" — it only sees
+    /// what the driver resolved, never model claims.
+    target: Option<String>,
     decision: DecisionKind,
     #[serde(default)]
     reason: String,
@@ -133,15 +141,43 @@ impl Policy {
         self.defaults.physical.get_or_insert(DecisionKind::Allow);
     }
 
-    /// Evaluate an action. First matching rule wins; no match falls back
-    /// to the intrusiveness-appropriate default.
+    /// Evaluate an action by its declared shape — the v1 path kept for
+    /// callers that never plan. The engine uses [`Policy::evaluate_route`]
+    /// so the *route's* real tier is what gets authorized.
     pub fn evaluate(&self, action: &Action, ctx: &ActionContext) -> PolicyDecision {
         let Some(kind) = action_kind(action) else {
             return PolicyDecision::Allow; // reads: Observe / Wait
         };
-        let intrusiveness = action.intrusiveness();
+        self.decide(
+            kind,
+            action.intrusiveness(),
+            &TargetDescriptor::from_action(action),
+            ctx,
+        )
+    }
+
+    /// Evaluate a planned route — the mechanism and tier the driver
+    /// actually intends to use, plus the resolved target it resolved.
+    /// This is the authorization boundary: a `type_text` routed to
+    /// CGEvent is judged as `physical`, not `background`.
+    pub fn evaluate_route(&self, route: &ExecutionRoute, ctx: &ActionContext) -> PolicyDecision {
+        let Some(kind) = action_kind(&route.action) else {
+            return PolicyDecision::Allow; // reads: Observe / Wait
+        };
+        self.decide(kind, route.intrusiveness, &route.target, ctx)
+    }
+
+    /// The shared decision: ordered rules first (first match wins),
+    /// then the physical floor, then the mutating default.
+    fn decide(
+        &self,
+        kind: &'static str,
+        intrusiveness: Intrusiveness,
+        target: &TargetDescriptor,
+        ctx: &ActionContext,
+    ) -> PolicyDecision {
         for rule in &self.rules {
-            if !rule_matches(rule, kind, intrusiveness, ctx) {
+            if !rule_matches(rule, kind, intrusiveness, target, ctx) {
                 continue;
             }
             let reason = if rule.reason.is_empty() {
@@ -237,6 +273,7 @@ fn rule_matches(
     rule: &RawRule,
     kind: &'static str,
     intrusiveness: Intrusiveness,
+    target: &TargetDescriptor,
     ctx: &ActionContext,
 ) -> bool {
     let action_ok = rule.action == "*" || rule.action == kind;
@@ -245,6 +282,16 @@ fn rule_matches(
     }
     if let Some(tier) = rule.intrusiveness {
         if tier != intrusiveness {
+            return false;
+        }
+    }
+    if let Some(pattern) = &rule.target {
+        let needle = pattern.to_lowercase();
+        let hit = [&target.role, &target.name, &target.identifier]
+            .into_iter()
+            .flatten()
+            .any(|f| f.to_lowercase().contains(&needle));
+        if !hit {
             return false;
         }
     }
@@ -287,10 +334,73 @@ fn describe_ctx(ctx: &ActionContext) -> String {
     }
 }
 
-/// Canonical fingerprint binding an approval to (action, app).
-/// Serialized JSON is deterministic for the same input.
+/// Opaque digest of a payload (typed text, set values) — the journal
+/// carries the digest so an approval can bind the exact content without
+/// ever exposing it.
+pub fn payload_digest(text: &str) -> String {
+    hex_sha256(text.as_bytes())
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    use sha2::Sha256;
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The payload an action carries, when it is content (not structure).
+fn payload_of(action: &Action) -> Option<&str> {
+    match action {
+        Action::TypeText { text, .. } => Some(text),
+        Action::SetValue { value, .. } => Some(value),
+        _ => None,
+    }
+}
+
+/// The target identity a grant binds — the fields stable across
+/// re-observation. Element and observation ids are ephemeral handles
+/// (regenerated per walk), so binding them would make a granted retry
+/// unmatchable; the SDD excludes them on purpose. Explicit point
+/// coordinates stay: a point target *is* its coordinates.
+fn grant_target(t: &dexter_core::TargetDescriptor) -> serde_json::Value {
+    serde_json::json!({
+        "role": t.role,
+        "name": t.name,
+        "identifier": t.identifier,
+        "window_id": t.window_id,
+        "point": t.point,
+        "focused": t.focused,
+    })
+}
+
+/// Canonical tuple a grant binds: the action kind, the *route's*
+/// mechanism and tier, the resolved target identity, the app scope and
+/// a digest of the payload — hashed so the fingerprint itself carries
+/// nothing readable. Deterministic: re-planning the same action under
+/// an unchanged world reproduces the same fingerprint.
+fn canonical_fingerprint(route: &ExecutionRoute, ctx: &ActionContext) -> String {
+    let canonical = serde_json::json!({
+        "kind": action_kind(&route.action).unwrap_or("read"),
+        "mechanism": route.mechanism,
+        "intrusiveness": route.intrusiveness,
+        "sensitivity": route.sensitivity,
+        "requires_foreground": route.requires_foreground,
+        "target": grant_target(&route.target),
+        "app": ctx.app,
+        "payload_sha256": payload_of(&route.action).map(payload_digest),
+    });
+    format!("sha256:{}", hex_sha256(canonical.to_string().as_bytes()))
+}
+
+/// Opaque fingerprint binding an approval to a planned route.
+pub fn fingerprint_route(route: &ExecutionRoute, ctx: &ActionContext) -> String {
+    canonical_fingerprint(route, ctx)
+}
+
+/// Opaque fingerprint for the action's declared shape — the v1 binding
+/// kept for callers that never plan (`dexter act` compat, tests).
 pub fn fingerprint(action: &Action, ctx: &ActionContext) -> String {
-    serde_json::to_string(&(action, &ctx.app)).unwrap_or_else(|_| "unserializable".into())
+    canonical_fingerprint(&ExecutionRoute::legacy(action), ctx)
 }
 
 /// Granted approvals: bound to a fingerprint, single-use, time-boxed.

@@ -12,10 +12,12 @@ use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
 use core_foundation::string::CFString;
 use dexter_core::{
-    Action, ActionResult, ActionStatus, Element, ElementSource, Mechanism, MouseButton,
-    Observation, ObservationId, Rect, Target,
+    Action, ActionResult, ActionStatus, Element, ElementSource, ExecutionPlan, ExecutionRoute,
+    Intrusiveness, Mechanism, MouseButton, Observation, ObservationId, Rect, Sensitivity, Target,
+    TargetDescriptor,
 };
 use dexter_driver::{ActContext, DriverError};
+use dexter_world_model::normalize_ax_role;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -567,4 +569,218 @@ pub fn act(
             ))
         }
     }
+}
+
+/// An honest "no route exists" — the engine still gates the action's
+/// declared tier on the legacy fallback, and execute->act reports the
+/// refusal with its real mechanism.
+fn empty_plan(action: &Action) -> ExecutionPlan {
+    ExecutionPlan {
+        requested: action.clone(),
+        routes: Vec::new(),
+    }
+}
+
+/// The route `act` takes through the accessibility tree on a resolved
+/// element: semantic, background-safe, never steals focus.
+fn ax_route(action: &Action, target: Option<&Target>, r: &Resolved) -> ExecutionRoute {
+    ExecutionRoute {
+        action: action.clone(),
+        target: resolved_target(target, r),
+        mechanism: Some(Mechanism::Accessibility),
+        intrusiveness: Intrusiveness::Background,
+        sensitivity: sensitivity_of(r),
+        requires_foreground: false,
+    }
+}
+
+/// The route `act` takes through CGEvent: real input events aimed at
+/// whatever is frontmost — physical tier, needs the foreground.
+fn cg_route(action: &Action, target: TargetDescriptor, sensitivity: Sensitivity) -> ExecutionRoute {
+    ExecutionRoute {
+        action: action.clone(),
+        target,
+        mechanism: Some(Mechanism::Coordinates),
+        intrusiveness: Intrusiveness::Physical,
+        sensitivity,
+        requires_foreground: true,
+    }
+}
+
+/// Secrets when the resolved element is a secure/password field — the
+/// approval fingerprint binds sensitivity, so a standard grant never
+/// silently covers a secrets field.
+fn sensitivity_of(r: &Resolved) -> Sensitivity {
+    let role = r.el.role().ok().map(|s| s.to_string());
+    if role.as_deref().is_some_and(ax::is_sensitive_role) {
+        Sensitivity::Secrets
+    } else {
+        Sensitivity::Standard
+    }
+}
+
+/// `TargetDescriptor::from_target` enriched with whatever the freshly
+/// resolved element attests — normalized role, name, identifier — so
+/// policy matches and the approval fingerprint binds the real control,
+/// not just the query. Best-effort: unreadable attributes keep the
+/// declared descriptor.
+fn resolved_target(target: Option<&Target>, r: &Resolved) -> TargetDescriptor {
+    let mut d = TargetDescriptor::from_target(target);
+    if let Ok(role) = r.el.role() {
+        d.role = Some(normalize_ax_role(&role.to_string()));
+    }
+    if let Some(name) =
+        r.el.title()
+            .ok()
+            .or_else(|| r.el.description().ok())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+    {
+        d.name = Some(name);
+    }
+    if let Some(id) =
+        r.el.identifier()
+            .ok()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+    {
+        d.identifier = Some(id);
+    }
+    d
+}
+
+/// Resolve `target` exactly as `act` would and declare the AX route.
+/// Resolution failures (NotFound, Ambiguous, StaleReference) surface
+/// honestly rather than becoming a plan-time guess.
+fn element_plan(
+    action: &Action,
+    target: &Target,
+    ctx: &ActContext,
+    cache: &ObsCache,
+) -> Result<ExecutionPlan, DriverError> {
+    let r = resolve_element(target, ctx, cache)?;
+    Ok(ExecutionPlan::single(
+        action,
+        ax_route(action, Some(target), &r),
+    ))
+}
+
+/// Read-only planning: declare the route `act` would actually take, with
+/// the mechanism `ActionResult` will report. Policy sees the real tier
+/// before anything runs — a `type_text` that would fall back to CGEvent
+/// typing is `Physical`/`requires_foreground` here, not `Background`.
+pub fn plan(
+    action: &Action,
+    ctx: &ActContext,
+    cache: &ObsCache,
+) -> Result<ExecutionPlan, DriverError> {
+    // Without the AX grant act() refuses every action the same way — no
+    // honest route exists, so keep that verdict on the legacy route.
+    if !permissions::accessibility_trusted() {
+        return Ok(ExecutionPlan::legacy(action));
+    }
+    let plan = match action {
+        Action::Wait { .. } => ExecutionPlan::single(
+            action,
+            ExecutionRoute {
+                action: action.clone(),
+                target: TargetDescriptor::from_action(action),
+                mechanism: Some(Mechanism::NativeAutomation),
+                intrusiveness: Intrusiveness::Background,
+                sensitivity: Sensitivity::Standard,
+                requires_foreground: false,
+            },
+        ),
+        Action::Navigate { .. } => ExecutionPlan::single(
+            action,
+            ExecutionRoute {
+                action: action.clone(),
+                target: TargetDescriptor::from_action(action),
+                mechanism: Some(Mechanism::NativeAutomation),
+                intrusiveness: Intrusiveness::Visual,
+                sensitivity: Sensitivity::Standard,
+                requires_foreground: false,
+            },
+        ),
+        // act() rejects Observe as an engine directive — the legacy
+        // route keeps that Unsupported verdict.
+        Action::Observe => ExecutionPlan::legacy(action),
+        Action::Click { target, .. } => match target {
+            // A point can only be reached with real input events.
+            Target::Point { .. } => {
+                if ctx.allow_coordinates {
+                    ExecutionPlan::single(
+                        action,
+                        cg_route(
+                            action,
+                            TargetDescriptor::from_action(action),
+                            Sensitivity::Standard,
+                        ),
+                    )
+                } else {
+                    empty_plan(action)
+                }
+            }
+            // act() refuses window clicks — legacy keeps the verdict.
+            Target::Window { .. } => ExecutionPlan::legacy(action),
+            _ => element_plan(action, target, ctx, cache)?,
+        },
+        Action::TypeText { target, .. } => {
+            // Same resolution and AXValue-settability check act()
+            // performs — declared now so a CGEvent fallback is gated as
+            // Physical before any keystroke exists.
+            let t = target.clone().unwrap_or(Target::Focused);
+            let r = resolve_element(&t, ctx, cache)?;
+            let route = if ax_value_settable(&r) || !ctx.allow_coordinates {
+                // Not-settable without coords still declares AX: execute
+                // produces act()'s Unsupported verdict, matching the
+                // mechanism, rather than a plan-time refusal.
+                ax_route(action, Some(&t), &r)
+            } else {
+                cg_route(action, resolved_target(Some(&t), &r), sensitivity_of(&r))
+            };
+            ExecutionPlan::single(action, route)
+        }
+        // Key chords are physical input: no semantic equivalent exists.
+        Action::Key { .. } => {
+            if ctx.allow_coordinates {
+                ExecutionPlan::single(
+                    action,
+                    cg_route(
+                        action,
+                        TargetDescriptor::from_action(action),
+                        Sensitivity::Standard,
+                    ),
+                )
+            } else {
+                empty_plan(action)
+            }
+        }
+        Action::Scroll { target, .. } => match target {
+            Some(t) => element_plan(action, t, ctx, cache)?,
+            // No target = pointer-relative scroll — real input events.
+            None => {
+                if ctx.allow_coordinates {
+                    ExecutionPlan::single(
+                        action,
+                        cg_route(
+                            action,
+                            TargetDescriptor::from_action(action),
+                            Sensitivity::Standard,
+                        ),
+                    )
+                } else {
+                    empty_plan(action)
+                }
+            }
+        },
+        Action::Focus { target } => match target {
+            // act() refuses window and point focus — legacy keeps the
+            // Unsupported verdict.
+            Target::Window { .. } | Target::Point { .. } => ExecutionPlan::legacy(action),
+            _ => element_plan(action, target, ctx, cache)?,
+        },
+        Action::SetValue { target, .. } => element_plan(action, target, ctx, cache)?,
+    };
+    Ok(plan)
 }
