@@ -416,3 +416,40 @@ fn terminal_verify_failures_label_false() {
     let (rows, _) = rows_from_events(&events, &s.scenario.id, "sim");
     assert!(rows.iter().all(|r| r.verified == Some(false)));
 }
+
+const GATED: &str = r#"
+[scenario]
+id = "grant-gated"
+goal = "guardar el documento"
+optimal_steps = 1
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "guardado" } }
+expected = "needs_approval"
+max_steps = 4
+grants = ["sha256:declared-but-does-not-match"]
+
+[[world.element]]
+id = 1
+role = "button"
+name = "Guardar"
+actions = ["press"]
+
+[[world.rule]]
+when = { name = "Guardar" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "guardado" } }
+"#;
+
+#[test]
+fn declared_grants_replace_approve_all() {
+    // A scenario that declares `grants` opts out of approve-all: an
+    // unlisted fingerprint pauses at needs_approval, which the
+    // scenario can assert — the grant list is load-bearing, not dead.
+    let s = spec(GATED);
+    let run = run_scenario(&s, &HeuristicGenerator::default(), &RuleBased::default());
+    assert_eq!(run.outcome, "needs_approval");
+    assert!(
+        run.success,
+        "expected=needs_approval makes the pause a pass"
+    );
+}

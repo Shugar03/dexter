@@ -525,3 +525,91 @@ fn element_target_ids_bind_the_fingerprint() {
         dexter_policy::fingerprint_route(&route(13, 4), &c),
     );
 }
+
+#[test]
+fn non_payload_params_bind_the_fingerprint() {
+    // A grant binds the action the operator approved, not the action
+    // class: chord, url, app, window op, button/count, invoke name,
+    // scroll delta, drag destination and wait duration all
+    // discriminate.
+    let c = ctx(None);
+    let fp = |a: &Action| dexter_policy::fingerprint(a, &c);
+
+    let key = |chord: &str| Action::Key {
+        chord: KeyChord::parse(chord).unwrap(),
+    };
+    assert_ne!(fp(&key("return")), fp(&key("cmd+shift+q")));
+    assert_eq!(fp(&key("cmd+s")), fp(&key("cmd+s")));
+
+    let nav = |url: &str| Action::Navigate { url: url.into() };
+    assert_ne!(fp(&nav("https://a.example")), fp(&nav("https://b.example")));
+
+    let win = |operation| Action::Window {
+        window_id: Some(3),
+        operation,
+    };
+    assert_ne!(
+        fp(&win(dexter_core::WindowOperation::Minimize)),
+        fp(&win(dexter_core::WindowOperation::Close))
+    );
+    assert_eq!(
+        fp(&win(dexter_core::WindowOperation::Minimize)),
+        fp(&win(dexter_core::WindowOperation::Minimize))
+    );
+
+    let click = |button, count| Action::Click {
+        target: Target::Focused,
+        button,
+        count,
+    };
+    assert_ne!(
+        fp(&click(dexter_core::MouseButton::Left, 1)),
+        fp(&click(dexter_core::MouseButton::Right, 1))
+    );
+    assert_ne!(
+        fp(&click(dexter_core::MouseButton::Left, 1)),
+        fp(&click(dexter_core::MouseButton::Left, 2))
+    );
+
+    let invoke = |action: &str| Action::Invoke {
+        target: Target::Focused,
+        action: action.into(),
+    };
+    assert_ne!(fp(&invoke("press")), fp(&invoke("show_menu")));
+
+    let quit = |name: &str| Action::QuitApp {
+        app: AppSelector::Name(name.into()),
+    };
+    assert_ne!(fp(&quit("Safari")), fp(&quit("Notes")));
+
+    let launch = |name: &str, activate: bool| Action::LaunchApp {
+        app: AppSelector::Name(name.into()),
+        activate,
+    };
+    assert_ne!(fp(&launch("Safari", true)), fp(&launch("Safari", false)));
+
+    let scroll = |dy: f64| Action::Scroll {
+        delta: dexter_core::ScrollDelta { dx: 0.0, dy },
+        target: None,
+    };
+    assert_ne!(fp(&scroll(120.0)), fp(&scroll(-120.0)));
+
+    let drag = |to: Target, duration_ms: u64| Action::Drag {
+        from: Target::Focused,
+        to,
+        duration_ms,
+    };
+    assert_ne!(
+        fp(&drag(Target::Focused, 300)),
+        fp(&drag(Target::Point { x: 1.0, y: 1.0 }, 300))
+    );
+    assert_ne!(
+        fp(&drag(Target::Focused, 300)),
+        fp(&drag(Target::Focused, 0))
+    );
+
+    assert_ne!(
+        fp(&Action::Wait { millis: 100 }),
+        fp(&Action::Wait { millis: 200 })
+    );
+}

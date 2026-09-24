@@ -345,7 +345,10 @@ pub fn run_scenario_with<D: ComputerDriver>(
                 // The suite author is the operator approving the run —
                 // same contract as `dexter run --approve-all`. Approval
                 // events still journal, so `approvals` stays honest.
-                approve_all: true,
+                // A scenario that declares `grants` opts out: only its
+                // listed fingerprints are consumed, so it can exercise
+                // (and assert) the `needs_approval` path.
+                approve_all: spec.task.grants.is_empty(),
                 observe_max_elements: 4_000,
                 window_scope: None,
             },

@@ -126,11 +126,14 @@ impl Verification {
         }
     }
 
-    pub fn uncertain(checks: Vec<String>) -> Self {
+    /// An `Uncertain` verdict *requires* its reason — uncertain without
+    /// a `why` is a bug, so the constructor takes it rather than letting
+    /// a `None` slip through.
+    pub fn uncertain(reason: UnknownReason, checks: Vec<String>) -> Self {
         Self {
             status: VerificationStatus::Uncertain,
             checks,
-            unknown_reason: None,
+            unknown_reason: Some(reason),
         }
     }
 }

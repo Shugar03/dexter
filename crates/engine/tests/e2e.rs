@@ -1774,3 +1774,198 @@ fn training_journal_scrubs_action_payloads() {
         "decision action must not carry the plaintext payload"
     );
 }
+
+/// A driver that ignores `scope.window` — models the macOS degraded
+/// fallback where a scoped walk silently returns the whole app.
+struct UnscopedSim(SimDriver);
+
+impl ComputerDriver for UnscopedSim {
+    fn capabilities(&self) -> DriverCapabilities {
+        self.0.capabilities()
+    }
+    fn windows(&self) -> Result<Vec<Window>, DriverError> {
+        self.0.windows()
+    }
+    fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
+        self.0.observe(&ObservationScope {
+            window: None,
+            ..scope.clone()
+        })
+    }
+    fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
+        self.0.act(action, ctx)
+    }
+    fn plan(&self, action: &Action, ctx: &ActContext) -> Result<ExecutionPlan, DriverError> {
+        self.0.plan(action, ctx)
+    }
+}
+
+#[test]
+fn window_scope_filters_degraded_unscoped_observations() {
+    // The engine applies the pinned window even when the driver's
+    // scoped walk degrades to app-wide — an element outside the pin
+    // must never verify as existing inside it.
+    let mut a = el(1, "button", "En ventana");
+    a.bounds = Some(Rect {
+        x: 10.0,
+        y: 10.0,
+        w: 60.0,
+        h: 24.0,
+    });
+    let mut b = el(2, "static_text", "Otra ventana");
+    b.bounds = Some(Rect {
+        x: 1010.0,
+        y: 10.0,
+        w: 60.0,
+        h: 24.0,
+    });
+    let sim = SimDriver::new(vec![a, b]);
+    sim.add_window(Window {
+        id: 2,
+        pid: 1,
+        app: "sim".into(),
+        title: Some("Otra".into()),
+        bounds: Rect {
+            x: 1000.0,
+            y: 0.0,
+            w: 800.0,
+            h: 600.0,
+        },
+        on_screen: true,
+        layer: 0,
+    });
+    let mut engine = Engine::new(UnscopedSim(sim), allow_all(), Duration::from_secs(60));
+    let mut c = cfg();
+    c.window_scope = Some(1);
+    let step = Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                name: Some("En ventana".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+            count: 1,
+        },
+        // "Otra ventana" exists in the world but not in the pinned
+        // window — an honest verifier can't see it.
+        expect: Some(ExpectedState::ElementExists {
+            target: SemanticTarget {
+                name: Some("Otra ventana".into()),
+                ..Default::default()
+            },
+        }),
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &c) {
+        StepStatus::Failed { .. } => {}
+        other => panic!("out-of-scope element must not verify, got {other:?}"),
+    }
+}
+
+#[test]
+fn focused_secure_field_gets_secrets_floor() {
+    // Focus-bound routes (`type_text` with no target, `key`) resolve
+    // the focused element — a focused password field gets the secrets
+    // floor on every driver, under `mutating = "allow"`.
+    let toml = "[defaults]\nmutating = \"allow\"";
+    let mut pwd = el(1, "secure_text_field", "Password");
+    pwd.focused = true;
+    let sim = SimDriver::new(vec![pwd]);
+    let mut engine = Engine::new(
+        sim,
+        Policy::from_toml(toml).unwrap(),
+        Duration::from_secs(60),
+    );
+    let step = |action| Step {
+        note: None,
+        action,
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(
+        &step(Action::TypeText {
+            text: "x".into(),
+            target: None,
+        }),
+        &cfg(),
+    ) {
+        StepStatus::NeedsApproval { .. } => {}
+        other => panic!("type_text into a focused secure field must gate, got {other:?}"),
+    }
+    match engine.run_step(
+        &step(Action::Key {
+            chord: KeyChord::parse("a").unwrap(),
+        }),
+        &cfg(),
+    ) {
+        StepStatus::NeedsApproval { .. } => {}
+        other => panic!("key into a focused secure field must gate, got {other:?}"),
+    }
+
+    // Contrast: the same acts pass while a normal field has focus.
+    let mut plain = el(1, "text_field", "Search");
+    plain.focused = true;
+    let sim2 = SimDriver::new(vec![plain]);
+    let mut engine2 = Engine::new(
+        sim2,
+        Policy::from_toml(toml).unwrap(),
+        Duration::from_secs(60),
+    );
+    if let StepStatus::NeedsApproval { .. } = engine2.run_step(
+        &step(Action::TypeText {
+            text: "x".into(),
+            target: None,
+        }),
+        &cfg(),
+    ) {
+        panic!("a non-sensitive focused field must not trip the floor");
+    }
+}
+
+#[test]
+fn focused_target_enrichment_binds_identity() {
+    // `rule.target` matchers and the grant fingerprint see the focused
+    // element's identity — an approval for a chord while "Search" has
+    // focus never covers the same chord on "Password".
+    let toml = r#"
+[defaults]
+mutating = "allow"
+[[rule]]
+action = "key"
+decision = "require_approval"
+"#;
+    let fingerprint_for = |name: &str| {
+        let mut f = el(1, "text_field", name);
+        f.focused = true;
+        let sim = SimDriver::new(vec![f]);
+        let mut engine = Engine::new(
+            sim,
+            Policy::from_toml(toml).unwrap(),
+            Duration::from_secs(60),
+        );
+        let step = Step {
+            note: None,
+            action: Action::Key {
+                chord: KeyChord::parse("return").unwrap(),
+            },
+            expect: None,
+            max_attempts: Some(1),
+            app: None,
+        };
+        match engine.run_step(&step, &cfg()) {
+            StepStatus::NeedsApproval {
+                fingerprint,
+                action,
+                ..
+            } => {
+                assert_eq!(action["type"], "key");
+                fingerprint
+            }
+            other => panic!("key rule must gate, got {other:?}"),
+        }
+    };
+    assert_ne!(fingerprint_for("Search"), fingerprint_for("Password"));
+}

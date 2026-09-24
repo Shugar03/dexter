@@ -86,7 +86,17 @@ impl TargetDescriptor {
             | Action::Focus { target }
             | Action::SetValue { target, .. }
             | Action::Invoke { target, .. } => Some(target),
-            Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
+            Action::Scroll { target, .. } => target.as_ref(),
+            // A targetless `type_text` lands on whatever is focused —
+            // the descriptor mirrors the resolution `act` performs so
+            // policy and the sensitivity floor can see it.
+            Action::TypeText { target: None, .. } => {
+                return Self::from_target(Some(&Target::Focused))
+            }
+            // A chord goes to whatever holds focus — same de facto
+            // target, same descriptor.
+            Action::Key { .. } => return Self::from_target(Some(&Target::Focused)),
+            Action::TypeText { target, .. } => target.as_ref(),
             Action::Drag { from, .. } => Some(from),
             Action::Window { window_id, .. } => {
                 return Self {

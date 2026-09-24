@@ -1084,6 +1084,7 @@ fn print_status(status: &StepStatus) {
         StepStatus::NeedsApproval {
             fingerprint,
             reason,
+            action,
         } => {
             println!(
                 "{}",
@@ -1091,6 +1092,7 @@ fn print_status(status: &StepStatus) {
                     "status": "needs_approval",
                     "reason": reason,
                     "fingerprint": fingerprint,
+                    "action": action,
                     "hint": "re-run with --approve, or add the fingerprint to a scenario's grants",
                 })
             );
@@ -1317,10 +1319,11 @@ fn run_task(
         TaskOutcome::NeedsApproval {
             fingerprint,
             reason,
+            action,
         } => {
             println!(
                 "{}",
-                serde_json::json!({"status": "needs_approval", "fingerprint": fingerprint, "reason": reason})
+                serde_json::json!({"status": "needs_approval", "fingerprint": fingerprint, "reason": reason, "action": action})
             );
             anyhow::bail!("task needs approval")
         }

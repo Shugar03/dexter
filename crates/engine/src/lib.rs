@@ -70,7 +70,13 @@ pub enum StepStatus {
     /// Policy denied the action outright.
     Denied { reason: String },
     /// Policy requires approval and no live grant covers this fingerprint.
-    NeedsApproval { fingerprint: String, reason: String },
+    /// `action` is the redacted summary the operator approves — payloads
+    /// stay digest tokens.
+    NeedsApproval {
+        fingerprint: String,
+        reason: String,
+        action: serde_json::Value,
+    },
     /// Acted but never reached a verified state within the attempt bound.
     Failed { reason: String, attempts: u32 },
     /// Driver could not produce a verdict at all.
@@ -290,7 +296,7 @@ impl<D: ComputerDriver> Engine<D> {
                 window: cfg.window_scope,
                 ..Default::default()
             };
-            match self.driver.observe(&scope) {
+            match self.observe_scoped(&scope) {
                 Ok(o) => Some(o),
                 // A failed pre-observation is not silent: any act that
                 // proceeds is unverified, and the journal must say why.
@@ -378,7 +384,7 @@ impl<D: ComputerDriver> Engine<D> {
             return None;
         }
         std::thread::sleep(Duration::from_millis(800));
-        *obs = match self.driver.observe(scope) {
+        *obs = match self.observe_scoped(scope) {
             Ok(o) => Some(o),
             Err(e) => {
                 self.journal(
@@ -389,6 +395,22 @@ impl<D: ComputerDriver> Engine<D> {
             }
         };
         Some(handle)
+    }
+
+    /// `driver.observe` plus the window-scope guarantee: when the scope
+    /// pins a window, the returned observation is bounds-filtered to it.
+    /// A driver whose scoped walk degrades to app-wide (macOS
+    /// `collect_window` fallback, any driver that ignores `scope.window`)
+    /// can't smuggle an unscoped world into verification — signatures and
+    /// element checks would otherwise evaluate the whole app. Natively
+    /// scoped observations pass through unchanged; a vanished pinned
+    /// window is an honest observe error.
+    fn observe_scoped(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
+        let obs = self.driver.observe(scope)?;
+        match scope.window {
+            Some(id) => dexter_world_model::scope_to_window(obs, id).map_err(DriverError::NotFound),
+            None => Ok(obs),
+        }
     }
 
     /// `obs` is the live observation when one exists (the `run_task` loop);
@@ -496,11 +518,16 @@ impl<D: ComputerDriver> Engine<D> {
                     } else if !self.approvals.check_and_consume(&fp) {
                         self.journal(
                             EventKind::HumanApprovalRequired,
-                            serde_json::json!({"fingerprint": &fp, "reason": &reason}),
+                            serde_json::json!({
+                                "fingerprint": &fp,
+                                "reason": &reason,
+                                "action": audit::action_summary(&route.action),
+                            }),
                         );
                         return StepStatus::NeedsApproval {
                             fingerprint: fp,
                             reason,
+                            action: audit::action_summary(&route.action),
                         };
                     }
                     self.journal(
@@ -692,7 +719,7 @@ impl<D: ComputerDriver> Engine<D> {
                 ..Default::default()
             };
             let observe_start = std::time::Instant::now();
-            let obs = match self.driver.observe(&scope) {
+            let obs = match self.observe_scoped(&scope) {
                 Ok(o) => o,
                 Err(e) => {
                     self.journal(
@@ -884,7 +911,7 @@ impl<D: ComputerDriver> Engine<D> {
             window: cfg.run.window_scope,
             ..Default::default()
         };
-        let mut obs = match self.driver.observe(&scope) {
+        let mut obs = match self.observe_scoped(&scope) {
             Ok(o) => Some(o),
             Err(e) => {
                 self.journal(
@@ -962,7 +989,7 @@ impl<D: ComputerDriver> Engine<D> {
             let obs = match initial_obs
                 .take()
                 .map(Ok)
-                .unwrap_or_else(|| self.driver.observe(&scope))
+                .unwrap_or_else(|| self.observe_scoped(&scope))
             {
                 Ok(o) => o,
                 Err(e) => {
@@ -1107,17 +1134,19 @@ impl<D: ComputerDriver> Engine<D> {
                         StepStatus::NeedsApproval {
                             fingerprint,
                             reason,
+                            action,
                         } => {
                             // Policy pause is an outcome, not an error —
                             // the caller grants and retries; spinning
                             // here would burn the step budget denied.
                             self.journal(
                                 EventKind::TaskFailed,
-                                serde_json::json!({"outcome": "needs_approval", "fingerprint": &fingerprint, "reason": &reason, "step": step}),
+                                serde_json::json!({"outcome": "needs_approval", "fingerprint": &fingerprint, "reason": &reason, "action": &action, "step": step}),
                             );
                             return TaskOutcome::NeedsApproval {
                                 fingerprint,
                                 reason,
+                                action,
                             };
                         }
                         StepStatus::Denied { reason } => {
@@ -1425,7 +1454,12 @@ pub enum TaskOutcome {
     },
     /// A step required human approval — the task pauses instead of
     /// burning its step budget. Grant the fingerprint and retry.
-    NeedsApproval { fingerprint: String, reason: String },
+    /// `action` is the redacted summary the operator approves.
+    NeedsApproval {
+        fingerprint: String,
+        reason: String,
+        action: serde_json::Value,
+    },
     /// Policy denied a step outright — a verdict, not a transient error.
     Denied { reason: String },
     /// Runtime/driver/decision failure.
@@ -1488,10 +1522,27 @@ impl PlanOutcome {
 /// (foreign ids are never resolved across worlds). Drivers that already
 /// resolved keep their values.
 fn enrich_descriptor(desc: &mut dexter_core::TargetDescriptor, obs: Option<&Observation>) {
+    let Some(obs) = obs else { return };
+    // A focus-bound descriptor resolves to the focused element —
+    // `rule.target` matchers and the grant fingerprint see its
+    // identity, not a bare `focused` flag.
+    if desc.focused {
+        if let Some(el) = obs.elements.iter().find(|e| e.focused) {
+            if desc.role.is_none() {
+                desc.role = el.role.clone();
+            }
+            if desc.name.is_none() {
+                desc.name = el.name.clone();
+            }
+            if desc.identifier.is_none() {
+                desc.identifier = el.identifier.clone();
+            }
+        }
+        return;
+    }
     let (Some(el_id), Some(obs_id)) = (desc.element, desc.observation) else {
         return;
     };
-    let Some(obs) = obs else { return };
     if obs.id != obs_id {
         return;
     }
@@ -1512,6 +1563,12 @@ fn enrich_descriptor(desc: &mut dexter_core::TargetDescriptor, obs: Option<&Obse
 /// resolved element (or declared role) is a secure/password field
 /// upgrades to `Secrets` here — a standard-scope grant can never
 /// silently cover a sensitive target, whatever the driver declared.
+/// Focus-bound routes (`type_text` with no target, `key`, explicit
+/// `Target::Focused`) resolve the focused element: typing a secret
+/// into a focused password field gets the floor on every driver.
+/// An element id minted under a foreign observation stays
+/// unresolvable — ids are per-snapshot handles; the driver's own
+/// plan-time sensitivity marking covers that seam.
 fn enforce_sensitivity_floor(route: &mut ExecutionRoute, obs: Option<&Observation>) {
     let desc = &route.target;
     let sensitive = desc
@@ -1525,7 +1582,11 @@ fn enforce_sensitivity_floor(route: &mut ExecutionRoute, obs: Option<&Observatio
                 obs.filter(|o| o.id == obs_id)
                     .and_then(|o| o.elements.iter().find(|e| e.id == el_id))
             })
-            .is_some_and(|e| e.is_sensitive());
+            .is_some_and(|e| e.is_sensitive())
+        || (desc.focused
+            && obs
+                .and_then(|o| o.elements.iter().find(|e| e.focused))
+                .is_some_and(|e| e.is_sensitive()));
     if sensitive {
         route.sensitivity = Sensitivity::Secrets;
     }
@@ -1592,6 +1653,7 @@ fn is_mutating(action: &Action) -> bool {
     matches!(
         action,
         Action::Click { .. }
+            | Action::Focus { .. }
             | Action::SetValue { .. }
             | Action::TypeText { .. }
             | Action::Key { .. }

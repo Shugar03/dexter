@@ -100,6 +100,46 @@
   taxonomy is the journal's `effect` string computed from verification
   status.
 
+### Fixed (runtime-reliability-v2 review, round 3)
+
+- Approval fingerprints now bind every non-secret action parameter —
+  chord, url (digested; query strings can carry tokens), app selector,
+  window operation, mouse button/click count, invoke name, scroll
+  delta, drag destination+duration and wait time join kind, mechanism,
+  tier, sensitivity, target and payload digest in the canonical tuple.
+  A grant covers the action the operator approved, not the class:
+  `key "return"` no longer covers `cmd+shift+q`. `needs_approval`
+  responses carry the redacted `action` summary so the operator can
+  see what they are approving.
+- The secrets floor now sees focus-bound routes: `type_text` with no
+  target, `key` and explicit `Target::Focused` resolve the focused
+  element — a focused password field upgrades to `Secrets` on every
+  driver under `mutating = "allow"`. `TargetDescriptor::from_action`
+  mirrors the focus resolution `act` performs, so `rule.target`
+  matchers and the fingerprint bind the focused element's identity.
+- Every engine observation path applies the pinned `window_scope`
+  post-driver: a degraded scoped walk (macOS `collect_window`
+  fallback, or a driver ignoring `scope.window`) can no longer smuggle
+  an app-wide world into verification — `WorldChanged` signatures and
+  element checks evaluate only the pinned window, and a vanished pin
+  is an honest observe error.
+- Sim window ops on an empty window list return `NotFound` instead of
+  an index-0 panic unwinding through `execute`.
+- AX collection redacts values by the same any-of test
+  `Element::is_sensitive` applies (role, subrole *or* raw role) — a
+  subrole-only secure field no longer materializes its value at
+  collection while policy treats it as secret.
+- `menu_item_for_chord` matches on the batched `walk_menu` catalog —
+  one IPC roundtrip per menu item instead of ~5 per attribute.
+- `Verification::uncertain` requires its `UnknownReason` at
+  construction — uncertain-without-a-why is unrepresentable.
+- Sim `Scroll` without a target enforces `allow_coordinates` like
+  `plan` declares and `Key` already does; `Focus` counts as a
+  mutating act for auto-completion (a verified focus can finish a
+  `done_when: None` subgoal); scenario `grants` replace
+  `approve_all` when declared, so a scenario can assert the
+  `needs_approval` outcome.
+
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:

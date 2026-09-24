@@ -389,6 +389,43 @@ fn payload_of(action: &Action) -> Option<&str> {
     }
 }
 
+/// The non-secret parameters of an action — everything the operator
+/// approved that is not already bound by the target descriptor or the
+/// payload digest. Without these a grant is fungible across the whole
+/// action class: approving `key "return"` would cover `cmd+shift+q`,
+/// and approving `minimize` on a window would cover `close` on it.
+/// Secret-adjacent values (the URL — query strings can carry tokens)
+/// bind by digest, never in plaintext.
+fn params_of(action: &Action) -> serde_json::Value {
+    match action {
+        Action::Click { button, count, .. } => {
+            serde_json::json!({"button": button, "count": count})
+        }
+        Action::Key { chord } => serde_json::json!({"chord": chord}),
+        Action::Scroll { delta, .. } => serde_json::json!({"delta": delta}),
+        Action::Wait { millis } => serde_json::json!({"millis": millis}),
+        Action::Navigate { url } => serde_json::json!({"url_sha256": payload_digest(url)}),
+        Action::Invoke { action, .. } => serde_json::json!({"action": action}),
+        Action::LaunchApp { app, activate } => {
+            serde_json::json!({"app": app, "activate": activate})
+        }
+        Action::QuitApp { app } => serde_json::json!({"app": app}),
+        Action::Window {
+            window_id,
+            operation,
+        } => serde_json::json!({"window_id": window_id, "operation": operation}),
+        // `from` rides the main descriptor; `to` binds the same way so
+        // a grant for one destination never covers another.
+        Action::Drag {
+            to, duration_ms, ..
+        } => serde_json::json!({
+            "to": grant_target(&dexter_core::TargetDescriptor::from_target(Some(to))),
+            "duration_ms": duration_ms,
+        }),
+        _ => serde_json::Value::Null,
+    }
+}
+
 /// The target identity a grant binds. For element targets the minted
 /// element handle is bound — an approval is scoped to that element,
 /// not to any same-shaped target in the app. The observation id is
@@ -432,6 +469,7 @@ fn canonical_fingerprint(route: &ExecutionRoute, ctx: &ActionContext) -> String 
         "sensitivity": route.sensitivity,
         "requires_foreground": route.requires_foreground,
         "target": grant_target(&route.target),
+        "params": params_of(&route.action),
         "app": ctx.app,
         "payload_sha256": payload_of(&route.action).map(payload_digest),
     });

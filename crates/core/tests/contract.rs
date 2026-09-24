@@ -192,8 +192,12 @@ fn intrusiveness_covers_every_action() {
 
 #[test]
 fn uncertain_verification_is_not_success() {
-    let v = Verification::uncertain(vec!["element list was truncated".into()]);
+    let v = Verification::uncertain(
+        UnknownReason::TreePartial,
+        vec!["element list was truncated".into()],
+    );
     assert_eq!(v.status, VerificationStatus::Uncertain);
+    assert_eq!(v.unknown_reason, Some(UnknownReason::TreePartial));
     assert_ne!(v.status, VerificationStatus::Verified);
 }
 

@@ -520,6 +520,13 @@ impl ComputerDriver for SimDriver {
                                 .iter()
                                 .position(|w| w.id == *id)
                                 .ok_or_else(|| DriverError::NotFound(format!("window {id}")))?,
+                            // `window_id: None` means the frontmost window —
+                            // an empty list is a miss, not an index-0 panic.
+                            None if s.windows.is_empty() => {
+                                return Err(DriverError::NotFound(
+                                    "no windows — the app has nothing to operate on".into(),
+                                ));
+                            }
                             None => 0,
                         };
                         match op {
@@ -670,6 +677,16 @@ impl ComputerDriver for SimDriver {
                     return Ok(ActionResult::success(
                         Mechanism::Api,
                         Some(format!("scrolled {id} into view")),
+                    ));
+                }
+                // Pointer-relative scroll is physical input — the same
+                // `allow_coordinates` gate `plan` declares and `Key`
+                // enforces here.
+                if !ctx.allow_coordinates {
+                    return Ok(ActionResult::failure(
+                        ActionStatus::Unsupported,
+                        Mechanism::Coordinates,
+                        "pointer scroll requires physical input",
                     ));
                 }
                 Ok(ActionResult::success(

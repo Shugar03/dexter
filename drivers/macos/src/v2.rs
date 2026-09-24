@@ -400,97 +400,33 @@ pub fn window_op(
 // Menu shortcuts — the semantic route for Key chords.
 // ---------------------------------------------------------------------------
 
-/// One menu item's shortcut claim: the element plus the chord it
-/// advertises and whether it's enabled.
-pub struct MenuShortcut {
-    pub el: AXUIElement,
-    pub chord: KeyChord,
-    pub enabled: bool,
-}
-
-fn read_attr_string(el: &AXUIElement, name: &str) -> Option<String> {
-    let attr = AXAttribute::<CFType>::new(&CFString::new(name));
-    let v: CFType = el.attribute(&attr).ok()?;
-    v.downcast::<CFString>().map(|s| s.to_string())
-}
-
-fn read_attr_i64(el: &AXUIElement, name: &str) -> Option<i64> {
-    let attr = AXAttribute::<CFType>::new(&CFString::new(name));
-    let v: CFType = el.attribute(&attr).ok()?;
-    v.downcast::<core_foundation::number::CFNumber>()
-        .and_then(|n| n.to_i64())
-}
-
-fn chord_advertised(el: &AXUIElement) -> Option<KeyChord> {
-    // CmdVirtualKey handles F-keys/arrows where no char exists — v2
-    // handles char-based shortcuts; virtual-key items return None.
-    let cmd_char = read_attr_string(el, "AXMenuItemCmdChar")?;
-    if cmd_char.is_empty() {
-        return None;
-    }
-    let mods = read_attr_i64(el, "AXMenuItemCmdModifiers").unwrap_or(0);
-    Some(KeyChord {
-        key: cmd_char.to_lowercase(),
-        modifiers: menu_modifiers(mods),
-    })
-}
-
-fn collect_menu_items(el: &AXUIElement, depth: u32, out: &mut Vec<MenuShortcut>) {
-    if depth > 8 || out.len() > 512 {
-        return;
-    }
-    let role = el.role().ok().map(|r| r.to_string());
-    if role.as_deref() == Some("AXMenuItem") {
-        if let Some(chord) = chord_advertised(el) {
-            let enabled = el
-                .enabled()
-                .ok()
-                .map(|b| b == core_foundation::boolean::CFBoolean::true_value())
-                .unwrap_or(true);
-            out.push(MenuShortcut {
-                el: el.clone(),
-                chord,
-                enabled,
-            });
-        }
-    }
-    if let Ok(children) = el.children() {
-        for c in children.iter() {
-            collect_menu_items(&c, depth + 1, out);
-        }
-    }
-}
-
-/// Walk the app's menu bar for items advertising a keyboard shortcut.
-fn menu_shortcuts(pid: i32) -> Vec<MenuShortcut> {
-    let app = AXUIElement::application(pid);
-    let _ = app.set_messaging_timeout(1.5);
-    let bar = app
-        .attribute(&AXAttribute::<CFType>::new(&CFString::new("AXMenuBar")))
-        .ok()
-        .and_then(|v| v.downcast::<AXUIElement>());
-    let mut out = Vec::new();
-    if let Some(bar) = bar {
-        collect_menu_items(&bar, 0, &mut out);
-    }
-    out
-}
-
 /// The menu item uniquely claiming `chord` — `Ok(None)` when no item
 /// matches, `Err(Ambiguous)` when more than one enabled item does.
 /// Disabled items don't count toward ambiguity but can't be pressed.
+/// The catalog comes from the batched `walk_menu` reader — one IPC
+/// roundtrip per item, not one per attribute.
 pub fn menu_item_for_chord(pid: i32, chord: &KeyChord) -> Result<Option<AXUIElement>, DriverError> {
-    let matches: Vec<MenuShortcut> = menu_shortcuts(pid)
-        .into_iter()
-        .filter(|m| {
-            menu_key_matches(&m.chord.key, &chord.key)
-                && same_modifiers(&m.chord.modifiers, &chord.modifiers)
+    let app = AXUIElement::application(pid);
+    let _ = app.set_messaging_timeout(1.5);
+    let tree = crate::ax::collect_menu_bar(&app, 512);
+    // `elements` and `nodes` are index-aligned — the match runs on
+    // collected data, the press lands on the live handle.
+    let enabled: Vec<&AXUIElement> = tree
+        .elements
+        .iter()
+        .zip(tree.nodes.iter())
+        .filter(|(e, _)| {
+            e.enabled.unwrap_or(true)
+                && e.shortcut.as_ref().is_some_and(|s| {
+                    menu_key_matches(&s.key, &chord.key)
+                        && same_modifiers(&s.modifiers, &chord.modifiers)
+                })
         })
+        .map(|(_, node)| node)
         .collect();
-    let enabled: Vec<&MenuShortcut> = matches.iter().filter(|m| m.enabled).collect();
     match enabled.len() {
         0 => Ok(None),
-        1 => Ok(Some(enabled[0].el.clone())),
+        1 => Ok(Some(enabled[0].clone())),
         n => Err(DriverError::Ambiguous(format!(
             "{n} enabled menu items advertise the same shortcut — refusing to pick one"
         ))),

@@ -414,10 +414,13 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx, 
     let raw_role = str_slot(slot(I_ROLE));
     let role = raw_role.as_deref().map(normalize_ax_role);
     let subrole = str_slot(slot(I_SUBROLE));
-    let sensitive = role
-        .as_deref()
-        .or(subrole.as_deref())
-        .is_some_and(is_sensitive_role);
+    // Same any-of test `Element::is_sensitive` applies — an element
+    // sensitive only via subrole must have its value redacted here,
+    // not materialized at collection while policy treats it as secret.
+    let sensitive = [role.as_deref(), subrole.as_deref(), raw_role.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(is_sensitive_role);
 
     let name = str_slot(slot(I_TITLE)).or_else(|| str_slot(slot(I_DESC)));
     let identifier = str_slot(slot(I_IDENT));
@@ -500,6 +503,38 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx, 
         if ctx.elements.len() >= ctx.max_elements {
             return;
         }
+    }
+}
+
+/// Walk only the app's menu bar — the slim 6-attribute batch per item,
+/// so shortcut lookup never pays per-attribute roundtrips. `elements`
+/// and `nodes` stay index-aligned (`nodes[i]` is the live handle for
+/// `elements[i]`), so callers can match on `shortcut`/`enabled` and
+/// still press the resolved `AXUIElement`.
+pub fn collect_menu_bar(app: &AXUIElement, max_elements: usize) -> AxTree {
+    let mut ctx = Ctx {
+        max_depth: 16,
+        max_elements,
+        elements: Vec::new(),
+        nodes: Vec::new(),
+        truncated: false,
+        errors: 0,
+        next_id: 1,
+    };
+    if let Ok(children) = app.children() {
+        for child in children.iter() {
+            let role = child.role().ok().map(|s| s.to_string());
+            if role.as_deref() == Some("AXMenuBar") {
+                walk_menu(&child, None, 0, &mut ctx);
+                break;
+            }
+        }
+    }
+    AxTree {
+        elements: ctx.elements,
+        nodes: ctx.nodes,
+        truncated: ctx.truncated,
+        errors: ctx.errors,
     }
 }
 

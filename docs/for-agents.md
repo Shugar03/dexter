@@ -50,9 +50,14 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
    truth — *you* decide. Each `action` is ready-to-pass JSON for
    `dexter_act`.
 3. **`dexter_act {action}`** — runs policy → act → verify. Statuses:
-   `done`, `needs_approval` (carries a `fingerprint` — a human calls
-   `dexter_grant {fingerprint}`, then you retry), `denied`, `failed`,
-   `error`.
+   `done`, `needs_approval` (carries a `fingerprint` plus the redacted
+   `action` summary — a human calls `dexter_grant {fingerprint}`, then
+   you retry), `denied`, `failed`, `error`. The grant binds the exact
+   action: kind, mechanism, tier, sensitivity, resolved target
+   identity, every non-secret parameter (chord, url, app, window op,
+   button/click count, invoke name, deltas, drag destination, wait
+   duration) and a digest of the payload — approving `key "return"`
+   never covers `cmd+shift+q`.
 4. **`dexter_verify {expected}`** — check an `ExpectedState` against a
    fresh observation. Three-valued: VERIFIED / FAILED / UNCERTAIN.
 5. **`dexter_task {goal, done, max_steps?, max_secs?}`** — hand the
@@ -230,6 +235,8 @@ presence — a named floating cursor + state tag — without capturing input.
 Laya training rows — each act labelled with its verified outcome.
 Nothing is written when the task fails: a mislabeled trajectory is
 worse than none. `--events run.jsonl` dumps the raw journal instead.
+Action payloads are digest tokens in every mode; the *goal text*
+itself is journaled verbatim — don't embed secrets in goals.
 
 ## Policy
 

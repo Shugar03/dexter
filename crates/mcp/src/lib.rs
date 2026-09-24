@@ -635,10 +635,12 @@ impl DexterMcp {
                     TaskOutcome::NeedsApproval {
                         fingerprint,
                         reason,
+                        action,
                     } => serde_json::json!({
                         "status": "needs_approval",
                         "fingerprint": fingerprint,
                         "reason": reason,
+                        "action": action,
                     }),
                     TaskOutcome::Denied { reason } => {
                         serde_json::json!({"status": "denied", "reason": reason})
@@ -758,10 +760,12 @@ fn status_json(status: StepStatus) -> Result<Json<serde_json::Value>, McpError> 
         StepStatus::NeedsApproval {
             fingerprint,
             reason,
+            action,
         } => serde_json::json!({
             "status": "needs_approval",
             "reason": reason,
             "fingerprint": fingerprint,
+            "action": action,
         }),
         StepStatus::Failed { reason, attempts } => serde_json::json!({
             "status": "failed",

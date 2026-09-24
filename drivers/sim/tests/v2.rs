@@ -316,3 +316,51 @@ fn wake_launches_a_stopped_app() {
     let obs = d.observe(&ObservationScope::default()).unwrap();
     assert_eq!(obs.windows.iter().filter(|w| w.app == "Editor").count(), 1);
 }
+
+#[test]
+fn window_op_on_empty_window_list_is_notfound_not_panic() {
+    // Closing the last window leaves `windows` empty — a follow-up op
+    // is an honest NotFound, not an index-0 panic.
+    let d = SimDriver::new(vec![]);
+    d.act(
+        &Action::Window {
+            window_id: None,
+            operation: WindowOperation::Close,
+        },
+        &ctx(),
+    )
+    .unwrap();
+    let err = d
+        .act(
+            &Action::Window {
+                window_id: None,
+                operation: WindowOperation::Focus,
+            },
+            &ctx(),
+        )
+        .expect_err("empty window list must be a miss");
+    assert!(matches!(err, dexter_driver::DriverError::NotFound(_)));
+}
+
+#[test]
+fn pointer_scroll_requires_coordinates_optin() {
+    // `Scroll` without a target is physical input — `act` enforces the
+    // same `allow_coordinates` gate `plan` declares, like `Key` does.
+    let d = SimDriver::new(vec![]);
+    let scroll = Action::Scroll {
+        delta: dexter_core::ScrollDelta { dx: 0.0, dy: 120.0 },
+        target: None,
+    };
+    let r = d.act(&scroll, &ctx()).unwrap();
+    assert_eq!(r.status, ActionStatus::Unsupported);
+    let r = d
+        .act(
+            &scroll,
+            &ActContext {
+                allow_coordinates: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(r.status, ActionStatus::Success);
+}
