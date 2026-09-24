@@ -75,7 +75,23 @@ fn eval(
             }
         }
         ExpectedState::TextPresent { text } => {
-            let hit = obs.digest.to_lowercase().contains(&text.to_lowercase());
+            // Search the data, not the rendered digest: element
+            // names/values and window titles. (The digest is a
+            // presentation artifact — it filters, truncates and
+            // collapses the menu catalog.)
+            let needle = text.to_lowercase();
+            let hit = obs.elements.iter().any(|e| {
+                e.name
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase().contains(&needle))
+                    || e.value
+                        .as_deref()
+                        .is_some_and(|v| v.to_lowercase().contains(&needle))
+            }) || obs.windows.iter().any(|w| {
+                w.title
+                    .as_deref()
+                    .is_some_and(|t| t.to_lowercase().contains(&needle))
+            });
             checks.push(format!("text_present {text:?}: {hit}"));
             if hit {
                 VerificationStatus::Verified

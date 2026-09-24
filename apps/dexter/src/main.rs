@@ -972,37 +972,6 @@ fn resolve_raw_target(driver: &dyn ComputerDriver, app: Option<&str>, raw: &str)
     )
 }
 
-/// If the scoped app exposes no AX window content, borrow the stage:
-/// one bounded activation + settle. The handle restores the previous
-/// frontmost app — callers restore when done. `None` when the window
-/// layer is already visible or no wake was needed.
-fn wake_if_windowless(
-    engine: &Engine<Box<dyn ComputerDriver>>,
-    app: &Option<AppSelector>,
-    settle: Duration,
-) -> Option<dexter_driver::WakeHandle> {
-    let sel = app.as_ref()?;
-    let scope = ObservationScope {
-        app: Some(sel.clone()),
-        ..Default::default()
-    };
-    let obs = engine.driver().observe(&scope).ok()?;
-    if obs
-        .elements
-        .iter()
-        .any(|e| e.role.as_deref() == Some("window"))
-    {
-        return None;
-    }
-    let h = engine.driver().wake(sel).ok()?;
-    if h.activated {
-        std::thread::sleep(settle);
-        Some(h)
-    } else {
-        None
-    }
-}
-
 fn run_action(
     engine: &mut Engine<Box<dyn ComputerDriver>>,
     args: &ActionArgs,
@@ -1051,9 +1020,8 @@ fn run_action(
             spawn_overlay(path);
         }
     }
-    // Borrow the stage when the target's window layer is hidden —
-    // background-first with one bounded wake, then hand focus back.
-    let wake = wake_if_windowless(engine, &app, Duration::from_millis(800));
+    // The engine borrows the stage itself: run_step observes, wakes a
+    // windowless app once and hands focus back on every path.
     let status = engine.run_step(&step, &cfg);
     if events_path.is_some() {
         let (kind, data) = match &status {
@@ -1076,9 +1044,6 @@ fn run_action(
             ),
         };
         engine.emit(kind, data);
-    }
-    if let Some(h) = wake {
-        engine.driver().restore(&h);
     }
     print_status(&status);
     if status.done() {
@@ -1272,9 +1237,8 @@ fn run_task(
         })
         .collect();
     let app_sel = args.app.as_deref().map(AppSelector::parse);
-    // Same bounded-borrow contract as single actions: wake the app if
-    // its window layer is hidden, restore focus when the plan ends.
-    let wake = wake_if_windowless(engine, &app_sel, Duration::from_millis(800));
+    // run_goal's own wake/restore covers the windowless case per
+    // subgoal — a CLI-level pre-wake would just spend an observation.
     let outcome = engine.run_plan(
         &subgoals,
         &generator,
@@ -1295,9 +1259,6 @@ fn run_task(
             done_when,
         },
     );
-    if let Some(h) = wake {
-        engine.driver().restore(&h);
-    }
 
     use dexter_engine::{PlanOutcome, TaskOutcome};
     let outcome = match outcome {

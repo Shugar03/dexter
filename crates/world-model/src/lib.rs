@@ -259,8 +259,21 @@ pub fn digest(obs: &Observation, max_lines: usize) -> String {
     let mut lines = header_lines(obs);
     let mut shown = 0usize;
     let mut skipped = 0usize;
+    let mut menu_roots: Vec<&str> = Vec::new();
+    let mut menu_count = 0usize;
     for e in &obs.elements {
         if !digest_worthy(e) {
+            continue;
+        }
+        // Menu catalog collapses to one line — items are reachable via
+        // key chords and `map`, not worth a digest line each.
+        if is_menu_element(e) {
+            menu_count += 1;
+            if matches!(e.role.as_deref(), Some("menu_bar_item")) {
+                if let Some(n) = e.name.as_deref() {
+                    menu_roots.push(n);
+                }
+            }
             continue;
         }
         if shown >= max_lines {
@@ -270,10 +283,21 @@ pub fn digest(obs: &Observation, max_lines: usize) -> String {
         shown += 1;
         lines.push(element_line(e));
     }
+    if menu_count > 0 {
+        lines.push(menu_summary_line(menu_count, &menu_roots));
+    }
     if skipped > 0 {
         lines.push(format!("... truncated: {skipped} elements not shown"));
     }
     lines.join("\n")
+}
+
+fn menu_summary_line(count: usize, roots: &[&str]) -> String {
+    if roots.is_empty() {
+        format!("menubar: {count} items (key chords or map for verbs)")
+    } else {
+        format!("menubar: {count} items ({})", roots.join(", "))
+    }
 }
 
 /// Render with a character budget — for engines with a fixed context
@@ -284,8 +308,21 @@ pub fn digest_budget(obs: &Observation, max_chars: usize) -> String {
     let mut lines = header_lines(obs);
     let mut used: usize = lines.iter().map(|l| l.len() + 1).sum();
     let mut skipped = 0usize;
+    let mut menu_roots: Vec<&str> = Vec::new();
+    let mut menu_count = 0usize;
     for e in &obs.elements {
         if !digest_worthy(e) {
+            continue;
+        }
+        // Same collapse as `digest` — the menu catalog would eat the
+        // whole context budget on menu-heavy apps.
+        if is_menu_element(e) {
+            menu_count += 1;
+            if matches!(e.role.as_deref(), Some("menu_bar_item")) {
+                if let Some(n) = e.name.as_deref() {
+                    menu_roots.push(n);
+                }
+            }
             continue;
         }
         let line = element_line(e);
@@ -295,6 +332,9 @@ pub fn digest_budget(obs: &Observation, max_chars: usize) -> String {
         }
         used += line.len() + 1;
         lines.push(line);
+    }
+    if menu_count > 0 {
+        lines.push(menu_summary_line(menu_count, &menu_roots));
     }
     if skipped > 0 {
         lines.push(format!(
