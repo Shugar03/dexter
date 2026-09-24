@@ -112,9 +112,11 @@ mod platform {
             let _: () = msg_send![path, stroke];
         }
 
-        // Cursor arrow — the SVG arrow polygon, y-flipped for Cocoa.
+        // Cursor arrow — the SVG arrow polygon, y-flipped for Cocoa,
+        // scaled up so it reads at a glance on a full desktop.
         let (px, py) = (d.0, screen_height() - d.1);
         let path: id = msg_send![class!(NSBezierPath), bezierPath];
+        let s = 1.7f64;
         let pts = [
             (0.0, 0.0),
             (14.0, -11.2),
@@ -124,9 +126,10 @@ mod platform {
             (4.8, -13.8),
             (0.0, -18.0),
         ];
-        let _: () = msg_send![path, moveToPoint: NSPoint::new(px + pts[0].0, py + pts[0].1)];
+        let _: () =
+            msg_send![path, moveToPoint: NSPoint::new(px + pts[0].0 * s, py + pts[0].1 * s)];
         for (x, y) in &pts[1..] {
-            let _: () = msg_send![path, lineToPoint: NSPoint::new(px + x, py + y)];
+            let _: () = msg_send![path, lineToPoint: NSPoint::new(px + x * s, py + y * s)];
         }
         let _: () = msg_send![path, closePath];
         let _: () = msg_send![color, setFill];
@@ -134,7 +137,7 @@ mod platform {
         // Thin dark edge so the arrow reads on light backgrounds too.
         let edge: id =
             msg_send![class!(NSColor), colorWithSRGBRed:0.02 green:0.05 blue:0.08 alpha:0.9f64];
-        let _: () = msg_send![path, setLineWidth: 0.8f64];
+        let _: () = msg_send![path, setLineWidth: 1.4f64];
         let _: () = msg_send![edge, setStroke];
         let _: () = msg_send![path, stroke];
     }
@@ -212,6 +215,11 @@ mod platform {
                 JournalTail::live(events_path).unwrap_or_else(|_| JournalTail::replay())
             };
             let mut terminal_since: Option<Instant> = None;
+            // Watchdogs — a writer that dies without a terminal event
+            // must not pin a fullscreen window forever.
+            let mut last_activity = Instant::now();
+            let writer_pid = writer_pid(events_path);
+            let mut loops = 0u32;
 
             loop {
                 // Pump pending events so the window server stays happy.
@@ -236,6 +244,9 @@ mod platform {
                         for ev in tail.poll(events_path) {
                             reduce(s, &ev);
                             dirty = true;
+                        }
+                        if dirty {
+                            last_activity = Instant::now();
                         }
                         if dirty {
                             if let Some((x, y)) = s.cursor {
@@ -287,7 +298,43 @@ mod platform {
                 if terminal_since.is_some_and(|t| t.elapsed() > Duration::from_secs(8)) {
                     break; // terminal state shown long enough — leave quietly
                 }
+                loops += 1;
+                if loops.is_multiple_of(30) {
+                    // ~1s cadence: writer gone mid-run (crashed task,
+                    // killed CLI) means nothing more is coming. A writer
+                    // that died AFTER its terminal event still gets the
+                    // 8s linger — the check only applies pre-terminal.
+                    if terminal_since.is_none() && writer_pid.is_some_and(|pid| !pid_alive(pid)) {
+                        break;
+                    }
+                    // No pid in the name (custom --events path): give up
+                    // only after a long silence while not mid-approval.
+                    let s = STATE.read().unwrap().clone();
+                    let waiting = matches!(
+                        s.as_ref().map(|s| s.status),
+                        Some(PresenceStatus::WaitingApproval)
+                    );
+                    if !waiting && last_activity.elapsed() > Duration::from_secs(120) {
+                        break;
+                    }
+                }
             }
+        }
+    }
+
+    /// `dexter-{pid}*.jsonl` journal names carry the writer's pid —
+    /// used to detect a dead writer and drop the window.
+    fn writer_pid(path: &Path) -> Option<i32> {
+        let stem = path.file_stem()?.to_str()?;
+        let rest = stem.strip_prefix("dexter-")?;
+        rest.split('-').next()?.parse().ok()
+    }
+
+    fn pid_alive(pid: i32) -> bool {
+        unsafe {
+            let app: id = msg_send![class!(NSRunningApplication),
+                runningApplicationWithProcessIdentifier: pid];
+            app != nil
         }
     }
 

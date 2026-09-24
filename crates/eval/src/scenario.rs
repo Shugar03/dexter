@@ -268,16 +268,19 @@ pub fn run_scenario(
     generator: &dyn CandidateGenerator,
     decider: &dyn DecisionEngine,
 ) -> ScenarioRun {
-    run_scenario_with(spec, build_driver(spec), generator, decider)
+    run_scenario_with(spec, build_driver(spec), generator, decider, None)
 }
 
 /// Same run on any driver — the browser surface injects a live
 /// `BrowserDriver` here after navigating to the scenario's page.
+/// `journal_path` streams the run's events to a live sink — the
+/// presence overlay tails it mid-run.
 pub fn run_scenario_with<D: ComputerDriver>(
     spec: &ScenarioSpec,
     driver: D,
     generator: &dyn CandidateGenerator,
     decider: &dyn DecisionEngine,
+    journal_path: Option<&std::path::Path>,
 ) -> ScenarioRun {
     let mut engine = Engine::new(
         driver,
@@ -286,6 +289,11 @@ pub fn run_scenario_with<D: ComputerDriver>(
     );
     for fp in &spec.task.grants {
         engine.grant_approval(fp);
+    }
+    if let Some(p) = journal_path {
+        // Presence is best-effort — a journal that can't open doesn't
+        // fail the rep.
+        let _ = engine.set_journal_sink(p);
     }
     // Sequential goals: "ir a cronómetro e iniciar" runs as two subgoals,
     // each through the same closed loop. The task-level done_when belongs

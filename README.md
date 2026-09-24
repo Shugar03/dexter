@@ -192,6 +192,12 @@ An explicit `physical = "deny"` in the file always wins over `--coords`.
 borderless, click-through window. It tails the live journal; it never
 injects or captures input.
 
+Presence is **on by default whenever a human is watching**: `click`,
+`type`, `task`, `run` and `eval scenario` auto-spawn the overlay when
+stderr is an interactive terminal. `--no-overlay` opts out; `--overlay`
+forces it on under pipes/CI. `dexter mcp --overlay` gives external
+agents the same visible cursor on `dexter_act`/`dexter_task`.
+
 ```sh
 dexter-overlay --events /tmp/journal.jsonl &   # live tail
 dexter task "pay the order" --app Chrome --events /tmp/journal.jsonl
@@ -200,7 +206,8 @@ dexter-overlay --events /tmp/journal.jsonl --replay  # replay a journal
 
 Physical-tier actions render red with `— physical input` while they run,
 so exclusive control is always visible. The overlay exits ~8s after a
-terminal state (done / failed / abstained / denied).
+terminal state (done / failed / abstained / denied), and also when the
+journal's writer dies mid-run — no orphaned windows.
 
 ## MCP tools
 

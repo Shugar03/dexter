@@ -170,6 +170,7 @@ async fn operator_opt_in_allows_coords() {
         dexter_mcp::ServerConfig {
             approve_all: false,
             allow_coords: true,
+            presence: false,
         },
     );
     tokio::spawn(async move {

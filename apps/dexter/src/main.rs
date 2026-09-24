@@ -4,15 +4,16 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use dexter_core::{
-    Action, AppSelector, ElementId, ExpectedState, MouseButton, ObservationScope, ScrollDelta,
-    SemanticTarget, Target,
+    Action, AppSelector, ElementId, EventKind, ExpectedState, MouseButton, ObservationScope,
+    ScrollDelta, SemanticTarget, Target,
 };
 use dexter_decision::CandidateGenerator;
 use dexter_driver::ComputerDriver;
-use dexter_engine::{Engine, RunConfig, Step, StepStatus};
+use dexter_engine::{presence, Engine, RunConfig, Step, StepStatus};
 use dexter_macos::{permissions, MacOsDriver};
 use dexter_policy::Policy;
 use serde::Deserialize;
+use serde_json::json;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -173,6 +174,10 @@ enum Command {
         /// Off by default — agents cannot enable it per call.
         #[arg(long)]
         coords: bool,
+        /// Operator: show the presence overlay while tools act — the
+        /// cursor flies on every dexter_act/dexter_task the agent runs.
+        #[arg(long)]
+        overlay: bool,
     },
     /// Open a URL — browser driver navigates its session; macOS hands it
     /// to LaunchServices. Policy-gated like any mutation.
@@ -204,10 +209,14 @@ enum Command {
         #[arg(long)]
         events: Option<String>,
         /// Show the presence overlay: auto-spawns `dexter-overlay` on the
-        /// journal (a temp file if --events isn't given). Best-effort —
-        /// a missing overlay binary warns, never fails the run.
+        /// journal (a temp file if --events isn't given). On by default
+        /// when the terminal is interactive; best-effort — a missing
+        /// overlay binary warns, never fails the run.
         #[arg(long)]
         overlay: bool,
+        /// Turn the presence overlay off for this run.
+        #[arg(long, conflicts_with = "overlay")]
+        no_overlay: bool,
     },
 }
 
@@ -303,6 +312,14 @@ enum EvalCommand {
         /// Dump each run's event journal to `<dir>/<id>.jsonl`.
         #[arg(long)]
         journal_out: Option<String>,
+        /// Show the presence overlay during live macOS runs — the
+        /// cursor should be seen while the suite touches real apps.
+        /// On by default when the terminal is interactive.
+        #[arg(long)]
+        overlay: bool,
+        /// Turn the presence overlay off.
+        #[arg(long, conflicts_with = "overlay")]
+        no_overlay: bool,
     },
 }
 
@@ -344,10 +361,14 @@ struct TaskArgs {
     #[arg(long)]
     events: Option<String>,
     /// Show the presence overlay: auto-spawns `dexter-overlay` on the
-    /// journal (a temp file if --events isn't given). Best-effort —
-    /// a missing overlay binary warns, never fails the task.
+    /// journal (a temp file if --events isn't given). On by default
+    /// when the terminal is interactive; best-effort — a missing
+    /// overlay binary warns, never fails the task.
     #[arg(long)]
     overlay: bool,
+    /// Turn the presence overlay off for this task.
+    #[arg(long, conflicts_with = "overlay")]
+    no_overlay: bool,
 }
 
 /// Shared flags for single-action commands.
@@ -374,6 +395,16 @@ struct ActionArgs {
     /// Attempt bound for verify loops.
     #[arg(long, default_value = "3")]
     attempts: u32,
+    /// Write the action's event journal (JSONL) to this path.
+    #[arg(long)]
+    events: Option<String>,
+    /// Show the presence overlay for this action. On by default when
+    /// the terminal is interactive — every act should be seen.
+    #[arg(long)]
+    overlay: bool,
+    /// Turn the presence overlay off for this action.
+    #[arg(long, conflicts_with = "overlay")]
+    no_overlay: bool,
 }
 
 fn main() -> ExitCode {
@@ -576,7 +607,15 @@ fn run() -> Result<()> {
             approve_all,
             events,
             overlay,
-        } => run_scenario(&mut engine, &path, coords, approve_all, events, overlay),
+            no_overlay,
+        } => run_scenario(
+            &mut engine,
+            &path,
+            coords,
+            approve_all,
+            events,
+            presence_wanted(overlay, no_overlay),
+        ),
         Command::Task { goal, args } => run_task(&mut engine, &goal, args),
         Command::Eval { cmd } => match cmd {
             EvalCommand::Run {
@@ -607,6 +646,8 @@ fn run() -> Result<()> {
                 check,
                 export,
                 journal_out,
+                overlay,
+                no_overlay,
             } => eval_scenario(
                 &path,
                 &eng,
@@ -619,6 +660,7 @@ fn run() -> Result<()> {
                 export,
                 journal_out,
                 cli.browser_url.clone(),
+                presence_wanted(overlay, no_overlay),
             ),
         },
         Command::Mcp {
@@ -627,6 +669,7 @@ fn run() -> Result<()> {
             min_confidence,
             approve_all,
             coords,
+            overlay,
         } => run_mcp(
             &cli,
             eng,
@@ -635,6 +678,7 @@ fn run() -> Result<()> {
             dexter_mcp::ServerConfig {
                 approve_all,
                 allow_coords: coords,
+                presence: overlay,
             },
         ),
     }
@@ -791,10 +835,47 @@ fn run_action(
         max_attempts: Some(args.attempts),
         app: app.clone(),
     };
+    // Presence: single acts journal to a live sink so the overlay can
+    // draw the cursor on the action's target while it happens.
+    let presence = presence_wanted(args.overlay, args.no_overlay);
+    let events_path = args
+        .events
+        .clone()
+        .or_else(|| presence.then(overlay_journal_path));
+    if let Some(path) = &events_path {
+        engine
+            .set_journal_sink(std::path::Path::new(path))
+            .with_context(|| format!("opening events sink '{path}'"))?;
+        if presence {
+            spawn_overlay(path);
+        }
+    }
     // Borrow the stage when the target's window layer is hidden —
     // background-first with one bounded wake, then hand focus back.
     let wake = wake_if_windowless(engine, &app, Duration::from_millis(800));
     let status = engine.run_step(&step, &cfg);
+    if events_path.is_some() {
+        let (kind, data) = match &status {
+            StepStatus::Done { .. } => (EventKind::TaskCompleted, json!({"steps": 1})),
+            StepStatus::Denied { reason } => (
+                EventKind::TaskFailed,
+                json!({"outcome": "denied", "reason": reason}),
+            ),
+            StepStatus::NeedsApproval { reason, .. } => (
+                EventKind::TaskFailed,
+                json!({"outcome": "escalated", "reason": reason}),
+            ),
+            StepStatus::Failed { reason, .. } => (
+                EventKind::TaskFailed,
+                json!({"outcome": "failed", "reason": reason}),
+            ),
+            StepStatus::Errored { error } => (
+                EventKind::TaskFailed,
+                json!({"outcome": "failed", "reason": error.to_string()}),
+            ),
+        };
+        engine.emit(kind, data);
+    }
     if let Some(h) = wake {
         engine.driver().restore(&h);
     }
@@ -959,15 +1040,16 @@ fn run_task(
     if args.coords {
         engine.permit_physical();
     }
+    let presence = presence_wanted(args.overlay, args.no_overlay);
     let events_path = args
         .events
         .clone()
-        .or_else(|| args.overlay.then(overlay_journal_path));
+        .or_else(|| presence.then(overlay_journal_path));
     if let Some(path) = &events_path {
         engine
             .set_journal_sink(std::path::Path::new(path))
             .with_context(|| format!("opening events sink '{path}'"))?;
-        if args.overlay {
+        if presence {
             spawn_overlay(path);
         }
     }
@@ -1507,6 +1589,7 @@ fn eval_scenario(
     export: Option<String>,
     journal_out: Option<String>,
     browser_url: Option<String>,
+    presence: bool,
 ) -> Result<()> {
     use dexter_eval::scenario::*;
 
@@ -1603,7 +1686,7 @@ fn eval_scenario(
                     .navigate(url)
                     .map_err(|e| anyhow::anyhow!("navigate {url}: {e}"))?;
                 std::thread::sleep(Duration::from_millis(*settle_ms));
-                run_scenario_with(&spec, driver, &generator, decider.as_ref())
+                run_scenario_with(&spec, driver, &generator, decider.as_ref(), None)
             } else if let Some(lspec) = macos {
                 // Per rep: prep the fixture, settle, run, teardown —
                 // teardown always runs so a failed rep leaves no state.
@@ -1683,8 +1766,29 @@ fn eval_scenario(
                         _ => {}
                     }
                 }
-                let run =
-                    run_scenario_with(&spec, MacOsDriver::new(), &generator, decider.as_ref());
+                // Presence on live reps: a per-rep journal feeds the
+                // overlay — the cursor flies while the scenario works.
+                let presence_journal = presence.then(|| {
+                    std::env::temp_dir().join(format!(
+                        "dexter-{}-{}-rep{}.jsonl",
+                        std::process::id(),
+                        spec.scenario.id,
+                        rep + 1
+                    ))
+                });
+                let overlay_child = presence_journal
+                    .as_deref()
+                    .and_then(dexter_engine::presence::spawn_overlay);
+                let run = run_scenario_with(
+                    &spec,
+                    MacOsDriver::new(),
+                    &generator,
+                    decider.as_ref(),
+                    presence_journal.as_deref(),
+                );
+                if let Some(mut c) = overlay_child {
+                    let _ = c.kill();
+                }
                 if let Some(teardown) = &lspec.teardown {
                     let _ = std::process::Command::new("sh")
                         .arg("-c")
@@ -1832,48 +1936,28 @@ fn eval_scenario(
     Ok(())
 }
 
-/// Temp journal path for `--overlay` without an explicit `--events`.
+/// Presence contract: an explicit `--overlay` always wins, an explicit
+/// `--no-overlay` always loses, and otherwise the cursor shows whenever
+/// a human is watching (interactive terminal). Piped/CI runs stay
+/// headless unless asked — every act should be seen, not invisible.
+fn presence_wanted(overlay: bool, no_overlay: bool) -> bool {
+    use std::io::IsTerminal;
+    !no_overlay && (overlay || std::io::stderr().is_terminal())
+}
+
+/// Temp journal path for presence runs without an explicit `--events`.
 fn overlay_journal_path() -> String {
-    std::env::temp_dir()
-        .join(format!("dexter-{}.jsonl", std::process::id()))
+    presence::overlay_journal_path()
         .to_string_lossy()
         .into_owned()
 }
 
-/// `dexter-overlay` lives next to this binary in both layouts that
-/// matter (target/debug siblings, brew bin) — check there before PATH.
-fn resolve_overlay_bin() -> Option<std::path::PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.with_file_name("dexter-overlay");
-        if sibling.is_file() {
-            return Some(sibling);
-        }
-    }
-    std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .map(|d| d.join("dexter-overlay"))
-            .find(|b| b.is_file())
-    })
-}
-
-/// Spawn the presence overlay on this run's journal. Detached and
-/// quiet — the overlay exits itself shortly after a terminal event.
-/// Presence is best-effort: a missing binary warns, never fails.
+/// Spawn the presence overlay on this run's journal. Best-effort —
+/// a missing binary warns, never fails the run.
 fn spawn_overlay(events_path: &str) {
-    let Some(bin) = resolve_overlay_bin() else {
-        eprintln!("overlay: dexter-overlay not found — continuing without presence");
-        return;
-    };
-    match std::process::Command::new(&bin)
-        .arg("--events")
-        .arg(events_path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(_) => eprintln!("overlay: presence on screen — tailing {events_path}"),
-        Err(e) => eprintln!("overlay: spawn failed ({e}) — continuing without presence"),
+    match presence::spawn_overlay(std::path::Path::new(events_path)) {
+        Some(_) => eprintln!("overlay: presence on screen — tailing {events_path}"),
+        None => eprintln!("overlay: dexter-overlay unavailable — continuing without presence"),
     }
 }
 
@@ -1889,13 +1973,11 @@ mod tests {
     }
 
     #[test]
-    fn overlay_bin_prefers_exe_sibling() {
-        // The test binary's sibling dir won't contain dexter-overlay,
-        // so resolution falls back to PATH or None — either way it
-        // must not panic and must return an absolute path when found.
-        if let Some(bin) = resolve_overlay_bin() {
-            assert!(bin.is_absolute());
-            assert!(bin.is_file());
-        }
+    fn presence_flags_resolve() {
+        assert!(presence_wanted(true, false));
+        assert!(!presence_wanted(true, true));
+        assert!(!presence_wanted(false, true));
+        // Default depends on whether stderr is a terminal — under the
+        // test harness it isn't, so interactive default is off here.
     }
 }

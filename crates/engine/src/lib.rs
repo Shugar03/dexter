@@ -23,6 +23,8 @@ use dexter_policy::{ActionContext, ApprovalStore, Policy, PolicyDecision};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
+pub mod presence;
+
 /// One step of a scenario.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
@@ -207,6 +209,13 @@ impl<D: ComputerDriver> Engine<D> {
         self.policy.permit_physical();
     }
 
+    /// Emit a caller-level event through the same journal + live sink
+    /// path as engine events — used to mark terminal state for runs
+    /// that don't go through `run_plan` (e.g. single-act commands).
+    pub fn emit(&mut self, kind: EventKind, data: serde_json::Value) {
+        self.journal(kind, data);
+    }
+
     fn journal(&mut self, kind: EventKind, data: serde_json::Value) {
         let ev = Event::new(kind, data);
         if let Some(w) = &mut self.journal_sink {
@@ -221,7 +230,21 @@ impl<D: ComputerDriver> Engine<D> {
 
     /// Run one step: policy gate → bounded act/verify loop.
     pub fn run_step(&mut self, step: &Step, cfg: &RunConfig) -> StepStatus {
-        self.run_step_inner(step, cfg, None)
+        // The journal carries the target's on-screen bounds so the
+        // presence overlay can draw the cursor where the act lands.
+        // run_plan already holds a live observation; single steps take
+        // one here — cosmetic only, a failed observe never blocks the act.
+        let obs = if bounds_need_observation(&step.action) {
+            let scope = ObservationScope {
+                app: step.app.clone().or_else(|| cfg.app.clone()),
+                max_elements: cfg.observe_max_elements,
+                ..Default::default()
+            };
+            self.driver.observe(&scope).ok()
+        } else {
+            None
+        };
+        self.run_step_inner(step, cfg, obs.as_ref())
     }
 
     /// `obs` is the live observation when one exists (the `run_task` loop);
@@ -754,6 +777,20 @@ const STATE_BUDGET: usize = 14_000;
 /// The on-screen rect an action will land on — the presence contract an
 /// overlay renders from. Resolved against the live observation for
 /// element targets; a `Point` is its own (1×1) rect; `Navigate` has none.
+/// Does this action's target need a live observation to find bounds?
+/// Points carry their own coordinates; semantic/element/window targets
+/// resolve against the observed tree.
+fn bounds_need_observation(action: &Action) -> bool {
+    let target = match action {
+        Action::Click { target, .. }
+        | Action::Focus { target }
+        | Action::SetValue { target, .. } => Some(target),
+        Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
+        _ => None,
+    };
+    matches!(target, Some(t) if !matches!(t, Target::Point { .. }))
+}
+
 fn target_bounds(action: &Action, obs: Option<&Observation>) -> Option<Rect> {
     let target = match action {
         Action::Click { target, .. }

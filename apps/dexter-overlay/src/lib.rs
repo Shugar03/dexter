@@ -159,6 +159,10 @@ pub fn reduce(state: &mut PresenceState, ev: &Event) {
                     state.status = PresenceStatus::WaitingApproval;
                     state.status_line = "needs a human".into();
                 }
+                "denied" => {
+                    state.status = PresenceStatus::Denied;
+                    state.status_line = "denied by policy".into();
+                }
                 _ => {
                     state.status = PresenceStatus::Failed;
                     state.status_line = "failed".into();
@@ -220,7 +224,10 @@ impl JournalTail {
         let Ok(len) = f.metadata().map(|m| m.len()) else {
             return Vec::new();
         };
-        if len <= self.offset {
+        if len < self.offset {
+            self.offset = 0; // journal was truncated/rotated — reread
+        }
+        if len == self.offset {
             return Vec::new();
         }
         let mut buf = String::new();

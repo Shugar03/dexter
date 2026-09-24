@@ -108,6 +108,9 @@ pub struct ServerConfig {
     pub approve_all: bool,
     /// Permit physical-tier (coordinate/keyboard) input.
     pub allow_coords: bool,
+    /// Show the presence overlay while tools act — the operator sees
+    /// the cursor fly on every dexter_act/dexter_task.
+    pub presence: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -416,9 +419,44 @@ impl DexterMcp {
             app: params.app.as_deref().map(AppSelector::parse),
         };
         let cfg = run_cfg(params.app.clone(), self.runtime.config);
+        let presence = self.runtime.config.presence;
         let runtime = self.runtime.clone();
         let status = tokio::task::spawn_blocking(move || {
-            Ok::<_, McpError>(runtime.engine.lock().map_err(err)?.run_step(&step, &cfg))
+            let mut engine = runtime.engine.lock().map_err(err)?;
+            let events = presence.then(dexter_engine::presence::overlay_journal_path);
+            if let Some(p) = &events {
+                // Presence is best-effort — never fail the act.
+                let _ = engine.set_journal_sink(p);
+                let _ = dexter_engine::presence::spawn_overlay(p);
+            }
+            let status = engine.run_step(&step, &cfg);
+            if events.is_some() {
+                use dexter_engine::StepStatus;
+                let (kind, data) = match &status {
+                    StepStatus::Done { .. } => (
+                        dexter_core::EventKind::TaskCompleted,
+                        serde_json::json!({"steps": 1}),
+                    ),
+                    StepStatus::Denied { reason } => (
+                        dexter_core::EventKind::TaskFailed,
+                        serde_json::json!({"outcome": "denied", "reason": reason}),
+                    ),
+                    StepStatus::NeedsApproval { reason, .. } => (
+                        dexter_core::EventKind::TaskFailed,
+                        serde_json::json!({"outcome": "escalated", "reason": reason}),
+                    ),
+                    StepStatus::Failed { reason, .. } => (
+                        dexter_core::EventKind::TaskFailed,
+                        serde_json::json!({"outcome": "failed", "reason": reason}),
+                    ),
+                    StepStatus::Errored { error } => (
+                        dexter_core::EventKind::TaskFailed,
+                        serde_json::json!({"outcome": "failed", "reason": error.to_string()}),
+                    ),
+                };
+                engine.emit(kind, data);
+            }
+            Ok::<_, McpError>(status)
         })
         .await
         .map_err(|e| err(format!("join: {e}")))??;
@@ -508,8 +546,16 @@ impl DexterMcp {
             }
             *slot = Some(token.clone());
         }
+        let presence = runtime.config.presence;
         let outcome = tokio::task::spawn_blocking(move || {
             let mut engine = runtime.engine.lock().map_err(err)?;
+            if presence {
+                // run_plan emits its own terminal events — the overlay
+                // only needs the sink and a tail.
+                let p = dexter_engine::presence::overlay_journal_path();
+                let _ = engine.set_journal_sink(&p);
+                let _ = dexter_engine::presence::spawn_overlay(&p);
+            }
             // Sequential goals: "write X and save" runs as ordered
             // subgoals — the done expectation belongs to the last.
             let parts = dexter_decision::split_goal(&goal);
