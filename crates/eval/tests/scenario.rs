@@ -81,6 +81,24 @@ target = { role = "progress_indicator" }
 values = ["81", "100"]
 "#;
 
+const SILENT_NOOP: &str = r#"
+[scenario]
+id = "silent-noop"
+goal = "guardar el documento"
+app = "Editor"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "guardado" } }
+expected = "abstained"
+max_steps = 4
+
+[[world.element]]
+id = 1
+role = "button"
+name = "Guardar"
+actions = ["press"]
+"#;
+
 const ABSENT: &str = r#"
 [scenario]
 id = "admin-absent"
@@ -319,4 +337,27 @@ fn successful_run_exports_training_rows() {
     let drun = run_scenario(&d, &HeuristicGenerator::default(), &RuleBased::default());
     let (drows, _) = rows_from_events(&drun.events, &d.scenario.id, "sim");
     assert!(drows.iter().any(|r| r.gold_route == Some("wait")));
+}
+
+#[test]
+fn training_rows_carry_per_step_outcome() {
+    // The wizard's acts verify — rows must carry the outcome signal.
+    let s = spec(WIZARD);
+    let run = run_scenario(&s, &HeuristicGenerator::default(), &RuleBased::default());
+    let (rows, _) = rows_from_events(&run.events, &s.scenario.id, "sim");
+    assert!(
+        rows.iter().all(|r| r.verified == Some(true)),
+        "verified acts label verified=true: {:?}",
+        rows.iter().map(|r| r.verified).collect::<Vec<_>>()
+    );
+
+    // The dead-button scenario: the act's row labels verified=false,
+    // the abstain route's row stays unlabeled.
+    let n = spec(SILENT_NOOP);
+    let nrun = run_scenario(&n, &HeuristicGenerator::default(), &RuleBased::default());
+    let (nrows, _) = rows_from_events(&nrun.events, &n.scenario.id, "sim");
+    assert_eq!(nrows[0].verified, Some(false));
+    assert!(nrows
+        .iter()
+        .any(|r| r.gold_route.is_some() && r.verified.is_none()));
 }

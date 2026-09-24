@@ -475,6 +475,11 @@ pub struct ScenarioRow {
     /// Absolute option index (candidates first, then route options).
     pub gold_index: Option<usize>,
     pub gold_route: Option<&'static str>,
+    /// Whether the action this row decided actually verified — the
+    /// per-step outcome signal. `None` for route decisions and for
+    /// acts the engine never verified: no outcome means no label,
+    /// never a guessed one.
+    pub verified: Option<bool>,
 }
 
 /// Rebuild training rows from a run's journal: pair each
@@ -490,16 +495,30 @@ pub fn rows_from_events(
     scenario_id: &str,
     app: &str,
 ) -> (Vec<ScenarioRow>, usize) {
-    let mut rows = Vec::new();
+    let mut rows: Vec<ScenarioRow> = Vec::new();
     let mut skipped = 0;
     let mut last_ctx: Option<DecisionContext> = None;
+    // Index of the row awaiting its act outcome — labelled by the next
+    // verification event, cleared if the step moves on unverified.
+    let mut pending: Option<usize> = None;
     for ev in events {
         match ev.kind {
             dexter_core::EventKind::CandidatesGenerated => {
+                pending = None;
                 last_ctx = ev
                     .data
                     .get("context")
                     .and_then(|v| serde_json::from_value(v.clone()).ok());
+            }
+            dexter_core::EventKind::VerificationPassed => {
+                if let Some(i) = pending.take() {
+                    rows[i].verified = Some(true);
+                }
+            }
+            dexter_core::EventKind::VerificationFailed | dexter_core::EventKind::ActionFailed => {
+                if let Some(i) = pending.take() {
+                    rows[i].verified = Some(false);
+                }
             }
             dexter_core::EventKind::DecisionMade => {
                 let (Some(ctx), Some(decision)) = (
@@ -511,11 +530,11 @@ pub fn rows_from_events(
                     continue;
                 };
                 let n_cands = ctx.candidates.len();
-                let (gold_index, gold_route) = match &decision {
+                let (gold_index, gold_route, was_act) = match &decision {
                     Decision::Act {
                         candidate_index, ..
                     } => match candidate_index {
-                        Some(i) if *i < n_cands => (Some(*i), None),
+                        Some(i) if *i < n_cands => (Some(*i), None, true),
                         _ => {
                             skipped += 1;
                             continue;
@@ -527,7 +546,7 @@ pub fn rows_from_events(
                             .iter()
                             .position(|v| *v == variant);
                         match slot {
-                            Some(s) => (Some(n_cands + s), Some(variant)),
+                            Some(s) => (Some(n_cands + s), Some(variant), false),
                             None => {
                                 skipped += 1;
                                 continue;
@@ -550,7 +569,11 @@ pub fn rows_from_events(
                     n_candidates: n_cands,
                     gold_index,
                     gold_route,
+                    verified: None,
                 });
+                if was_act {
+                    pending = Some(rows.len() - 1);
+                }
             }
             _ => {}
         }
