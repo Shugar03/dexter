@@ -342,3 +342,198 @@ fn truncate(s: &str, max: usize) -> String {
         out
     }
 }
+
+/// A summarized capability map of an observed app — what it is, what
+/// its controls do, where they live. The artifact an agent consumes to
+/// theorize about an interface it has never seen: built from one
+/// observation, no per-app hand-authored knowledge.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct AppMap {
+    /// Window titles + bounds (windows are named surfaces of work).
+    pub windows: Vec<MapWindow>,
+    /// Elements per role, most frequent first — the app's shape.
+    pub role_counts: Vec<(String, usize)>,
+    /// Menubar menu_item labels — the app's verb vocabulary.
+    pub menu_verbs: Vec<String>,
+    /// Named pressable controls (button/tab/menu_button/...).
+    pub controls: Vec<String>,
+    /// Editable surfaces — text fields/areas, search, combo, sliders.
+    pub editable: Vec<String>,
+    /// Navigation surfaces — tabs, radio groups, sidebars/outlines.
+    pub navigation: Vec<String>,
+    /// Inferred capabilities from label/role evidence.
+    pub capabilities: Vec<String>,
+    /// True when CG sees windows but AX exposes none — the app is not
+    /// frontmost or its window is off-Space. Map is menubar-only.
+    pub ax_limited: bool,
+}
+
+/// One window surface in the map.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MapWindow {
+    pub title: Option<String>,
+    pub bounds: Option<dexter_core::Rect>,
+}
+
+/// Roles whose presence means the app can navigate.
+const NAV_ROLES: &[&str] = &[
+    "radio_button",
+    "tab",
+    "tab_group",
+    "outline",
+    "scroll_area",
+    "pop_up_button",
+];
+
+/// Roles whose presence means the app can take text input.
+const EDIT_ROLES: &[&str] = &[
+    "text_field",
+    "text_area",
+    "search_field",
+    "combo_box",
+    "secure_text_field",
+];
+
+/// Roles that are pressable controls.
+const CONTROL_ROLES: &[&str] = &["button", "menu_button", "check_box", "link", "stepper"];
+
+/// Label hints for the calculator inference — digits plus operators.
+const CALC_OPS: &[&str] = &[
+    "sumar",
+    "restar",
+    "multiplicar",
+    "dividir",
+    "igual",
+    "add",
+    "subtract",
+    "multiply",
+    "divide",
+    "equals",
+    "+",
+    "-",
+    "×",
+    "÷",
+    "=",
+];
+
+/// Label hints that mark a document-editing surface.
+const DOC_VERBS: &[&str] = &["guardar", "save", "exportar", "export", "print", "imprimir"];
+
+/// Build the map: clusters by role, the menubar verb vocabulary, then
+/// capability inference over the collected evidence.
+pub fn app_map(obs: &Observation) -> AppMap {
+    let mut map = AppMap::default();
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+
+    for e in &obs.elements {
+        let role = e.role.clone().unwrap_or_else(|| "?".into());
+        *counts.entry(role.clone()).or_default() += 1;
+        let name = e.name.as_deref().unwrap_or("").trim();
+        match role.as_str() {
+            "window" | "dialog" | "sheet" | "drawer" => map.windows.push(MapWindow {
+                title: if name.is_empty() {
+                    None
+                } else {
+                    Some(name.into())
+                },
+                bounds: e.bounds,
+            }),
+            "menu_item" if !name.is_empty() => map.menu_verbs.push(name.into()),
+            r if NAV_ROLES.contains(&r) && !name.is_empty() => {
+                map.navigation.push(format!("{r} '{name}'"));
+            }
+            r if EDIT_ROLES.contains(&r) => map.editable.push(if name.is_empty() {
+                if e.focused {
+                    format!("{r} (unnamed, focused)")
+                } else {
+                    format!("{r} (unnamed)")
+                }
+            } else {
+                format!("{r} '{name}'")
+            }),
+            r if CONTROL_ROLES.contains(&r) && !name.is_empty() => {
+                map.controls.push(format!("{r} '{name}'"));
+            }
+            _ => {}
+        }
+    }
+    map.role_counts = counts.into_iter().collect::<Vec<_>>().tap_sort_desc();
+    map.menu_verbs.sort();
+    map.menu_verbs.dedup();
+    map.controls.sort();
+    map.controls.dedup();
+    map.navigation.sort();
+    map.navigation.dedup();
+
+    infer_capabilities(obs, &mut map);
+    map.ax_limited = obs.ax_limited || (!obs.windows.is_empty() && map.windows.is_empty());
+    map
+}
+
+/// Evidence-based inference — small honest rules over the collected
+/// labels. Each capability names its evidence so callers can judge it.
+fn infer_capabilities(obs: &Observation, map: &mut AppMap) {
+    let label_of = |e: &Element| e.name.as_deref().unwrap_or("").to_lowercase();
+    let is_button = |e: &Element| e.role.as_deref() == Some("button");
+
+    // Calculator: ≥6 distinct digit buttons plus ≥2 operator labels.
+    let digits = obs
+        .elements
+        .iter()
+        .filter(|e| is_button(e))
+        .filter_map(|e| e.name.as_deref().map(str::trim))
+        .filter(|n| n.len() == 1 && n.chars().all(|c| c.is_ascii_digit()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let ops = obs
+        .elements
+        .iter()
+        .filter(|e| is_button(e))
+        .map(label_of)
+        .filter(|l| CALC_OPS.iter().any(|op| l.contains(op)))
+        .count();
+    if digits.len() >= 6 && ops >= 2 {
+        map.capabilities.push(format!(
+            "calculator-like ({} digit buttons, {} operator controls)",
+            digits.len(),
+            ops
+        ));
+    }
+
+    // Document editor: an editable surface plus a save/export verb.
+    let has_edit_surface = !map.editable.is_empty();
+    let has_doc_verb = map
+        .menu_verbs
+        .iter()
+        .map(|v| v.to_lowercase())
+        .any(|v| DOC_VERBS.iter().any(|d| v.contains(d)));
+    if has_edit_surface && has_doc_verb {
+        map.capabilities
+            .push("document editor (editable surface + save/export verbs)".into());
+    }
+
+    // Menu-driven surface: many verbs, little window chrome.
+    if map.menu_verbs.len() >= 20 {
+        map.capabilities.push(format!(
+            "menu-driven ({} menubar verbs reachable without focus)",
+            map.menu_verbs.len()
+        ));
+    }
+
+    // Navigation-rich: tabs/radio groups/sidebar present.
+    if map.navigation.len() >= 3 {
+        map.capabilities.push(format!(
+            "sectioned UI ({} navigation controls)",
+            map.navigation.len()
+        ));
+    }
+}
+
+trait TapSort {
+    fn tap_sort_desc(self) -> Self;
+}
+impl TapSort for Vec<(String, usize)> {
+    fn tap_sort_desc(mut self) -> Self {
+        self.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        self
+    }
+}

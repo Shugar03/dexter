@@ -90,6 +90,15 @@ enum Command {
         #[arg(long)]
         vision: bool,
     },
+    /// Map an app's interface: windows, control clusters, the menubar
+    /// verb vocabulary and inferred capabilities — one call answers
+    /// "what is this app and what can it do" without hand-authored
+    /// per-app knowledge.
+    Map {
+        /// Scope to an application: name, `com.bundle.id` or pid.
+        #[arg(long)]
+        app: String,
+    },
     /// Click an element (AXPress; `point:x,y` needs --coords).
     Click {
         #[command(flatten)]
@@ -194,6 +203,11 @@ enum Command {
         /// Write the event journal (JSONL) to this path.
         #[arg(long)]
         events: Option<String>,
+        /// Show the presence overlay: auto-spawns `dexter-overlay` on the
+        /// journal (a temp file if --events isn't given). Best-effort —
+        /// a missing overlay binary warns, never fails the run.
+        #[arg(long)]
+        overlay: bool,
     },
 }
 
@@ -329,6 +343,11 @@ struct TaskArgs {
     /// Write the event journal (JSONL) to this path.
     #[arg(long)]
     events: Option<String>,
+    /// Show the presence overlay: auto-spawns `dexter-overlay` on the
+    /// journal (a temp file if --events isn't given). Best-effort —
+    /// a missing overlay binary warns, never fails the task.
+    #[arg(long)]
+    overlay: bool,
 }
 
 /// Shared flags for single-action commands.
@@ -472,6 +491,40 @@ fn run() -> Result<()> {
             };
             observe(engine.driver(), &scope, digest)
         }
+        Command::Map { app } => {
+            let scope = ObservationScope {
+                app: Some(AppSelector::parse(&app)),
+                ..Default::default()
+            };
+            let mut obs = engine
+                .driver()
+                .observe(&scope)
+                .context("map observe failed")?;
+            // AX exposes window content only while the app is frontmost
+            // — if the map is windowless, wake once, re-observe, then
+            // hand focus back. Same contract as the live-scenario runner.
+            if !obs
+                .elements
+                .iter()
+                .any(|e| e.role.as_deref() == Some("window"))
+            {
+                let handle = engine
+                    .driver()
+                    .wake(&AppSelector::parse(&app))
+                    .context("map wake failed")?;
+                if handle.activated {
+                    std::thread::sleep(Duration::from_millis(800));
+                    obs = engine
+                        .driver()
+                        .observe(&scope)
+                        .context("map re-observe failed")?;
+                    engine.driver().restore(&handle);
+                }
+            }
+            let map = dexter_world_model::app_map(&obs);
+            println!("{}", serde_json::to_string_pretty(&map)?);
+            Ok(())
+        }
         Command::Click { args, button } => {
             let button = match button.as_str() {
                 "left" => MouseButton::Left,
@@ -522,7 +575,8 @@ fn run() -> Result<()> {
             coords,
             approve_all,
             events,
-        } => run_scenario(&mut engine, &path, coords, approve_all, events),
+            overlay,
+        } => run_scenario(&mut engine, &path, coords, approve_all, events, overlay),
         Command::Task { goal, args } => run_task(&mut engine, &goal, args),
         Command::Eval { cmd } => match cmd {
             EvalCommand::Run {
@@ -801,6 +855,7 @@ fn run_scenario(
     coords: bool,
     approve_all: bool,
     events_path: Option<String>,
+    overlay: bool,
 ) -> Result<()> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading scenario '{path}'"))?;
@@ -812,11 +867,15 @@ fn run_scenario(
     if coords {
         engine.permit_physical();
     }
+    let events_path = events_path.or_else(|| overlay.then(overlay_journal_path));
     if let Some(path) = &events_path {
         // Live stream: a presence overlay tails this file mid-run.
         engine
             .set_journal_sink(std::path::Path::new(path))
             .with_context(|| format!("opening events sink '{path}'"))?;
+        if overlay {
+            spawn_overlay(path);
+        }
     }
     let cfg = RunConfig {
         app: file.app.as_deref().map(AppSelector::parse),
@@ -863,13 +922,33 @@ fn run_task(
     if args.coords {
         engine.permit_physical();
     }
-    if let Some(path) = &args.events {
+    let events_path = args
+        .events
+        .clone()
+        .or_else(|| args.overlay.then(overlay_journal_path));
+    if let Some(path) = &events_path {
         engine
             .set_journal_sink(std::path::Path::new(path))
             .with_context(|| format!("opening events sink '{path}'"))?;
+        if args.overlay {
+            spawn_overlay(path);
+        }
     }
-    let outcome = engine.run_task(
-        goal,
+    // Sequential goals: "escribir 'x' y guardar" runs as two subgoals,
+    // the --done expectation belonging to the last. Single-intent goals
+    // are a one-subgoal plan — identical behavior.
+    let parts = dexter_decision::split_goal(goal);
+    let last = parts.len() - 1;
+    let subgoals: Vec<dexter_engine::Subgoal> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, g)| dexter_engine::Subgoal {
+            goal: g.clone(),
+            done_when: (i == last).then(|| done_when.clone()),
+        })
+        .collect();
+    let outcome = engine.run_plan(
+        &subgoals,
         &generator,
         decider.as_ref(),
         &dexter_engine::TaskConfig {
@@ -889,7 +968,16 @@ fn run_task(
         },
     );
 
-    use dexter_engine::TaskOutcome;
+    use dexter_engine::{PlanOutcome, TaskOutcome};
+    let outcome = match outcome {
+        PlanOutcome::Completed { steps, .. } => TaskOutcome::Completed { steps },
+        PlanOutcome::Failed {
+            index, goal, inner, ..
+        } => {
+            eprintln!("subgoal {index} '{goal}' failed");
+            *inner
+        }
+    };
     match outcome {
         TaskOutcome::Completed { steps } => {
             println!(
@@ -1445,7 +1533,9 @@ fn eval_scenario(
 
         // Live macOS scenarios resolve their [live] spec up front — the
         // observe probe runs after the first prep below, since prep is
-        // what launches the app.
+        // what launches the app. We also remember who was frontmost: a
+        // lazy app may need one bounded activation to render its window,
+        // and the suite hands focus back when it finishes.
         let macos =
             if spec.driver() == "macos" {
                 Some(spec.live.as_ref().ok_or_else(|| {
@@ -1454,6 +1544,7 @@ fn eval_scenario(
             } else {
                 None
             };
+        let mut wake_handle = None;
 
         let mut runs: Vec<ScenarioRun> = Vec::new();
         for rep in 0..reps.max(1) {
@@ -1487,23 +1578,65 @@ fn eval_scenario(
                 // Probe once after the first prep — a hard observe error
                 // (no AX permission, app missing) skips the scenario so
                 // CI runners and permission-less terminals never flake.
+                // A `open -g` background launch can leave the app with no
+                // rendered window — then AX reports a menubar-only tree.
+                // Wake once via activation, re-settle, re-probe.
                 if rep == 0 {
-                    let probe = MacOsDriver::new().observe(&dexter_core::ObservationScope {
+                    let scope = dexter_core::ObservationScope {
                         app: Some(dexter_core::AppSelector::parse(&lspec.app)),
                         ..Default::default()
-                    });
-                    if let Err(e) = probe {
-                        println!(
-                            "{:<24} skipped — macos observe failed: {e}",
-                            spec.scenario.id
-                        );
-                        if let Some(teardown) = &lspec.teardown {
-                            let _ = std::process::Command::new("sh")
-                                .arg("-c")
-                                .arg(teardown)
-                                .status();
+                    };
+                    let probe = MacOsDriver::new().observe(&scope);
+                    let no_window = |o: &dexter_core::Observation| {
+                        !o.elements
+                            .iter()
+                            .any(|e| e.role.as_deref() == Some("window"))
+                    };
+                    let probe = match probe {
+                        Ok(obs) if no_window(&obs) => {
+                            // AX only exposes window content while the
+                            // app is frontmost — bounded wake: activate
+                            // once, re-settle, re-probe. Frontmost is
+                            // restored after all reps via the handle.
+                            let drv = MacOsDriver::new();
+                            if let Ok(h) = drv.wake(&dexter_core::AppSelector::parse(&lspec.app)) {
+                                if h.activated {
+                                    wake_handle = Some(h);
+                                    std::thread::sleep(Duration::from_millis(lspec.settle_ms));
+                                }
+                            }
+                            drv.observe(&scope)
                         }
-                        break;
+                        other => other,
+                    };
+                    match probe {
+                        Err(e) => {
+                            println!(
+                                "{:<24} skipped — macos observe failed: {e}",
+                                spec.scenario.id
+                            );
+                            if let Some(teardown) = &lspec.teardown {
+                                let _ = std::process::Command::new("sh")
+                                    .arg("-c")
+                                    .arg(teardown)
+                                    .status();
+                            }
+                            break;
+                        }
+                        Ok(obs) if no_window(&obs) => {
+                            println!(
+                                "{:<24} skipped — {} exposes no AX window",
+                                spec.scenario.id, lspec.app
+                            );
+                            if let Some(teardown) = &lspec.teardown {
+                                let _ = std::process::Command::new("sh")
+                                    .arg("-c")
+                                    .arg(teardown)
+                                    .status();
+                            }
+                            break;
+                        }
+                        _ => {}
                     }
                 }
                 let run =
@@ -1548,6 +1681,11 @@ fn eval_scenario(
                 }
             }
             runs.push(run);
+        }
+        // Hand focus back to whoever owned it before a wake fired —
+        // background-first means borrow the stage, then return it.
+        if let Some(h) = wake_handle.take() {
+            MacOsDriver::new().restore(&h);
         }
         if runs.is_empty() {
             // Prep failed on rep 0 — nothing was measured.
@@ -1648,4 +1786,72 @@ fn eval_scenario(
         println!("baseline check: ok");
     }
     Ok(())
+}
+
+/// Temp journal path for `--overlay` without an explicit `--events`.
+fn overlay_journal_path() -> String {
+    std::env::temp_dir()
+        .join(format!("dexter-{}.jsonl", std::process::id()))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `dexter-overlay` lives next to this binary in both layouts that
+/// matter (target/debug siblings, brew bin) — check there before PATH.
+fn resolve_overlay_bin() -> Option<std::path::PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.with_file_name("dexter-overlay");
+        if sibling.is_file() {
+            return Some(sibling);
+        }
+    }
+    std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join("dexter-overlay"))
+            .find(|b| b.is_file())
+    })
+}
+
+/// Spawn the presence overlay on this run's journal. Detached and
+/// quiet — the overlay exits itself shortly after a terminal event.
+/// Presence is best-effort: a missing binary warns, never fails.
+fn spawn_overlay(events_path: &str) {
+    let Some(bin) = resolve_overlay_bin() else {
+        eprintln!("overlay: dexter-overlay not found — continuing without presence");
+        return;
+    };
+    match std::process::Command::new(&bin)
+        .arg("--events")
+        .arg(events_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => eprintln!("overlay: presence on screen — tailing {events_path}"),
+        Err(e) => eprintln!("overlay: spawn failed ({e}) — continuing without presence"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_journal_path_is_per_process_and_jsonl() {
+        let p = overlay_journal_path();
+        assert!(p.contains("dexter-"));
+        assert!(p.ends_with(".jsonl"));
+    }
+
+    #[test]
+    fn overlay_bin_prefers_exe_sibling() {
+        // The test binary's sibling dir won't contain dexter-overlay,
+        // so resolution falls back to PATH or None — either way it
+        // must not panic and must return an absolute path when found.
+        if let Some(bin) = resolve_overlay_bin() {
+            assert!(bin.is_absolute());
+            assert!(bin.is_file());
+        }
+    }
 }

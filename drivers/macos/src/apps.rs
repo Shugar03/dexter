@@ -41,6 +41,28 @@ fn pid_for_bundle(bundle: &str) -> Result<i32, DriverError> {
     }
 }
 
+/// Raise `pid`'s windows and make it key — the one activation a lazy
+/// app needs so its AX windows exist. Native NSRunningApplication call;
+/// no Apple Events, so no Automation grant is required.
+pub fn activate_pid(pid: i32) -> bool {
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let app: id = msg_send![
+            class!(NSRunningApplication),
+            runningApplicationWithProcessIdentifier: pid
+        ];
+        let ok = if app == nil {
+            false
+        } else {
+            // AllWindows | IgnoringOtherApps — bring every window forward.
+            let activated: bool = msg_send![app, activateWithOptions: 3usize];
+            activated
+        };
+        pool.drain();
+        ok
+    }
+}
+
 /// Pid of the frontmost application, if the workspace reports one.
 pub fn frontmost_pid() -> Option<i32> {
     unsafe {

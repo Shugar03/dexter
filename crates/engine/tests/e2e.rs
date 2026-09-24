@@ -468,3 +468,165 @@ fn run_task_times_out_on_wall_clock() {
         .iter()
         .any(|e| e.kind == EventKind::TaskTimedOut));
 }
+
+#[test]
+fn run_plan_executes_subgoals_in_order() {
+    // "escribir 'hola' en texto" then "guardar" — two intents, one plan.
+    // Auto-completion: each finishes when its act verifiably moved the
+    // world (value set / element spawned), not on the engine's say-so.
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{PlanOutcome, Subgoal, TaskConfig};
+
+    let mut field = el(1, "text_field", "Texto");
+    field.actions = vec!["press".into(), "set_value".into(), "focus".into()];
+    let sim = SimDriver::new(vec![field, el(2, "button", "Guardar")]);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "Guardado")),
+    );
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+
+    let outcome = engine.run_plan(
+        &[
+            Subgoal {
+                goal: "escribir 'hola' en texto".into(),
+                done_when: None,
+            },
+            Subgoal {
+                goal: "guardar".into(),
+                done_when: Some(ExpectedState::ElementExists {
+                    target: SemanticTarget {
+                        name: Some("Guardado".into()),
+                        ..Default::default()
+                    },
+                }),
+            },
+        ],
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 6,
+            max_duration: None,
+            cancel: None,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget::default(),
+            },
+        },
+    );
+    match outcome {
+        PlanOutcome::Completed { subgoals, steps } => {
+            assert_eq!(subgoals, 2);
+            assert_eq!(steps, 2);
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+    let kinds: Vec<_> = engine.events().iter().map(|e| e.kind).collect();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| **k == EventKind::SubgoalStarted)
+            .count(),
+        2
+    );
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| **k == EventKind::SubgoalCompleted)
+            .count(),
+        2
+    );
+    assert!(!kinds.contains(&EventKind::SubgoalFailed));
+    // The write actually landed — subgoal one wasn't vacuous.
+    assert!(engine
+        .driver()
+        .elements()
+        .iter()
+        .any(|e| e.value.as_deref() == Some("hola")));
+}
+
+#[test]
+fn run_plan_reports_which_subgoal_failed() {
+    // Second subgoal names an element that doesn't exist — the plan must
+    // attribute the failure to index 1, with subgoal 0 completed.
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{PlanOutcome, Subgoal, TaskConfig};
+
+    let mut field = el(1, "text_field", "Texto");
+    field.actions = vec!["press".into(), "set_value".into(), "focus".into()];
+    let sim = SimDriver::new(vec![field]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+
+    let outcome = engine.run_plan(
+        &[
+            Subgoal {
+                goal: "escribir 'hola' en texto".into(),
+                done_when: None,
+            },
+            Subgoal {
+                goal: "pulsar el botón inexistente".into(),
+                done_when: None,
+            },
+        ],
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 4,
+            max_duration: None,
+            cancel: None,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget::default(),
+            },
+        },
+    );
+    match outcome {
+        PlanOutcome::Failed {
+            index, completed, ..
+        } => {
+            assert_eq!(index, 1);
+            assert_eq!(completed, 1);
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert!(engine
+        .events()
+        .iter()
+        .any(|e| e.kind == EventKind::SubgoalFailed));
+}
+
+#[test]
+fn run_plan_auto_complete_requires_world_change() {
+    // A successful act on a no-op control must NOT complete the subgoal:
+    // auto-completion trusts observed change, never act success alone.
+    use dexter_decision::{HeuristicGenerator, RuleBased};
+    use dexter_engine::{PlanOutcome, Subgoal, TaskConfig};
+
+    let sim = SimDriver::new(vec![el(1, "button", "NoOp")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+
+    let outcome = engine.run_plan(
+        &[Subgoal {
+            goal: "pulsar noop".into(),
+            done_when: None,
+        }],
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 4,
+            max_duration: None,
+            cancel: None,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget::default(),
+            },
+        },
+    );
+    match outcome {
+        PlanOutcome::Failed { .. } => {}
+        other => panic!("expected Failed (world never changed), got {other:?}"),
+    }
+}

@@ -10,7 +10,7 @@
 //! are read-only; input is added by the action slice. Nothing is simulated.
 
 mod actions;
-mod apps;
+pub mod apps;
 mod ax;
 mod ffi;
 mod keymap;
@@ -22,7 +22,7 @@ pub mod permissions;
 
 use accessibility::AXUIElement;
 use dexter_core::{Action, ActionResult, Observation, ObservationId, ObservationScope, Window};
-use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
+use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError, WakeHandle};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
@@ -55,6 +55,26 @@ impl ComputerDriver for MacOsDriver {
 
     fn windows(&self) -> Result<Vec<Window>, DriverError> {
         windows::list_windows()
+    }
+
+    fn wake(&self, app: &dexter_core::AppSelector) -> Result<WakeHandle, DriverError> {
+        let previous = apps::frontmost_pid();
+        let pid = apps::resolve_pid(app)?;
+        if Some(pid) == previous {
+            // Already frontmost — no activation, nothing to restore.
+            return Ok(WakeHandle::default());
+        }
+        apps::activate_pid(pid);
+        Ok(WakeHandle::activated(previous.map(i64::from)))
+    }
+
+    fn restore(&self, handle: &WakeHandle) {
+        if handle.activated {
+            // token is the pid that was frontmost before the wake.
+            if let Some(pid) = handle.token() {
+                apps::activate_pid(pid as i32);
+            }
+        }
     }
 
     fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {

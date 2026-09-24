@@ -58,6 +58,38 @@ pub struct ActContext {
     pub allow_coordinates: bool,
 }
 
+/// State captured before a [`ComputerDriver::wake`]. Pass it back to
+/// [`ComputerDriver::restore`] to return focus to the user. Drivers
+/// that never wake return `WakeHandle::default()` and restore is a
+/// no-op.
+#[derive(Debug, Clone, Default)]
+pub struct WakeHandle {
+    /// True when the driver actually requested activation — the caller
+    /// should settle briefly before re-observing and must call
+    /// `restore` when done with window content.
+    pub activated: bool,
+    /// Platform token consumed by `restore` (macOS: previous frontmost
+    /// pid). Opaque to callers.
+    token: Option<i64>,
+}
+
+impl WakeHandle {
+    /// A wake that requested activation — `token` is the platform state
+    /// `restore` needs to hand focus back.
+    pub fn activated(token: Option<i64>) -> Self {
+        Self {
+            activated: true,
+            token,
+        }
+    }
+
+    /// The platform token captured at wake time (macOS: previous
+    /// frontmost pid). Only meaningful to the driver that produced it.
+    pub fn token(&self) -> Option<i64> {
+        self.token
+    }
+}
+
 /// The physical interface to a computer. Synchronous: platform APIs are
 /// blocking; async wrappers belong at the daemon boundary, not here.
 pub trait ComputerDriver: Send + Sync {
@@ -72,6 +104,19 @@ pub trait ComputerDriver: Send + Sync {
     /// Execute one action. The driver reports the mechanism actually used
     /// and never claims success it can't substantiate.
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError>;
+
+    /// Best-effort request to expose `app`'s window content. Some
+    /// platforms (macOS) only surface an app's AX window tree while it
+    /// is frontmost — waking means one bounded activation, never a
+    /// loop. The returned handle remembers who had focus so `restore`
+    /// can hand it back. Default: no-op, `activated: false`.
+    fn wake(&self, app: &AppSelector) -> Result<WakeHandle, DriverError> {
+        let _ = app;
+        Ok(WakeHandle::default())
+    }
+
+    /// Return focus captured by `wake`. No-op unless `handle.activated`.
+    fn restore(&self, _handle: &WakeHandle) {}
 }
 
 impl ComputerDriver for Box<dyn ComputerDriver> {
@@ -86,5 +131,11 @@ impl ComputerDriver for Box<dyn ComputerDriver> {
     }
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
         (**self).act(action, ctx)
+    }
+    fn wake(&self, app: &AppSelector) -> Result<WakeHandle, DriverError> {
+        (**self).wake(app)
+    }
+    fn restore(&self, handle: &WakeHandle) {
+        (**self).restore(handle)
     }
 }

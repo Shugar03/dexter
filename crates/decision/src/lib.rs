@@ -206,7 +206,7 @@ const STOPWORDS: &[&str] = &[
     "una", "un", "el", "la", "los", "las", "del", "al", "para", "por", "con", "en", "de", "y", "o",
     "que", "se", "su", "sus", "mi", "tu", "es", "son", "hay", "muy", "este", "esta", "estos",
     "estas", "ese", "esa", "eso", "como", "cuando", "donde", "cada", "entre", "sobre", "desde",
-    "hasta", "ser", "estar", "hacer", "donde",
+    "hasta", "ser", "estar", "hacer", "donde", "ir", "voy", "ve",
 ];
 
 /// Multi-word verbs checked before single words ("log in" beats "log").
@@ -313,6 +313,349 @@ const PRESS_VERBS: &[&str] = &[
     "imprimir",
     "compartir",
 ];
+
+/// Split a goal into ordered sub-intents on sequencing language:
+/// "escribir 'x' y guardar" → ["escribir 'x'", "guardar"]. Conservative
+/// by design — a bare "y"/"and"/"e" only splits when the right side
+/// starts with a verb, and quoted literals are never split inside.
+/// Returns the goal unchanged when there is no sequence.
+pub fn split_goal(goal: &str) -> Vec<String> {
+    let lower = goal.to_lowercase();
+    // Byte ranges covered by quoted literals — protected from splitting.
+    let mut protected: Vec<(usize, usize)> = Vec::new();
+    for q in ['\'', '"'] {
+        let mut from = 0;
+        while let Some(a) = lower[from..].find(q) {
+            let a = from + a;
+            match lower[a + 1..].find(q) {
+                Some(b) => {
+                    protected.push((a, a + 2 + b));
+                    from = a + 2 + b;
+                }
+                None => break,
+            }
+        }
+    }
+    protected.sort_unstable();
+
+    // Words with their byte spans.
+    let words: Vec<(usize, usize, &str)> = {
+        let mut v = Vec::new();
+        let mut start = None;
+        for (i, c) in lower.char_indices() {
+            if c.is_alphanumeric() || c == '-' || c == '\'' {
+                if start.is_none() {
+                    start = Some(i);
+                }
+            } else if let Some(s) = start.take() {
+                v.push((s, i, &lower[s..i]));
+            }
+        }
+        if let Some(s) = start {
+            v.push((s, lower.len(), &lower[s..]));
+        }
+        v
+    };
+
+    // Sequencing words that always split when they begin a clause
+    // boundary; "after"/"next" pair with a following word.
+    let hard = ["luego", "despues", "después", "then", "next"];
+    let mut clauses: Vec<String> = Vec::new();
+    let mut clause_start = 0usize;
+    let mut i = 0;
+    while i < words.len() {
+        let (ws, _we, w) = words[i];
+        let in_quotes = protected.iter().any(|(a, b)| ws >= *a && ws < *b);
+        if !in_quotes && clause_start < ws {
+            let next = words.get(i + 1).map(|w| w.2);
+            let is_hard = hard.contains(&w)
+                || (w == "after" && next == Some("that"))
+                || (w == "y" && hard.contains(&next.unwrap_or("")))
+                || (w == "e" && hard.contains(&next.unwrap_or("")))
+                || (w == "and" && hard.contains(&next.unwrap_or("")));
+            // Guarded conjunction: "y"/"e"/"and" split only before a verb.
+            let is_guarded = (w == "y" || w == "e" || w == "and") && next.is_some_and(is_seq_verb);
+            if is_hard || is_guarded {
+                let clause = goal[clause_start..ws]
+                    .trim()
+                    .trim_end_matches([',', ';'])
+                    .trim();
+                if !clause.is_empty() {
+                    clauses.push(clause.to_string());
+                }
+                // Consume the delimiter word; two-word delimiters eat next too.
+                let mut skip = i + 1;
+                if (w == "after" && next == Some("that"))
+                    || ((w == "y" || w == "e" || w == "and") && hard.contains(&next.unwrap_or("")))
+                {
+                    skip += 1;
+                }
+                clause_start = words[skip - 1].1;
+                i = skip;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let tail = goal[clause_start..]
+        .trim()
+        .trim_end_matches([',', ';'])
+        .trim();
+    if !tail.is_empty() {
+        clauses.push(tail.to_string());
+    }
+    if clauses.is_empty() {
+        clauses.push(goal.trim().to_string());
+    }
+    clauses
+}
+
+/// Verbs that can start a subgoal clause — the guard for bare
+/// conjunctions. Union of the press/edit lexicons plus task verbs.
+fn is_seq_verb(w: &str) -> bool {
+    PRESS_VERBS.contains(&w)
+        || EDIT_VERBS.contains(&w)
+        || matches!(
+            w,
+            "calcular" | "calculate" | "sumar" | "restar" | "contar" | "count" | "esperar" | "wait"
+        )
+}
+
+/// Arithmetic expression parsed from a goal, as ordered tokens —
+/// operands (digit strings) and operators, always ending in "=".
+/// `None` when the goal isn't arithmetic (needs ≥2 operands, ≥1 op).
+fn expr_tokens(goal: &str) -> Option<Vec<String>> {
+    const OP_WORDS: &[(&str, &str)] = &[
+        ("multiplicado", "*"),
+        ("multiplicar", "*"),
+        ("dividido", "/"),
+        ("mas", "+"),
+        ("más", "+"),
+        ("plus", "+"),
+        ("menos", "-"),
+        ("minus", "-"),
+        ("por", "*"),
+        ("times", "*"),
+        ("entre", "/"),
+    ];
+    let lower = goal.to_lowercase();
+    let chars: Vec<(usize, char)> = lower.char_indices().collect();
+    let mut tokens: Vec<String> = Vec::new();
+    let mut operands = 0;
+    let mut ops = 0;
+    let mut i = 0;
+    while i < chars.len() {
+        let (pos, c) = chars[i];
+        if c.is_ascii_digit() {
+            // Consume the full operand (digits + one decimal point).
+            let start = pos;
+            let mut end = pos + c.len_utf8();
+            let mut dots = 0;
+            while i + 1 < chars.len() {
+                let (np, nc) = chars[i + 1];
+                if nc.is_ascii_digit() || (nc == '.' && dots == 0) {
+                    if nc == '.' {
+                        dots += 1;
+                    }
+                    i += 1;
+                    end = np + nc.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(lower[start..end].to_string());
+            operands += 1;
+        } else {
+            // Symbol ops only in infix position (right after an operand
+            // token) — "wi-fi" is not subtraction.
+            if matches!(c, '+' | '-' | '*' | '/' | '×' | '÷')
+                && tokens
+                    .last()
+                    .is_some_and(|t| t.chars().next().is_some_and(|t| t.is_ascii_digit()))
+            {
+                let op = match c {
+                    '+' => "+",
+                    '-' => "-",
+                    '*' | '×' => "*",
+                    '/' | '÷' => "/",
+                    _ => unreachable!(),
+                };
+                tokens.push(op.into());
+                ops += 1;
+                i += 1;
+                continue;
+            }
+            // 'x' as multiplication — only between operands.
+            if c == 'x'
+                && tokens
+                    .last()
+                    .is_some_and(|t| t.chars().next().is_some_and(|t| t.is_ascii_digit()))
+                && chars
+                    .get(i + 1)
+                    .is_some_and(|(_, n)| n.is_ascii_digit() || n.is_whitespace())
+            {
+                tokens.push("*".into());
+                ops += 1;
+                i += 1;
+                continue;
+            }
+            // Word ops at word boundary, infix only.
+            if c.is_alphabetic() {
+                let rest = &lower[pos..];
+                if let Some((word, op)) =
+                    OP_WORDS
+                        .iter()
+                        .find(|(w, _)| rest.starts_with(w))
+                        .filter(|(w, _)| {
+                            rest[w.len()..]
+                                .chars()
+                                .next()
+                                .is_none_or(|n| !n.is_alphanumeric())
+                                && tokens.last().is_some_and(|t| {
+                                    t.chars().next().is_some_and(|t| t.is_ascii_digit())
+                                })
+                        })
+                {
+                    tokens.push((*op).into());
+                    ops += 1;
+                    i += word.chars().count();
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    if operands >= 2 && ops >= 1 {
+        tokens.push("=".into());
+        Some(tokens)
+    } else {
+        None
+    }
+}
+
+/// Localized label synonyms for calculator operators — matched against
+/// element names, never assumed present.
+const OP_LABELS: &[(&str, &[&str])] = &[
+    ("+", &["sumar", "add", "+", "plus", "más", "mas", "suma"]),
+    ("-", &["restar", "subtract", "-", "minus", "menos", "resta"]),
+    (
+        "*",
+        &["multiplicar", "multiply", "×", "*", "por", "times", "x"],
+    ),
+    ("/", &["dividir", "divide", "÷", "/", "entre", "between"]),
+    (
+        "=",
+        &[
+            "es igual a",
+            "equals",
+            "=",
+            "igual",
+            "equal",
+            "resultado",
+            "result",
+        ],
+    ),
+];
+
+/// One step in the expression press-plan.
+enum ExprStep {
+    Digit(char),
+    Op(&'static [&'static str]),
+}
+
+fn expr_step_matches(step: &ExprStep, label: &str) -> bool {
+    let name = label.trim().to_lowercase();
+    match step {
+        ExprStep::Digit(c) => name == c.to_string(),
+        ExprStep::Op(syns) => syns.contains(&name.as_str()),
+    }
+}
+
+/// The next keypad press for an arithmetic goal. Progress is tracked
+/// through `hist.attempts` (which labels were already pressed); a failed
+/// last attempt doesn't consume a plan step.
+fn expr_next_candidate(
+    obs: &Observation,
+    tokens: &[String],
+    hist: &GenHistory,
+) -> Option<CandidateAction> {
+    // Flatten tokens to a press plan.
+    let mut plan: Vec<ExprStep> = Vec::new();
+    for t in tokens {
+        if let Some((_, syns)) = OP_LABELS.iter().find(|(op, _)| *op == t.as_str()) {
+            plan.push(ExprStep::Op(syns));
+        } else {
+            for c in t.chars() {
+                if c.is_ascii_digit() {
+                    plan.push(ExprStep::Digit(c));
+                }
+            }
+        }
+    }
+    // Labels already pressed, in order — minus a failed last attempt.
+    let mut pressed: Vec<String> = hist
+        .attempts
+        .iter()
+        .filter_map(|a| match a {
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            } => st.name.clone(),
+            _ => None,
+        })
+        .collect();
+    if hist.last_error.is_some() {
+        pressed.pop();
+    }
+    // Longest matched prefix → next step.
+    let mut si = 0;
+    let mut pi = 0;
+    while si < plan.len() && pi < pressed.len() {
+        if expr_step_matches(&plan[si], &pressed[pi]) {
+            si += 1;
+            pi += 1;
+        } else {
+            break;
+        }
+    }
+    let step = plan.get(si)?;
+    // The element for this step must actually exist — a keypad without
+    // the label means the expr path stays silent and generic rules run.
+    let el = obs.elements.iter().find(|e| {
+        is_pressable(e)
+            && e.enabled != Some(false)
+            && e.name
+                .as_deref()
+                .is_some_and(|n| expr_step_matches(step, n))
+    })?;
+    // A stalled step (pressed but world didn't move) decays so the
+    // generic path or an abstain can take over.
+    let stalled = pressed.last().is_some_and(|p| expr_step_matches(step, p))
+        || (hist.last_error.is_some()
+            && hist
+                .attempts
+                .last()
+                .and_then(|a| match a {
+                    Action::Click {
+                        target: Target::Semantic(st),
+                        ..
+                    } => st.name.clone(),
+                    _ => None,
+                })
+                .is_some_and(|n| expr_step_matches(step, &n)));
+    Some(CandidateAction {
+        action: Action::Click {
+            target: element_target(el),
+            button: MouseButton::Left,
+        },
+        rationale: format!(
+            "expression sequence: next keypad step {} of {}",
+            si + 1,
+            plan.len()
+        ),
+        prior: if stalled { 0.4 } else { 0.95 },
+    })
+}
 
 /// Parsed goal: verbs (what to do), object terms (what to do it to),
 /// and any literal text to type (quoted or after a colon).
@@ -630,6 +973,13 @@ impl CandidateGenerator for HeuristicGenerator {
                     rationale: format!("{base}; editable fallback"),
                     prior: prior * 0.85,
                 });
+            }
+        }
+        // Arithmetic goals on a keypad world: the next press comes from
+        // the expression, not from label-goal matching.
+        if let Some(tokens) = expr_tokens(goal) {
+            if let Some(c) = expr_next_candidate(obs, &tokens, hist) {
+                out.push(c);
             }
         }
         out.sort_by(|a, b| b.prior.total_cmp(&a.prior));

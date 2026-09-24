@@ -136,6 +136,17 @@ pub struct VerifyParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct MapParams {
+    /// Scope to an app: name, `com.bundle.id` or pid. Required — a map
+    /// is per-application, the whole screen is not a meaningful unit.
+    pub app: String,
+    /// Wake the app once if AX exposes no window content (background
+    /// or lazy launch), then hand focus back. Default true; pass false
+    /// for a pure read that never disturbs the user.
+    pub wake: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CandidatesParams {
     /// The goal, verbatim — candidates are ranked against it.
     pub goal: String,
@@ -276,6 +287,53 @@ impl DexterMcp {
             "ax_limited": obs.ax_limited,
             "digest": obs.digest,
         })))
+    }
+
+    /// Application map: what this app IS and what it can DO — windows,
+    /// control clusters, editable fields, navigation surfaces, menubar
+    /// verbs and inferred capabilities, from one observation. The cheap
+    /// first call for an unfamiliar app; pair with dexter_observe for
+    /// element ids.
+    #[tool(
+        name = "dexter_map",
+        description = "Map an app's interface: windows, controls, editable fields, navigation, menu verbs, inferred capabilities. `app` is required. `wake` (default true) briefly foregrounds the app if AX exposes no window content, then restores focus."
+    )]
+    async fn dexter_map(
+        &self,
+        Parameters(params): Parameters<MapParams>,
+    ) -> Result<Json<serde_json::Value>, McpError> {
+        let selector = AppSelector::parse(&params.app);
+        let wake = params.wake.unwrap_or(true);
+        let scope = ObservationScope {
+            app: Some(selector.clone()),
+            ..Default::default()
+        };
+        let runtime = self.runtime.clone();
+        let map = tokio::task::spawn_blocking(move || {
+            let engine = runtime.engine.lock().map_err(err)?;
+            let driver = engine.driver();
+            let mut obs = driver.observe(&scope).map_err(err)?;
+            // Window content only exists while the app is frontmost —
+            // borrow the stage once, read, hand it back.
+            if wake
+                && !obs
+                    .elements
+                    .iter()
+                    .any(|e| e.role.as_deref() == Some("window"))
+            {
+                if let Ok(h) = driver.wake(&selector) {
+                    if h.activated {
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                        obs = driver.observe(&scope).map_err(err)?;
+                        driver.restore(&h);
+                    }
+                }
+            }
+            Ok::<_, McpError>(dexter_world_model::app_map(&obs))
+        })
+        .await
+        .map_err(|e| err(format!("join: {e}")))??;
+        Ok(Json(serde_json::to_value(map).map_err(err)?))
     }
 
     /// Ranked menu of plausible actions for a goal — the agent stays the
@@ -452,8 +510,20 @@ impl DexterMcp {
         }
         let outcome = tokio::task::spawn_blocking(move || {
             let mut engine = runtime.engine.lock().map_err(err)?;
-            let outcome = engine.run_task(
-                &goal,
+            // Sequential goals: "write X and save" runs as ordered
+            // subgoals — the done expectation belongs to the last.
+            let parts = dexter_decision::split_goal(&goal);
+            let last = parts.len() - 1;
+            let subgoals: Vec<dexter_engine::Subgoal> = parts
+                .iter()
+                .enumerate()
+                .map(|(i, g)| dexter_engine::Subgoal {
+                    goal: g.clone(),
+                    done_when: (i == last).then(|| done.clone()),
+                })
+                .collect();
+            let outcome = engine.run_plan(
+                &subgoals,
                 &runtime.generator,
                 runtime.decider.as_ref(),
                 &TaskConfig {
@@ -470,26 +540,43 @@ impl DexterMcp {
         .await
         .map_err(|e| err(format!("join: {e}")))??;
         let status = match &outcome {
-            TaskOutcome::Completed { steps } => {
-                serde_json::json!({"status": "completed", "steps": steps})
+            dexter_engine::PlanOutcome::Completed { subgoals, steps } => {
+                serde_json::json!({"status": "completed", "steps": steps, "subgoals": subgoals})
             }
-            TaskOutcome::Abstained { reason } => {
-                serde_json::json!({"status": "abstained", "reason": reason})
+            dexter_engine::PlanOutcome::Failed {
+                index,
+                goal,
+                inner,
+                completed,
+            } => {
+                let inner_status = match inner.as_ref() {
+                    TaskOutcome::Abstained { reason } => {
+                        serde_json::json!({"status": "abstained", "reason": reason})
+                    }
+                    TaskOutcome::Escalated { route, reason } => serde_json::json!({
+                        "status": "escalated",
+                        "route": format!("{route:?}"),
+                        "reason": reason,
+                    }),
+                    TaskOutcome::Failed { reason } => {
+                        serde_json::json!({"status": "failed", "reason": reason})
+                    }
+                    TaskOutcome::MaxSteps => serde_json::json!({"status": "max_steps"}),
+                    TaskOutcome::Cancelled => serde_json::json!({"status": "cancelled"}),
+                    TaskOutcome::TimedOut { elapsed } => serde_json::json!({
+                        "status": "timed_out",
+                        "elapsed_ms": elapsed.as_millis() as u64,
+                    }),
+                    TaskOutcome::Completed { .. } => {
+                        serde_json::json!({"status": "failed", "reason": "unexpected"})
+                    }
+                };
+                let mut v = inner_status;
+                v["subgoal_index"] = (*index).into();
+                v["subgoal"] = goal.clone().into();
+                v["subgoals_completed"] = (*completed).into();
+                v
             }
-            TaskOutcome::Escalated { route, reason } => serde_json::json!({
-                "status": "escalated",
-                "route": format!("{route:?}"),
-                "reason": reason,
-            }),
-            TaskOutcome::Failed { reason } => {
-                serde_json::json!({"status": "failed", "reason": reason})
-            }
-            TaskOutcome::MaxSteps => serde_json::json!({"status": "max_steps"}),
-            TaskOutcome::Cancelled => serde_json::json!({"status": "cancelled"}),
-            TaskOutcome::TimedOut { elapsed } => serde_json::json!({
-                "status": "timed_out",
-                "elapsed_ms": elapsed.as_millis() as u64,
-            }),
         };
         Ok(Json(status))
     }
@@ -617,7 +704,8 @@ impl ServerHandler for DexterMcp {
                 website_url: Some("https://github.com/Shugar03/dexter".into()),
             },
             instructions: Some(
-                "Workflow: dexter_observe (digest + structured elements) -> \
+                "Workflow: dexter_map (what is this app, what can it do) -> \
+                 dexter_observe (digest + structured elements) -> \
                  dexter_candidates (ranked action menu for your goal) -> \
                  dexter_act on the action you choose (policy gates every \
                  call; needs_approval returns a fingerprint a human grants \

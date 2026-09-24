@@ -175,6 +175,21 @@ pub fn reduce(state: &mut PresenceState, ev: &Event) {
             state.status_line = "timed out".into();
             state.target = None;
         }
+        EventKind::SubgoalStarted => {
+            // Plan progress is part of presence — the user sees which
+            // intent the cursor is working on, not just "thinking".
+            let idx = ev.data["index"].as_u64().unwrap_or(0) + 1;
+            let of = ev.data["of"].as_u64().unwrap_or(0);
+            let goal = ev.data["goal"].as_str().unwrap_or("");
+            state.status = PresenceStatus::Thinking;
+            state.status_line = format!("step {idx}/{of}: {goal}");
+        }
+        EventKind::SubgoalCompleted => {}
+        EventKind::SubgoalFailed => {
+            state.status = PresenceStatus::Failed;
+            state.status_line = "subgoal failed".into();
+            state.target = None;
+        }
     }
 }
 

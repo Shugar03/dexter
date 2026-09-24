@@ -103,6 +103,27 @@ settle_ms = 1200               # post-prep AND post-act settle
   observation races the state change (measured below).
 - `prep`/`teardown` may call `dexter` itself (on PATH post-install) —
   teardowns in the suite use `dexter click` to restore app state.
+- **Background operation** — launch with `open -g` when the task only
+  needs the menubar or the app already has a rendered window. macOS
+  exposes window content over AX **only while the app is frontmost**:
+  a background or lazy-launched app reports a menubar-only tree even
+  when its CG window is on-screen. The runner detects that (no `window`
+  elements in the probe), pays one bounded activation through the
+  driver's `wake`/`restore` seam to force the render, and after the
+  scenario finishes **restores the previously frontmost app** — the
+  stage is borrowed once and handed back.
+- **Activation is a privilege of the frontmost** — macOS coalesces or
+  denies `activate` requests issued by non-frontmost processes. When
+  the operator is working in another app, Dexter cannot summon windows
+  at all; scenarios then report `skipped` and `app_map` answers
+  `ax_limited: true` with the menubar-only vocabulary. That is the
+  desired trade: background-capable when the user's focus allows it,
+  honest degradation instead of focus theft when it doesn't. Menubar
+  acts (menu_item presses) work fully in background regardless.
+- `ComputerDriver::wake`/`restore` is the platform seam: the macOS
+  driver implements bounded activation + frontmost restore via
+  `NSRunningApplication` (no Apple Events, no Automation grant), other
+  drivers default to no-op. `dexter map` and MCP `dexter_map` reuse it.
 
 ### What the first live run caught
 
@@ -127,7 +148,10 @@ Four real-app failure modes, all invisible to sim and frozen eval:
 
 Also surfaced a generator gap fixed in the same pass: a focused,
 *unnamed* editable field with a quoted literal in the goal now gets a
-`TypeText` candidate (previously only a no-op `Focus`).
+`TypeText` candidate (previously only a no-op `Focus`). And a second
+live pass surfaced the Space constraint above: `open -g` launches
+without stealing focus but lazy apps then expose no window content —
+the suite now wakes them once and restores frontmost afterwards.
 
 ## Limits honesty
 
@@ -248,3 +272,66 @@ edit action has actually been attempted (`GenHistory.attempts`).
 Regression-locked in `edit_penalty_lifts_once_the_field_was_filled`.
 Both browser scenarios now complete in optimal steps on Chrome 154 via
 chromedriver, stable across `--reps 2`.
+## Sequential goals
+
+`goal` strings are split into ordered sub-intents by
+`decision::split_goal` before execution — "escribir 'x' y guardar"
+runs as two subgoals. The split is deliberately conservative:
+
+- Hard delimiters always split: `luego`, `después`, `then`, `next`,
+  `after that`.
+- Bare conjunctions (`y`, `e`, `and`) split only when the right side
+  starts with a known verb — "black and white" stays one intent.
+- Quoted literals are never split inside: `'pan y vino'` survives.
+
+Each subgoal runs the same closed loop with **fresh history** (repeat
+penalties must not leak across intents) inside `Engine::run_plan`;
+`SubgoalStarted/Completed/Failed` events carry `index`/`of` so partial
+progress is journaled and failures are attributable
+(`PlanOutcome::Failed { index, goal, completed }`).
+
+Completion per subgoal:
+
+- `done_when` provided → the structural `ExpectedState` check, same as
+  `run_task`.
+- `done_when: None` → **auto-completion**: the subgoal finishes after
+  the first mutating act (click/set/type/key/navigate) that verifiably
+  changed the world — the next observation's signature (roles + names
+  + values + enabled + focused + window titles, ids excluded since AX
+  regenerates them) must differ. Act success alone never completes a
+  subgoal: a no-op press loops until abstain, honestly.
+
+`run_task` is a one-subgoal plan — CLI `task`, MCP `dexter_task` and
+`eval scenario` all route through `run_plan`, so sequential goals work
+identically on every surface. The task-level `done_when` always belongs
+to the last subgoal. `wizard-install` ("aceptar los términos y
+continuar") now runs as two subgoals and still completes in optimal
+steps — same behavior, now attributable.
+
+## Expression goals
+
+`calcular 134 más 89` is one subgoal whose steps come from the
+expression itself: `expr_tokens` parses operands + operators from the
+goal (digits, `+-*/×÷`, `x` between operands, word ops `más/menos/por/
+entre/plus/minus/times/dividido/...`, ≥2 operands + ≥1 op required) and
+`expr_next_candidate` emits the next keypad press — progress is tracked
+through `GenHistory.attempts` (which labels were already pressed; a
+failed last attempt doesn't consume a step), and operator labels match
+a localized synonym table (`+` → `Sumar`/`Add`/`+`/...), never assumed
+present. No keypad or no matching label → the path stays silent and
+generic rules run; a stalled press decays (0.4) so an abstain can take
+over. `calc-add` is the live spec: 7 optimal presses, `done_when`
+reads `223` off the display.
+
+## Application maps
+
+`dexter_world_model::app_map` summarizes one observation into an
+`AppMap` — windows, per-role counts, menubar verbs, named controls,
+editable fields, navigation surfaces and evidence-tagged capability
+inferences (calculator, document editor, menu-driven). It answers "what
+is this app and what can it do" in one call — heuristic and honest, no
+per-app hand-authoring, no model. Surfaces: `dexter map --app <sel>`
+(pretty JSON) and MCP `dexter_map` (`app` required; `wake` default true
+does the bounded foreground borrow described above). `ax_limited: true`
+marks the menubar-only degradation — an agent reading the map knows the
+window layer is missing rather than absent.

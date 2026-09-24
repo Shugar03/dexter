@@ -9,7 +9,7 @@
 use dexter_core::{AppSelector, Element, ElementId, Event, ExpectedState, SemanticTarget};
 use dexter_decision::{CandidateGenerator, Decision, DecisionContext, DecisionEngine};
 use dexter_driver::ComputerDriver;
-use dexter_engine::{Engine, RunConfig, TaskConfig, TaskOutcome};
+use dexter_engine::{Engine, PlanOutcome, RunConfig, TaskConfig, TaskOutcome};
 use dexter_sim::{Effect, SimDriver};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -287,8 +287,21 @@ pub fn run_scenario_with<D: ComputerDriver>(
     for fp in &spec.task.grants {
         engine.grant_approval(fp);
     }
-    let outcome = engine.run_task(
-        &spec.scenario.goal,
+    // Sequential goals: "ir a cronómetro e iniciar" runs as two subgoals,
+    // each through the same closed loop. The task-level done_when belongs
+    // to the LAST subgoal; earlier ones auto-complete on verified change.
+    let parts = dexter_decision::split_goal(&spec.scenario.goal);
+    let last = parts.len() - 1;
+    let subgoals: Vec<dexter_engine::Subgoal> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, g)| dexter_engine::Subgoal {
+            goal: g.clone(),
+            done_when: (i == last).then(|| spec.task.done_when.clone()),
+        })
+        .collect();
+    let outcome = engine.run_plan(
+        &subgoals,
         generator,
         decider,
         &TaskConfig {
@@ -321,13 +334,16 @@ pub fn run_scenario_with<D: ComputerDriver>(
     );
 
     let (outcome, steps) = match &outcome {
-        TaskOutcome::Completed { steps } => ("completed".to_string(), *steps),
-        TaskOutcome::Abstained { .. } => ("abstained".to_string(), 0),
-        TaskOutcome::Escalated { .. } => ("escalated".to_string(), 0),
-        TaskOutcome::Failed { .. } => ("failed".to_string(), 0),
-        TaskOutcome::MaxSteps => ("max_steps".to_string(), spec.task.max_steps),
-        TaskOutcome::Cancelled => ("cancelled".to_string(), 0),
-        TaskOutcome::TimedOut { .. } => ("timed_out".to_string(), 0),
+        PlanOutcome::Completed { steps, .. } => ("completed".to_string(), *steps),
+        PlanOutcome::Failed { inner, .. } => match inner.as_ref() {
+            TaskOutcome::Completed { steps } => ("completed".to_string(), *steps),
+            TaskOutcome::Abstained { .. } => ("abstained".to_string(), 0),
+            TaskOutcome::Escalated { .. } => ("escalated".to_string(), 0),
+            TaskOutcome::Failed { .. } => ("failed".to_string(), 0),
+            TaskOutcome::MaxSteps => ("max_steps".to_string(), spec.task.max_steps),
+            TaskOutcome::Cancelled => ("cancelled".to_string(), 0),
+            TaskOutcome::TimedOut { .. } => ("timed_out".to_string(), 0),
+        },
     };
     let mut run = ScenarioRun {
         success: outcome == spec.task.expected,

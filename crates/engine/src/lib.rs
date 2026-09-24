@@ -431,6 +431,8 @@ impl<D: ComputerDriver> Engine<D> {
     /// act → repeat, bounded by `max_steps`. `done_when` is checked
     /// against every fresh observation — reaching VERIFIED completes the
     /// task regardless of what any engine believed.
+    /// Run one goal — kept for callers that want a single-intent task.
+    /// Equivalent to `run_plan` with one structural subgoal.
     pub fn run_task(
         &mut self,
         goal: &str,
@@ -438,10 +440,93 @@ impl<D: ComputerDriver> Engine<D> {
         decider: &dyn dexter_decision::DecisionEngine,
         cfg: &TaskConfig,
     ) -> TaskOutcome {
-        use dexter_decision::{Decision, DecisionContext, GenHistory, Route};
+        self.run_plan(
+            &[Subgoal {
+                goal: goal.to_string(),
+                done_when: Some(cfg.done_when.clone()),
+            }],
+            generator,
+            decider,
+            cfg,
+        )
+        .unwrap_single()
+    }
+
+    /// Run ordered subgoals through the same observe → generate → decide
+    /// → act → verify loop. Each subgoal gets fresh history (repeat
+    /// penalties must not leak across intents) and shares the journal —
+    /// `SubgoalStarted/Completed/Failed` events carry `index`/`of` so
+    /// partial progress is auditable and failures attributable.
+    ///
+    /// A subgoal with `done_when: None` auto-completes after the first
+    /// mutating act that verifiably changed the world — act success
+    /// alone is never trusted, the next observation must differ.
+    pub fn run_plan(
+        &mut self,
+        subgoals: &[Subgoal],
+        generator: &dyn dexter_decision::CandidateGenerator,
+        decider: &dyn dexter_decision::DecisionEngine,
+        cfg: &TaskConfig,
+    ) -> PlanOutcome {
         let started = Instant::now();
+        let mut total_steps = 0u32;
+        for (index, sub) in subgoals.iter().enumerate() {
+            self.journal(
+                EventKind::SubgoalStarted,
+                serde_json::json!({"index": index, "of": subgoals.len(), "goal": sub.goal}),
+            );
+            let done = match &sub.done_when {
+                Some(d) => Completion::Structural(d.clone()),
+                None => Completion::FirstVerifiedAct,
+            };
+            let outcome = self.run_goal(&sub.goal, &done, generator, decider, cfg, started);
+            match outcome {
+                TaskOutcome::Completed { steps } => {
+                    total_steps += steps;
+                    self.journal(
+                        EventKind::SubgoalCompleted,
+                        serde_json::json!({"index": index, "of": subgoals.len(), "steps": steps}),
+                    );
+                }
+                other => {
+                    self.journal(
+                        EventKind::SubgoalFailed,
+                        serde_json::json!({"index": index, "of": subgoals.len(), "goal": sub.goal, "outcome": format!("{other:?}")}),
+                    );
+                    return PlanOutcome::Failed {
+                        index,
+                        goal: sub.goal.clone(),
+                        inner: Box::new(other),
+                        completed: index,
+                    };
+                }
+            }
+        }
+        PlanOutcome::Completed {
+            subgoals: subgoals.len(),
+            steps: total_steps,
+        }
+    }
+
+    /// The per-goal closed loop shared by `run_task` and `run_plan`.
+    /// `task_started` is the plan-level clock for `max_duration`.
+    fn run_goal(
+        &mut self,
+        goal: &str,
+        done: &Completion,
+        generator: &dyn dexter_decision::CandidateGenerator,
+        decider: &dyn dexter_decision::DecisionEngine,
+        cfg: &TaskConfig,
+        task_started: Instant,
+    ) -> TaskOutcome {
+        use dexter_decision::{Decision, DecisionContext, GenHistory, Route};
+        let started = task_started;
         let mut last_error: Option<String> = None;
         let mut hist = GenHistory::default();
+        // Auto-completion state: the world signature at the moment the
+        // last mutating act was decided on. If the next observation
+        // differs, the act moved the world — the subgoal is done.
+        let mut pending_sig: Option<u64> = None;
         let scope = ObservationScope {
             app: cfg.run.app.clone(),
             max_elements: cfg.run.observe_max_elements,
@@ -492,13 +577,30 @@ impl<D: ComputerDriver> Engine<D> {
             );
 
             // Done? Structural check — never the engine's word.
-            let check = dexter_verify::verify(&obs, &cfg.done_when);
-            if check.status == VerificationStatus::Verified {
-                self.journal(
-                    EventKind::TaskCompleted,
-                    serde_json::json!({"steps": step - 1, "elapsed_ms": started.elapsed().as_millis() as u64}),
-                );
-                return TaskOutcome::Completed { steps: step - 1 };
+            match done {
+                Completion::Structural(expected) => {
+                    let check = dexter_verify::verify(&obs, expected);
+                    if check.status == VerificationStatus::Verified {
+                        self.journal(
+                            EventKind::TaskCompleted,
+                            serde_json::json!({"steps": step - 1, "elapsed_ms": started.elapsed().as_millis() as u64}),
+                        );
+                        return TaskOutcome::Completed { steps: step - 1 };
+                    }
+                }
+                Completion::FirstVerifiedAct => {
+                    // Auto-completion: the world must have changed since
+                    // the act that claimed it. No pending act, no claim.
+                    if let Some(sig) = pending_sig {
+                        if world_signature(&obs) != sig {
+                            self.journal(
+                                EventKind::TaskCompleted,
+                                serde_json::json!({"steps": step - 1, "mode": "first_verified_act", "elapsed_ms": started.elapsed().as_millis() as u64}),
+                            );
+                            return TaskOutcome::Completed { steps: step - 1 };
+                        }
+                    }
+                }
             }
 
             hist.last_error = last_error.clone();
@@ -548,6 +650,7 @@ impl<D: ComputerDriver> Engine<D> {
                 Decision::Act {
                     action, rationale, ..
                 } => {
+                    let mutating = is_mutating(&action);
                     hist.attempts.push(action.clone());
                     let status = self.run_step_inner(
                         &Step {
@@ -561,7 +664,16 @@ impl<D: ComputerDriver> Engine<D> {
                         Some(&obs),
                     );
                     match status {
-                        StepStatus::Done { .. } => last_error = None,
+                        StepStatus::Done { .. } => {
+                            last_error = None;
+                            // Auto-completion bookkeeping: a successful
+                            // mutating act claims the subgoal — the next
+                            // observation decides whether the world
+                            // actually moved.
+                            if matches!(done, Completion::FirstVerifiedAct) && mutating {
+                                pending_sig = Some(world_signature(&obs));
+                            }
+                        }
                         other => {
                             last_error = Some(format!("{other:?}"));
                         }
@@ -681,10 +793,99 @@ pub enum TaskOutcome {
     TimedOut { elapsed: Duration },
 }
 
+/// One ordered intent in a `run_plan` sequence.
+#[derive(Debug, Clone)]
+pub struct Subgoal {
+    /// Goal text handed to the generator and decider.
+    pub goal: String,
+    /// Structural completion check. `None` = auto-complete after the
+    /// first mutating act that verifiably changed the world.
+    pub done_when: Option<ExpectedState>,
+}
+
+/// How a subgoal knows it's done — internal to the loop.
+enum Completion {
+    /// `ExpectedState` verified against every fresh observation.
+    Structural(ExpectedState),
+    /// First mutating act that provably moved the world.
+    FirstVerifiedAct,
+}
+
+/// Result of `run_plan` — unlike `TaskOutcome`, failures carry which
+/// subgoal failed and how many completed before it.
+#[derive(Debug)]
+pub enum PlanOutcome {
+    /// Every subgoal completed.
+    Completed { subgoals: usize, steps: u32 },
+    /// Subgoal `index` failed; `completed` subgoals ran clean before it.
+    /// `inner` is that subgoal's own outcome (Abstained, MaxSteps, ...).
+    Failed {
+        index: usize,
+        goal: String,
+        inner: Box<TaskOutcome>,
+        completed: usize,
+    },
+}
+
+impl PlanOutcome {
+    /// Single-subgoal plans unwrap to the inner `TaskOutcome` unchanged —
+    /// `run_task` callers keep their original result shape.
+    fn unwrap_single(self) -> TaskOutcome {
+        match self {
+            PlanOutcome::Completed { steps, .. } => TaskOutcome::Completed { steps },
+            PlanOutcome::Failed { inner, .. } => *inner,
+        }
+    }
+}
+
+/// Does this action mutate the world (as opposed to observing or
+/// positioning)? Auto-completion only credits mutating acts.
+fn is_mutating(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Click { .. }
+            | Action::SetValue { .. }
+            | Action::TypeText { .. }
+            | Action::Key { .. }
+            | Action::Navigate { .. }
+    )
+}
+
+/// Order-independent fingerprint of what the world contains — element
+/// roles, names and values. Ids are excluded on purpose: AX ids are
+/// regenerated per observation and would mark every world "changed".
+fn world_signature(obs: &Observation) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut items: Vec<(&str, &str, &str, Option<bool>, bool)> = obs
+        .elements
+        .iter()
+        .map(|e| {
+            (
+                e.role.as_deref().unwrap_or(""),
+                e.name.as_deref().unwrap_or(""),
+                e.value.as_deref().unwrap_or(""),
+                e.enabled,
+                e.focused,
+            )
+        })
+        .collect();
+    items.sort_unstable();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    items.hash(&mut h);
+    let mut titles: Vec<&str> = obs
+        .windows
+        .iter()
+        .map(|w| w.title.as_deref().unwrap_or(""))
+        .collect();
+    titles.sort_unstable();
+    titles.hash(&mut h);
+    h.finish()
+}
+
 /// `run_task` parameters.
 pub struct TaskConfig {
     pub run: RunConfig,
-    /// Hard bound on decide/act iterations.
+    /// Hard bound on decide/act iterations — per subgoal in `run_plan`.
     pub max_steps: u32,
     /// Optional wall-clock bound — checked per step, alongside
     /// `max_steps`. `None` = unbounded (steps still apply).

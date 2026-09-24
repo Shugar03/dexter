@@ -24,6 +24,12 @@ pub enum EventKind {
     TaskCancelled,
     /// Wall-clock budget exceeded (`TaskConfig::max_duration`).
     TaskTimedOut,
+    /// A subgoal in a `run_plan` sequence began — carries `index`/`of`.
+    SubgoalStarted,
+    /// A subgoal's completion condition held.
+    SubgoalCompleted,
+    /// A subgoal ended without completing — carries the inner outcome.
+    SubgoalFailed,
 }
 
 /// One structured event in the execution log.

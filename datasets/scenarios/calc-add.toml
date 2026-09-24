@@ -1,0 +1,22 @@
+# calc-add — real arithmetic on Calculator: the expression path presses
+# 1,3,4,Sumar,8,9,'Es igual a' in order, driven by goal text and the
+# keypad's own labels — no hand-authored script. done_when reads the
+# display value 223, so a wrong sequence fails honestly.
+#
+# Prep normalizes to Básica (Calculator persists mode across quit).
+[scenario]
+id = "calc-add"
+driver = "macos"
+goal = "calcular 134 más 89"
+optimal_steps = 7
+app = "Calculadora"
+
+[live]
+app = "com.apple.calculator"
+prep = "osascript -e 'tell application id \"com.apple.calculator\" to quit' 2>/dev/null || true; sleep 0.5; open -a Calculator; sleep 0.8; dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true"
+teardown = "osascript -e 'tell application id \"com.apple.calculator\" to quit' 2>/dev/null || true"
+settle_ms = 800
+
+[task]
+done_when = { type = "text_present", text = "223" }
+max_steps = 14
