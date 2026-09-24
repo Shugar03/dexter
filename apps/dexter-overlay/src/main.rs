@@ -116,20 +116,25 @@ mod platform {
             let _: () = msg_send![path, stroke];
         }
 
-        // Cursor arrow — the classic pointer silhouette (tip up-left),
-        // y-flipped for Cocoa. Status color fill, dark outer edge and a
-        // light inner hairline so it reads over any background.
+        // Cursor arrow — the classic macOS pointer silhouette: tip
+        // up-left, near-vertical left edge, notched tail down-right.
+        // Black fill, white outline, like the system cursor. Status
+        // stays in the tag/reticle color, not the arrow.
         let (px, py) = (d.0, screen_height() - d.1);
         let path: id = msg_send![class!(NSBezierPath), bezierPath];
-        let s = 1.6f64;
+        let s = 2.0f64;
+        // Screen-space points (y down, flipped via -y for Cocoa):
+        // tip → left edge → deep notch → tail bottom-left → tail
+        // bottom-right → inner corner → right wing → close. The notch
+        // must stay sharp — it's what separates the tail stick.
         let pts = [
             (0.0, 0.0),
-            (0.0, -20.0),
-            (5.6, -15.2),
-            (9.4, -22.6),
-            (12.8, -21.4),
-            (9.0, -14.0),
-            (15.4, -14.0),
+            (0.0, -18.0),
+            (4.6, -11.0),
+            (7.4, -19.2),
+            (11.4, -17.6),
+            (8.6, -10.4),
+            (15.2, -10.4),
         ];
         let _: () =
             msg_send![path, moveToPoint: NSPoint::new(px + pts[0].0 * s, py + pts[0].1 * s)];
@@ -137,21 +142,28 @@ mod platform {
             let _: () = msg_send![path, lineToPoint: NSPoint::new(px + x * s, py + y * s)];
         }
         let _: () = msg_send![path, closePath];
-        // Dark halo first (drawn under the fill it half-covers), then a
-        // light hairline inside — the classic pointer's white edge.
-        let edge: id =
-            msg_send![class!(NSColor), colorWithSRGBRed:0.02 green:0.05 blue:0.08 alpha:0.95f64];
-        let _: () = msg_send![path, setLineWidth: 4.2f64];
-        let _: () = msg_send![path, setLineJoinStyle: 1i64]; // round
-        let _: () = msg_send![edge, setStroke];
+        // White outline first (under the fill it half-covers), then the
+        // black fill — the system cursor look.
+        let white: id =
+            msg_send![class!(NSColor), colorWithSRGBRed:1.0 green:1.0 blue:1.0 alpha:0.95f64];
+        // Thin white outline with miter joins — a thick round stroke
+        // fills the notch and the tail stick disappears.
+        let _: () = msg_send![path, setLineWidth: 2.6f64];
+        let _: () = msg_send![path, setLineJoinStyle: 0i64]; // miter
+        let _: () = msg_send![white, setStroke];
         let _: () = msg_send![path, stroke];
-        let _: () = msg_send![color, setFill];
+        let black: id =
+            msg_send![class!(NSColor), colorWithSRGBRed:0.02 green:0.05 blue:0.08 alpha:0.96f64];
+        let _: () = msg_send![black, setFill];
         let _: () = msg_send![path, fill];
-        let inner: id =
-            msg_send![class!(NSColor), colorWithSRGBRed:1.0 green:1.0 blue:1.0 alpha:0.85f64];
-        let _: () = msg_send![path, setLineWidth: 1.1f64];
-        let _: () = msg_send![inner, setStroke];
-        let _: () = msg_send![path, stroke];
+        // Keep the status color alive: a thin status-colored ring at
+        // the arrow tip marks semantic/physical/denied at a glance.
+        let ring: id = msg_send![class!(NSBezierPath),
+            bezierPathWithOvalInRect: NSRect::new(
+                NSPoint::new(px - 3.5, py - 3.5), NSSize::new(7.0, 7.0))];
+        let _: () = msg_send![ring, setLineWidth: 2.0f64];
+        let _: () = msg_send![color, setStroke];
+        let _: () = msg_send![ring, stroke];
     }
 
     fn screen_height() -> f64 {
