@@ -158,7 +158,16 @@ fn resolve_element(
                 ..Default::default()
             };
             let found = dexter_driver::resolve::resolve_semantic(&obs, target)?;
-            let idx = found.id.0 as usize - 1;
+            // The parallel `nodes` vec shares element order — find the
+            // element's position rather than assuming `id == index + 1`
+            // (ids are minted per walk; nothing pins them to offsets).
+            let idx = obs
+                .elements
+                .iter()
+                .position(|e| e.id == found.id)
+                .ok_or_else(|| {
+                    DriverError::StaleReference("resolved element vanished mid-walk".into())
+                })?;
             let el = tree.nodes.get(idx).cloned().ok_or_else(|| {
                 DriverError::StaleReference("resolved element vanished mid-walk".into())
             })?;

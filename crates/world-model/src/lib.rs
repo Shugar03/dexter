@@ -306,6 +306,9 @@ fn menu_summary_line(count: usize, roots: &[&str]) -> String {
 /// window (Laya's encoder tops out at 8192 tokens; ~14k chars of this
 /// mostly-ASCII digest stays under it). Elements are emitted in tree
 /// order until the budget runs out; the tail is summarized honestly.
+/// The budget bounds element rows — the menu-summary and truncation
+/// markers appended after the loop may push the total a line or two
+/// past `max_chars` by design (they are accounting, not content).
 pub fn digest_budget(obs: &Observation, max_chars: usize) -> String {
     let mut lines = header_lines(obs);
     let mut used: usize = lines.iter().map(|l| l.len() + 1).sum();

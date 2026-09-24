@@ -2,6 +2,11 @@
 # Bounds are against the rule-based engine (the CI gate): deterministic
 # decisions, so steps are exact and latency bounds carry CI headroom.
 # Laya runs compare via --history/--out, not this file.
+#
+# `results-rule-based.json` next to this file is the recorded
+# baseline-vs-current comparison — regenerate it with:
+#   dexter eval scenario datasets/scenarios --check \
+#     datasets/scenarios/baseline.toml --out datasets/scenarios/results-rule-based.json
 
 [suite]
 min_success_rate = 1.0

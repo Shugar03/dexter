@@ -158,6 +158,28 @@
   and wake derived from `needs_stage` — instead of pre-implementation
   sketches (`SensitiveRead`, `verify_attempts`, `WakeMode`).
 
+### Fixed (runtime-reliability-v2 review, round 5)
+
+- Menu acts no longer derive an unsatisfiable `WorldChanged`. Menu
+  elements are signature-excluded, so a press that mutates only menu
+  state (checkmark toggle, silent command) false-failed a successful
+  act — and under `window_scope` the menu escape could never fire at
+  all, since scoped observations cannot contain the boundless menu
+  items the real driver mints. Targets are now honestly unverifiable
+  when their effect can't reach the observed world: menu elements
+  always, and under a pinned scope anything resolving outside it —
+  including `launch_app`/`quit_app`, whose window-set change the
+  pinned list can never show. No more guaranteed `Failed` + retry
+  re-mutation.
+- The menubar walk is skipped on every scoped observation — its
+  results are bounds-filtered immediately, so it was pure cost.
+- macOS semantic resolution locates the live node by element position
+  instead of assuming `id == index + 1` — correct under any id
+  minting scheme, not just dense sequential ones.
+- `datasets/scenarios/results-rule-based.json` records the
+  baseline-vs-current suite comparison (regenerate via
+  `eval scenario --check --out`).
+
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:

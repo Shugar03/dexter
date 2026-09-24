@@ -406,7 +406,13 @@ impl<D: ComputerDriver> Engine<D> {
     /// scoped observations pass through unchanged; a vanished pinned
     /// window is an honest observe error.
     fn observe_scoped(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
-        let obs = self.driver.observe(scope)?;
+        let mut scope = scope.clone();
+        if scope.window.is_some() {
+            // Menu elements are bounds-filtered out of a scoped
+            // observation anyway — the menubar walk is pure cost.
+            scope.include_menu = false;
+        }
+        let obs = self.driver.observe(&scope)?;
         match scope.window {
             Some(id) => dexter_world_model::scope_to_window(obs, id).map_err(DriverError::NotFound),
             None => Ok(obs),
@@ -1714,21 +1720,25 @@ fn semantic_for(target: &Target, obs: &Observation) -> Option<SemanticTarget> {
 /// the unverified path rather than carrying a check that cannot fail
 /// honestly.
 fn derive_expect(action: &Action, obs: &Observation, window_scoped: bool) -> Option<ExpectedState> {
-    // A menu target under a pinned window scope has no observable
-    // effect: menu elements are signature-excluded and the menu window
-    // can't enter the pinned window list, so `WorldChanged` would poll
-    // the full budget for a change it cannot see. Honestly
-    // unverifiable — better `None` than a guaranteed false failure.
-    let menu_target = |t: &Target| -> bool {
-        window_scoped
-            && dexter_world_model::resolve_element(obs, t)
-                .map(dexter_world_model::is_menu_element)
-                .unwrap_or(false)
+    // A target is honestly unverifiable in this observation when its
+    // effect cannot reach the observed world. Menu elements are
+    // signature-excluded, so a press that mutates only menu state (a
+    // checkmark toggle, a silent command) leaves the signature
+    // identical — `WorldChanged` would false-fail the success and, in
+    // a goal loop, invite a retry that re-mutates. And under a pinned
+    // window scope anything resolving *outside* the scope cannot be
+    // verified in it — menu items concretely: they are boundless, so
+    // a scoped observation can never contain one.
+    let unverifiable_target = |t: &Target| -> bool {
+        match dexter_world_model::resolve_element(obs, t) {
+            Ok(el) => dexter_world_model::is_menu_element(el),
+            Err(_) => window_scoped,
+        }
     };
     match action {
         Action::Click { target, .. } => match target {
             Target::Point { .. } => None,
-            t if menu_target(t) => None,
+            t if unverifiable_target(t) => None,
             _ => Some(ExpectedState::WorldChanged {
                 from: dexter_world_model::signature(obs),
             }),
@@ -1756,14 +1766,24 @@ fn derive_expect(action: &Action, obs: &Observation, window_scoped: bool) -> Opt
             })
         }
         Action::Focus { target } => {
+            if unverifiable_target(target) {
+                return None;
+            }
             semantic_for(target, obs).map(|st| ExpectedState::FocusedElement { target: st })
         }
         // Invoke/Drag: effect unpredictable — the world must change.
-        Action::Invoke { target, .. } if menu_target(target) => None,
-        Action::Drag { from, .. } if menu_target(from) => None,
+        Action::Invoke { target, .. } if unverifiable_target(target) => None,
+        Action::Drag { from, .. } if unverifiable_target(from) => None,
         Action::Invoke { .. } | Action::Drag { .. } => Some(ExpectedState::WorldChanged {
             from: dexter_world_model::signature(obs),
         }),
+        // Window-set changes can't be observed under a pinned window:
+        // verification sees only the pinned window's title set and
+        // subtree, so `AppRunning` and `WorldChanged` alike poll for
+        // what the scope filters out. Honestly unverifiable — a quit
+        // of the pinned app itself surfaces as an honest observe
+        // error: the window is gone.
+        Action::LaunchApp { .. } | Action::QuitApp { .. } if window_scoped => None,
         // AppRunning checks window *names* — a bundle/pid selector can't
         // match them, so non-name launches verify by the signature
         // (a new window changes the title set; a quit removes one).

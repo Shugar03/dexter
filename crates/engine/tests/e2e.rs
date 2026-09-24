@@ -1569,14 +1569,10 @@ fn menu_target_under_window_scope_derives_no_expectation() {
     // Under a pinned window the menu window can't enter the window
     // list and menu elements are signature-excluded — a WorldChanged
     // expectation would poll for a change it cannot see. The honest
-    // derive is none.
-    let mut menu = el(1, "menu_item", "Archivo");
-    menu.bounds = Some(Rect {
-        x: 10.0,
-        y: 10.0,
-        w: 60.0,
-        h: 20.0,
-    });
+    // derive is none. The menu item is *boundless* — the state the
+    // real macOS driver always produces (`walk_menu` mints no bounds),
+    // so scoping drops it and the target can't resolve in-scope.
+    let menu = el(1, "menu_item", "Archivo");
     let sim = SimDriver::new(vec![menu]);
     let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
     let step = Step {
@@ -1601,6 +1597,114 @@ fn menu_target_under_window_scope_derives_no_expectation() {
             assert!(
                 verification.is_none(),
                 "menu act under window scope must not derive an unsatisfiable expectation"
+            );
+        }
+        other => panic!("expected Done (unverified), got {other:?}"),
+    }
+}
+
+#[test]
+fn menu_act_without_scope_derives_no_expectation() {
+    // Unscoped the defect is the same: a menu press that mutates only
+    // signature-excluded menu state (checkmark toggle, silent command)
+    // leaves the signature identical — WorldChanged would false-fail
+    // the success and invite a re-mutation in a goal loop.
+    let menu = el(1, "menu_item", "Archivo"); // boundless, like the real driver
+    let sim = SimDriver::new(vec![menu]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Invoke {
+            target: Target::Semantic(SemanticTarget {
+                role: Some("menu_item".into()),
+                name: Some("Archivo".into()),
+                ..Default::default()
+            }),
+            action: "press".into(),
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    match engine.run_step(&step, &cfg()) {
+        StepStatus::Done { verification, .. } => {
+            assert!(
+                verification.is_none(),
+                "menu act must not derive a signature it cannot move"
+            );
+        }
+        other => panic!("expected Done (unverified), got {other:?}"),
+    }
+}
+
+#[test]
+fn out_of_scope_target_derives_no_expectation() {
+    // A semantic target resolving *outside* the pinned window acts on
+    // a world verification can't see — the same unverifiable class as
+    // menu items. The driver resolves via its own (unscoped) state,
+    // the act lands, and the honest verdict is unverified — never a
+    // false failure that invites re-mutation.
+    let mut far = el(1, "button", "Otra ventana");
+    far.bounds = Some(Rect {
+        x: 2000.0,
+        y: 0.0,
+        w: 80.0,
+        h: 24.0,
+    });
+    let sim = SimDriver::new(vec![far]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                role: Some("button".into()),
+                name: Some("Otra ventana".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+            count: 1,
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    let mut scoped = cfg();
+    scoped.window_scope = Some(1);
+    match engine.run_step(&step, &scoped) {
+        StepStatus::Done { verification, .. } => {
+            assert!(
+                verification.is_none(),
+                "an out-of-scope act can't be verified in the pinned world"
+            );
+        }
+        other => panic!("expected Done (unverified), got {other:?}"),
+    }
+}
+
+#[test]
+fn launch_app_under_window_scope_derives_no_expectation() {
+    // A launch changes the window *set* — under a pinned window the
+    // new window can't enter the pinned list, so neither AppRunning
+    // nor WorldChanged can observe it.
+    let sim = SimDriver::new(vec![el(1, "button", "Save")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::LaunchApp {
+            app: AppSelector::Name("Notes".into()),
+            activate: true,
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    let mut scoped = cfg();
+    scoped.window_scope = Some(1);
+    match engine.run_step(&step, &scoped) {
+        StepStatus::Done { verification, .. } => {
+            assert!(
+                verification.is_none(),
+                "a launch under window scope can't be verified in the pinned world"
             );
         }
         other => panic!("expected Done (unverified), got {other:?}"),

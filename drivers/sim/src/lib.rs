@@ -628,7 +628,9 @@ impl ComputerDriver for SimDriver {
                     .find(|e| e.id == id)
                     .ok_or_else(|| DriverError::NotFound(format!("element {id}")))?;
                 // v2 semantics: typing inserts/appends — `SetValue` is
-                // the replace verb.
+                // the replace verb. Fidelity gap vs the real drivers:
+                // the caret isn't modeled, so this appends at the end
+                // rather than inserting at the cursor position.
                 match &mut el.value {
                     Some(v) => v.push_str(text),
                     None => el.value = Some(text.clone()),
