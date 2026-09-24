@@ -168,9 +168,8 @@ async fn operator_opt_in_allows_coords() {
         Box::new(SimDriver::new(vec![])),
         None,
         dexter_mcp::ServerConfig {
-            approve_all: false,
             allow_coords: true,
-            presence: false,
+            ..Default::default()
         },
     );
     tokio::spawn(async move {
@@ -818,5 +817,63 @@ async fn task_needs_approval_then_grant_and_retry() {
         status = serde_json::from_str(&text.text).unwrap();
     }
     assert_eq!(status["status"], "completed", "{status}");
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
+async fn no_grants_rejects_self_served_approval() {
+    // The same channel that returns a needs_approval fingerprint can
+    // grant it back — fine for a human on the wire, a self-serve for an
+    // autonomous agent. `no_grants` removes that hook: the grant call
+    // is rejected outright, approval must arrive out of band.
+    let sim = SimDriver::new(vec![save_button()]);
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = DexterMcp::with_decider(
+        Policy::embedded(),
+        Box::new(sim),
+        None,
+        dexter_mcp::ServerConfig {
+            no_grants: true,
+            ..Default::default()
+        },
+    );
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(tokio::io::split(server_io)).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(tokio::io::split(client_io)).await.unwrap();
+
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_act".into(),
+            arguments: Some(
+                json!({
+                    "action": {"type":"click","target":{"name":"Save"},"button":"left"},
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        })
+        .await
+        .expect("call");
+    let text = res.content[0].raw.as_text().expect("text content");
+    let status: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+    assert_eq!(status["status"], "needs_approval", "{status}");
+    let fp = status["fingerprint"].as_str().unwrap().to_string();
+
+    // The grant call itself fails — the fingerprint cannot be spent
+    // from inside the agent channel.
+    let grant = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_grant".into(),
+            arguments: Some(json!({"fingerprint": fp}).as_object().unwrap().clone()),
+        })
+        .await;
+    assert!(
+        grant.is_err(),
+        "dexter_grant must be rejected under no_grants: {grant:?}"
+    );
     client.cancel().await.ok();
 }

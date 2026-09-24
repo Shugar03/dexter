@@ -75,10 +75,12 @@ fn eval(
                 // unknowable, never a failure.
                 reason.get_or_insert(UnknownReason::RedactedValue);
                 VerificationStatus::Uncertain
-            } else if found.is_empty() {
-                absence(VerificationStatus::Failed, partial, reason)
             } else {
-                VerificationStatus::Failed
+                // Whether no candidate matched or none were found, a
+                // partial tree could hold the satisfying element
+                // outside the walked subtree — the same `absence`
+                // degradation every other expectation gets.
+                absence(VerificationStatus::Failed, partial, reason)
             }
         }
         ExpectedState::TextPresent { text } => {

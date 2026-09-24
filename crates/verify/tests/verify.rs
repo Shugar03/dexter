@@ -462,3 +462,47 @@ fn text_present_matches_data_not_digest() {
     let v = verify(&obs_with(vec![el(1, "button", Some("Cancel"))]), &expect);
     assert_eq!(v.status, VerificationStatus::Failed);
 }
+
+#[test]
+fn element_value_unmatched_on_partial_tree_is_uncertain() {
+    // Candidates exist but none satisfy the predicate — on a
+    // truncated tree the satisfying element could sit outside the
+    // walked subtree, so "no match" degrades like every other
+    // expectation. (Real macOS walks hit the 4k-element cap.)
+    let mut field = el(1, "text_field", None);
+    field.value = Some("user@example.com".into());
+    let mut o = obs_with(vec![field]);
+    o.elements_truncated = true;
+    let v = verify(
+        &o,
+        &ExpectedState::ElementValue {
+            target: SemanticTarget {
+                role: Some("text_field".into()),
+                ..Default::default()
+            },
+            predicate: ValuePredicate::Equals("nomatch".into()),
+        },
+    );
+    assert_eq!(v.status, VerificationStatus::Uncertain);
+    assert_eq!(v.unknown_reason, Some(UnknownReason::TreePartial));
+    // A complete tree keeps the honest Failed.
+    let o = obs_with(vec![{
+        let mut f = el(1, "text_field", None);
+        f.value = Some("user@example.com".into());
+        f
+    }]);
+    assert_eq!(
+        verify(
+            &o,
+            &ExpectedState::ElementValue {
+                target: SemanticTarget {
+                    role: Some("text_field".into()),
+                    ..Default::default()
+                },
+                predicate: ValuePredicate::Equals("nomatch".into()),
+            }
+        )
+        .status,
+        VerificationStatus::Failed
+    );
+}

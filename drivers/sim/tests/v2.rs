@@ -417,6 +417,29 @@ fn element_route_descriptor_carries_semantic_identity() {
     assert_eq!(t.observation, Some(obs.id));
     assert_eq!(t.role.as_deref(), Some("button"));
     assert_eq!(t.name.as_deref(), Some("Save"));
+
+    // A password-subrole field: role "text_field" is not sensitive on
+    // its own — the engine's secrets floor reads `desc.subrole`, so the
+    // descriptor must carry it.
+    let mut pwd = el(2, "text_field", "Password", &["set_value", "focus"]);
+    pwd.subrole = Some("password".into());
+    let d = SimDriver::new(vec![pwd]);
+    let obs = d.observe(&ObservationScope::default()).unwrap();
+    let plan = d
+        .plan(
+            &Action::SetValue {
+                target: Target::Element {
+                    observation: obs.id,
+                    element: ElementId(2),
+                },
+                value: "x".into(),
+            },
+            &ctx(),
+        )
+        .unwrap();
+    let t = &plan.routes[0].target;
+    assert_eq!(t.role.as_deref(), Some("text_field"));
+    assert_eq!(t.subrole.as_deref(), Some("password"));
 }
 
 #[test]

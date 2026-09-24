@@ -2191,3 +2191,53 @@ fn foreign_element_token_on_present_element_runs_unverified() {
         other => panic!("the act must complete unverified: {other:?}"),
     }
 }
+
+#[test]
+fn secrets_floor_catches_subrole_and_semantic_targets() {
+    // Browser DOM walks mark password inputs as role text_field +
+    // subrole password — the role string alone is not sensitive, and a
+    // name-only semantic target carries no descriptor at all. The
+    // floor must still gate both, on every driver.
+    let policy = Policy::from_toml("[defaults]\nmutating = \"allow\"").unwrap();
+    let mut pwd = el(1, "text_field", "Password");
+    pwd.subrole = Some("password".into());
+    let sim = SimDriver::new(vec![pwd]);
+    // obs1 mints the element token — the candidates flow.
+    let obs1 = sim.observe(&ObservationScope::default()).unwrap();
+    let mut engine = Engine::new(sim, policy, Duration::from_secs(60));
+    let mk = |target: Target| Step {
+        note: None,
+        action: Action::TypeText {
+            text: "x".into(),
+            target: Some(target),
+        },
+        expect: None,
+        max_attempts: Some(1),
+        app: None,
+    };
+    // Element token: the driver's plan-time enrichment carries the
+    // subrole into the descriptor, which the floor reads even though
+    // the token is foreign to the pre-act observation.
+    match engine.run_step(
+        &mk(Target::Element {
+            observation: obs1.id,
+            element: ElementId(1),
+        }),
+        &cfg(),
+    ) {
+        StepStatus::NeedsApproval { .. } => {}
+        other => panic!("element token on a password-subrole field must gate: {other:?}"),
+    }
+    // Name-only semantic target: nothing in the descriptor — the
+    // floor resolves it against the pre-act observation.
+    match engine.run_step(
+        &mk(Target::Semantic(SemanticTarget {
+            name: Some("Password".into()),
+            ..Default::default()
+        })),
+        &cfg(),
+    ) {
+        StepStatus::NeedsApproval { .. } => {}
+        other => panic!("semantic target on a secure field must gate: {other:?}"),
+    }
+}

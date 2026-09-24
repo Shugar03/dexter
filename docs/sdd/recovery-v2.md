@@ -53,7 +53,9 @@ pub struct RunConfig {
 ```
 
 - `max_attempts >= 1`.
-- Polls honor cancellation and task wall-clock budget.
+- Polls honor the task cancel token between attempts; the attempt bound
+  caps them. The wall-clock budget is enforced by the task loop between
+  steps, not inside a poll — a single observe+verify is atomic.
 - `FAILED` and `UNCERTAIN` remain distinct in events, but neither is success.
 - If execute times out or returns an unknown-effect failure and an expectation
   exists, Engine verifies before considering another action because the side

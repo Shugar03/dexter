@@ -57,7 +57,9 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
    identity, every non-secret parameter (chord, url, app, window op,
    button/click count, invoke name, deltas, drag destination, wait
    duration) and a digest of the payload — approving `key "return"`
-   never covers `cmd+shift+q`.
+   never covers `cmd+shift+q`. Note `dexter_grant` may be absent from
+   your server (`--no-grants`): then approvals arrive out of band and
+   `needs_approval` is a stop, not a prompt you can answer yourself.
 4. **`dexter_verify {expected}`** — check an `ExpectedState` against a
    fresh observation. Three-valued: VERIFIED / FAILED / UNCERTAIN.
 5. **`dexter_task {goal, done, max_steps?, max_secs?}`** — hand the

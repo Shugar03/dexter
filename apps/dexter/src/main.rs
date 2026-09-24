@@ -263,6 +263,13 @@ enum Command {
         /// cursor flies on every dexter_act/dexter_task the agent runs.
         #[arg(long)]
         overlay: bool,
+        /// Operator: disable dexter_grant — the same channel that
+        /// surfaces a needs_approval fingerprint can grant it back, so
+        /// an autonomous agent could self-serve the human-in-the-loop
+        /// hook. Set this when approvals must come from outside the
+        /// agent's reach.
+        #[arg(long)]
+        no_grants: bool,
     },
     /// Open a URL — browser driver navigates its session; macOS hands it
     /// to LaunchServices. Policy-gated like any mutation.
@@ -869,6 +876,7 @@ fn run() -> Result<()> {
             approve_all,
             coords,
             overlay,
+            no_grants,
         } => run_mcp(
             &cli,
             eng,
@@ -878,6 +886,7 @@ fn run() -> Result<()> {
                 approve_all,
                 allow_coords: coords,
                 presence: overlay,
+                no_grants,
             },
         ),
     }

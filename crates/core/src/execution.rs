@@ -30,6 +30,11 @@ pub enum Sensitivity {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TargetDescriptor {
     pub role: Option<String>,
+    /// Element subrole — the sensitivity marker roles don't carry
+    /// (a `text_field` whose `subrole` is `password` is a secure
+    /// field; the secrets floor reads it like the collectors do).
+    #[serde(default)]
+    pub subrole: Option<String>,
     pub name: Option<String>,
     pub identifier: Option<String>,
     /// Element id within `observation`, when resolved to a live element.
@@ -115,6 +120,9 @@ impl TargetDescriptor {
     pub fn enrich_element(&mut self, el: &crate::Element) {
         if self.role.is_none() {
             self.role = el.role.clone();
+        }
+        if self.subrole.is_none() {
+            self.subrole = el.subrole.clone();
         }
         if self.name.is_none() {
             self.name = el.name.clone();

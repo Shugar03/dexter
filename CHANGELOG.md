@@ -101,10 +101,47 @@
   carrying those actions so a driver can't forget, and policy
   requires explicit approval when no rule matches — a batch
   `mutating = "allow"` no longer silently covers discarding state.
-  The legacy `evaluate` path declares the same sensitivities rather
-  than bypassing both floors.
+  The legacy `evaluate()` entry point declares the same sensitivities
+  instead of fabricating `Standard`, which bypassed both floors.
 - `Route::Wait` documents the engine's 10s execution clamp at the
   decision layer.
+
+### Fixed (runtime-reliability-v2 review, round 8)
+
+- `ElementValue` verdicts degrade on partial trees like every other
+  expectation: when candidates exist but none satisfy the predicate,
+  `elements_truncated`/`ax_limited` observations now report
+  `Uncertain{TreePartial}` instead of `Failed` — the satisfying
+  element could sit outside the walked subtree (real macOS walks hit
+  the 4k-element cap). A complete tree still reports `Failed`.
+- The secrets floor now covers the dominant target shapes on every
+  driver: `TargetDescriptor` gained `subrole`, `enrich_element` /
+  `enrich_descriptor` copy it, and `enforce_sensitivity_floor` checks
+  descriptor subrole plus semantic targets resolved against the
+  pre-act observation. A browser `element:N` or name-only semantic
+  target on a password-subrole input (DOM walks report
+  `role=text_field, subrole=password` — the role string alone is not
+  sensitive) previously ran `Standard` under `mutating = "allow"`.
+- `verify_poll` honours the task cancel token between attempts — a
+  cancelled task no longer finishes a multi-second poll before
+  stopping (`docs/sdd/recovery-v2.md` claimed polls honour
+  cancellation; now they do, and the doc states the wall-clock budget
+  is enforced at step boundaries).
+
+### Changed (runtime-reliability-v2 review, round 8)
+
+- `dexter mcp --no-grants` disables `dexter_grant`: the same channel
+  that returns a `needs_approval` fingerprint can otherwise grant it
+  back, making the human-in-the-loop hook a self-serve for an
+  autonomous agent. With the flag, approvals must arrive out of band
+  (`ServerConfig::no_grants`; documented in `docs/for-agents.md` and
+  the tool's own help).
+- MCP overlay journal sinks are detached after each `dexter_act` /
+  `dexter_task` (`Engine::clear_journal_sink`) — unrelated later
+  events no longer keep streaming into a per-act overlay file.
+- `dexter_act`/`dexter_task` payload bounds count serialized JSON
+  bytes via a streaming writer instead of materializing
+  `to_string()` — same 64KB limit, no large allocation.
 
 ### Fixed (runtime-reliability-v2 review, round 2)
 

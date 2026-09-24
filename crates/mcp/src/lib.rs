@@ -68,6 +68,24 @@ impl DexterRuntime {
     }
 }
 
+/// Serialized byte length without materializing the JSON — the
+/// payload-bound checks only need the count.
+fn json_len(v: &serde_json::Value) -> Result<u64, McpError> {
+    struct Count(u64);
+    impl std::io::Write for Count {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0 += b.len() as u64;
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut w = Count(0);
+    serde_json::to_writer(&mut w, v).map_err(|e| err(format!("serialize: {e}")))?;
+    Ok(w.0)
+}
+
 fn run_cfg(app: Option<String>, cfg: ServerConfig) -> RunConfig {
     RunConfig {
         app: app.as_deref().map(AppSelector::parse),
@@ -117,6 +135,12 @@ pub struct ServerConfig {
     /// Show the presence overlay while tools act — the operator sees
     /// the cursor fly on every dexter_act/dexter_task.
     pub presence: bool,
+    /// Remove `dexter_grant` — the same channel that returns a
+    /// needs_approval fingerprint can otherwise grant it back, so an
+    /// autonomous agent could serve its own human-in-the-loop hook.
+    /// Set this when approvals must come from outside the agent's
+    /// reach (e.g. a separate operator channel).
+    pub no_grants: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -429,7 +453,8 @@ impl DexterMcp {
         Parameters(params): Parameters<ActParams>,
     ) -> Result<Json<serde_json::Value>, McpError> {
         // Payload bound — an action blob has no business being huge.
-        if params.action.to_string().len() > 65_536 {
+        // Count serialized bytes without materializing the JSON.
+        if json_len(&params.action)? > 65_536 {
             return Err(err("action JSON exceeds 64KB"));
         }
         let action: Action = serde_json::from_value(params.action)
@@ -485,6 +510,11 @@ impl DexterMcp {
                 };
                 engine.emit(kind, data);
             }
+            // The overlay file is per-act — detach it so unrelated
+            // engine events don't keep streaming into it.
+            if events.is_some() {
+                engine.clear_journal_sink();
+            }
             Ok::<_, McpError>(status)
         })
         .await
@@ -493,7 +523,11 @@ impl DexterMcp {
     }
 
     /// Grant an approval fingerprint for this session (single use,
-    /// TTL-bound). This is the human-in-the-loop hook.
+    /// TTL-bound). This is the human-in-the-loop hook — note the same
+    /// channel that surfaces the fingerprint can grant it, so an
+    /// autonomous agent could self-serve. Operators who need approval
+    /// authority outside the agent's reach start the server with
+    /// `no_grants`.
     #[tool(
         name = "dexter_grant",
         description = "Grant an approval fingerprint returned by a needs_approval step (single-use, session-scoped)"
@@ -502,6 +536,12 @@ impl DexterMcp {
         &self,
         Parameters(params): Parameters<GrantParams>,
     ) -> Result<Json<serde_json::Value>, McpError> {
+        if self.runtime.config.no_grants {
+            return Err(err(
+                "dexter_grant is disabled by the operator — approvals must come \
+                 from outside this channel",
+            ));
+        }
         let mut engine = self.runtime.engine.lock().map_err(err)?;
         engine.grant_approval(&params.fingerprint);
         Ok(v2(serde_json::json!({
@@ -556,7 +596,7 @@ impl DexterMcp {
         if params.goal.len() > 4_096 {
             return Err(err("goal exceeds 4KB"));
         }
-        if params.done.to_string().len() > 65_536 {
+        if json_len(&params.done)? > 65_536 {
             return Err(err("done spec exceeds 64KB"));
         }
         let max_steps = params.max_steps.unwrap_or(10).min(200);
@@ -612,6 +652,9 @@ impl DexterMcp {
                     done_when: done,
                 },
             );
+            if presence {
+                engine.clear_journal_sink();
+            }
             *runtime.task_cancel.lock().map_err(err)? = None;
             Ok::<_, McpError>(outcome)
         })

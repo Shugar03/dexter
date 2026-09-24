@@ -224,6 +224,12 @@ impl<D: ComputerDriver> Engine<D> {
         Ok(())
     }
 
+    /// Detach the journal sink — a per-act overlay file must not keep
+    /// capturing unrelated events once the act that spawned it ends.
+    pub fn clear_journal_sink(&mut self) {
+        self.journal_sink = None;
+    }
+
     pub fn driver(&self) -> &D {
         &self.driver
     }
@@ -338,7 +344,7 @@ impl<D: ComputerDriver> Engine<D> {
         } else {
             step
         };
-        let status = self.run_step_inner(step, cfg, obs.as_ref());
+        let status = self.run_step_inner(step, cfg, obs.as_ref(), None);
         if let Some(h) = wake {
             self.driver.restore(&h);
         }
@@ -432,6 +438,7 @@ impl<D: ComputerDriver> Engine<D> {
         step: &Step,
         cfg: &RunConfig,
         obs: Option<&Observation>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> StepStatus {
         let app = step.app.clone().or_else(|| cfg.app.clone());
         let ctx = ActionContext {
@@ -641,7 +648,7 @@ impl<D: ComputerDriver> Engine<D> {
             // verify-poll before reporting — the side effect may have
             // landed despite the broken delivery report.
             if let (Some(e), Some(expected)) = (exec_error, step.expect.as_ref()) {
-                return match self.verify_poll(expected, step, cfg, &app) {
+                return match self.verify_poll(expected, step, cfg, &app, cancel) {
                     Ok(p) if p.verification.status == VerificationStatus::Verified => {
                         StepStatus::Done {
                             result: None,
@@ -666,7 +673,7 @@ impl<D: ComputerDriver> Engine<D> {
             };
         };
 
-        match self.verify_poll(expected, step, cfg, &app) {
+        match self.verify_poll(expected, step, cfg, &app, cancel) {
             Ok(p) if p.verification.status == VerificationStatus::Verified => StepStatus::Done {
                 result: Some(result),
                 verification: Some(p.verification),
@@ -698,10 +705,27 @@ impl<D: ComputerDriver> Engine<D> {
         step: &Step,
         cfg: &RunConfig,
         app: &Option<AppSelector>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<PollOutcome, DriverError> {
         let verify_attempts = step.max_attempts.unwrap_or(cfg.max_attempts).max(1);
         let mut last: Option<Verification> = None;
         for attempt in 1..=verify_attempts {
+            // Polls honor the cancel token between attempts — a long
+            // budget must not spin after the caller said stop. The
+            // act already landed, so the verdict stays whatever the
+            // last completed check saw (honestly unverified).
+            if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+                self.journal(
+                    EventKind::TaskCancelled,
+                    serde_json::json!({"stage": "verify_poll", "attempt": attempt}),
+                );
+                return Ok(PollOutcome {
+                    verification: last.unwrap_or_else(|| {
+                        Verification::failed(vec!["cancelled before the first poll".into()])
+                    }),
+                    attempts: attempt.saturating_sub(1),
+                });
+            }
             if attempt > 1 {
                 self.journal(
                     EventKind::RecoveryStarted,
@@ -1125,6 +1149,7 @@ impl<D: ComputerDriver> Engine<D> {
                         },
                         &cfg.run,
                         Some(&obs),
+                        cfg.cancel.as_deref(),
                     );
                     match status {
                         StepStatus::Done { .. } => {
@@ -1549,6 +1574,9 @@ fn enrich_descriptor(desc: &mut dexter_core::TargetDescriptor, obs: Option<&Obse
             if desc.role.is_none() {
                 desc.role = el.role.clone();
             }
+            if desc.subrole.is_none() {
+                desc.subrole = el.subrole.clone();
+            }
             if desc.name.is_none() {
                 desc.name = el.name.clone();
             }
@@ -1568,6 +1596,9 @@ fn enrich_descriptor(desc: &mut dexter_core::TargetDescriptor, obs: Option<&Obse
         if desc.role.is_none() {
             desc.role = el.role.clone();
         }
+        if desc.subrole.is_none() {
+            desc.subrole = el.subrole.clone();
+        }
         if desc.name.is_none() {
             desc.name = el.name.clone();
         }
@@ -1577,22 +1608,48 @@ fn enrich_descriptor(desc: &mut dexter_core::TargetDescriptor, obs: Option<&Obse
     }
 }
 
+/// The semantic target an action carries, if any — extracted from the
+/// route's concrete action so the floor can resolve it against the
+/// pre-act observation (a `name`-only query gives the descriptor no
+/// role to check).
+fn semantic_target_of(action: &Action) -> Option<&SemanticTarget> {
+    let target = match action {
+        Action::Click { target, .. }
+        | Action::Focus { target }
+        | Action::SetValue { target, .. }
+        | Action::Invoke { target, .. } => Some(target),
+        Action::Drag { from, .. } => Some(from),
+        Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
+        _ => None,
+    }?;
+    match target {
+        Target::Semantic(st) => Some(st),
+        _ => None,
+    }
+}
+
 /// The secrets floor is driver-agnostic: an element-bound route whose
-/// resolved element (or declared role) is a secure/password field
-/// upgrades to `Secrets` here — a standard-scope grant can never
-/// silently cover a sensitive target, whatever the driver declared.
-/// Focus-bound routes (`type_text` with no target, `key`, explicit
-/// `Target::Focused`) resolve the focused element: typing a secret
-/// into a focused password field gets the floor on every driver.
-/// An element id minted under a foreign observation stays
-/// unresolvable — ids are per-snapshot handles; the driver's own
-/// plan-time sensitivity marking covers that seam.
+/// resolved element (or declared role/subrole) is a secure/password
+/// field upgrades to `Secrets` here — a standard-scope grant can
+/// never silently cover a sensitive target, whatever the driver
+/// declared. Focus-bound routes (`type_text` with no target, `key`,
+/// explicit `Target::Focused`) resolve the focused element: typing a
+/// secret into a focused password field gets the floor on every
+/// driver. Element tokens minted under a foreign observation resolve
+/// through the driver's own obs cache — the descriptor enrichment
+/// carries role *and* subrole, so a `text_field`/`password` is still
+/// caught. Semantic targets resolve here against the pre-act
+/// observation — the same world the act will resolve them in.
 fn enforce_sensitivity_floor(route: &mut ExecutionRoute, obs: Option<&Observation>) {
     let desc = &route.target;
     let sensitive = desc
         .role
         .as_deref()
         .is_some_and(dexter_core::is_sensitive_role)
+        || desc
+            .subrole
+            .as_deref()
+            .is_some_and(dexter_core::is_sensitive_role)
         || desc
             .element
             .zip(desc.observation)
@@ -1604,7 +1661,20 @@ fn enforce_sensitivity_floor(route: &mut ExecutionRoute, obs: Option<&Observatio
         || (desc.focused
             && obs
                 .and_then(|o| o.elements.iter().find(|e| e.focused))
-                .is_some_and(|e| e.is_sensitive()));
+                .is_some_and(|e| e.is_sensitive()))
+        // A semantic target resolves only at act time — but the
+        // pre-act observation is the same world it will resolve in.
+        // Any sensitive candidate gets the floor: the act could land
+        // on it, so fail closed. `is_sensitive()` checks role, subrole
+        // and raw role — a `text_field`/`password` needs no help.
+        || semantic_target_of(&route.action)
+            .is_some_and(|st| {
+                obs.is_some_and(|o| {
+                    dexter_world_model::find_elements(o, st)
+                        .iter()
+                        .any(|e| e.is_sensitive())
+                })
+            });
     if sensitive {
         route.sensitivity = Sensitivity::Secrets;
     }

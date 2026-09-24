@@ -27,7 +27,7 @@ fn walker_fixture() -> Value {
          "bounds":{"x":40.0,"y":20.0,"w":300.0,"h":40.0},
          "enabled":true,"focused":false,"actions":["scroll_into_view"],"identifier":null},
         {"id":2,"parent":0,"depth":1,"role":"text_field","raw_role":"input",
-         "name":"Card number","value":null,
+         "subrole":"password","name":"Card number","value":null,
          "bounds":{"x":40.0,"y":80.0,"w":400.0,"h":32.0},
          "enabled":true,"focused":false,
          "actions":["press","set_value","focus","scroll_into_view"],"identifier":"card"},
@@ -1013,4 +1013,23 @@ fn element_route_descriptor_carries_semantic_identity() {
     assert_eq!(t.observation, Some(obs.id));
     assert_eq!(t.role.as_deref(), Some("button"));
     assert_eq!(t.name.as_deref(), Some("Pay now"));
+
+    // A password-subrole field: the engine's secrets floor reads
+    // `desc.subrole` — the descriptor must carry it even though the
+    // role string ("text_field") is not itself sensitive.
+    let plan = driver
+        .plan(
+            &Action::SetValue {
+                target: Target::Element {
+                    observation: obs.id,
+                    element: dexter_core::ElementId(2),
+                },
+                value: "4111".into(),
+            },
+            &ActContext::default(),
+        )
+        .expect("plan");
+    let t = &plan.routes[0].target;
+    assert_eq!(t.role.as_deref(), Some("text_field"));
+    assert_eq!(t.subrole.as_deref(), Some("password"));
 }
