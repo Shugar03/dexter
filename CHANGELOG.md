@@ -27,6 +27,7 @@
   `grants` lists); the agent-facing path is `Engine::approve_pending`,
   which returns whether the request existed.
 
+<<<<<<< HEAD
 ### Fixed
 
 - **Laya worker protocol desync.** Responses were paired positionally:
@@ -52,7 +53,12 @@
   app element tree with `windows == [win]` — which callers read as
   natively scoped and skipped their post-filter. The fallback now
   bounds-filters to the window rect.
-
+- **Eval CI gate red since live scenarios landed.** Live scenario
+  specs target Spanish AX names but CI runners are en-US — the decider
+  abstained deterministically on `calc-scientific` and `clock-timer`
+  (suite 0.80 < baseline 1.00). `prep` now pins each live app to
+  `AppleLanguages = [es]` and `teardown` deletes the override; a
+  contract test guards the convention.
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:
