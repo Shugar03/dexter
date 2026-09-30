@@ -31,7 +31,9 @@ The security posture is: **the model proposes; the runtime disposes.**
 - **Audit.** Every observation, policy check, decision, action and
   verification lands in a structured event journal (JSONL).
 - **Secrets.** `AXSecureTextField` values are redacted during
-  collection — password contents never enter the process.
+  collection — password contents never enter the process. The browser
+  walker applies the same rule: `input[type=password]` values are
+  nulled inside the page before serialization.
 
 ## What it does NOT guarantee (yet)
 
