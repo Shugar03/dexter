@@ -7,7 +7,8 @@
 
 use dexter_browser::BrowserDriver;
 use dexter_core::{
-    Action, ElementSource, Mechanism, MouseButton, ObservationScope, SemanticTarget, Target,
+    Action, ActionStatus, ElementSource, Mechanism, MouseButton, ObservationScope, SemanticTarget,
+    Target,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverError};
 use serde_json::{json, Value};
@@ -40,7 +41,12 @@ fn walker_fixture() -> Value {
          "name":"Save card","value":"false",
          "bounds":{"x":40.0,"y":180.0,"w":20.0,"h":20.0},
          "enabled":true,"focused":false,
-         "actions":["press","set_value","focus","scroll_into_view"],"identifier":null}
+         "actions":["press","set_value","focus","scroll_into_view"],"identifier":null},
+        {"id":5,"parent":0,"depth":1,"role":"button","raw_role":"button",
+         "name":"Apply coupon","value":null,
+         "bounds":{"x":200.0,"y":130.0,"w":160.0,"h":36.0},
+         "enabled":false,"focused":false,
+         "actions":["press","scroll_into_view"],"identifier":"coupon"}
     ])
 }
 
@@ -172,7 +178,12 @@ fn fake_webdriver() -> FakeServer {
                         .and_then(|b| b["script"].as_str().map(String::from))
                         .unwrap_or_default();
                     s2.lock().unwrap().push(script.clone());
-                    if script.contains("__dexterNodes = nodes") {
+                    if script.contains("__dexterNodes?.[5]") {
+                        // Node 5 is the disabled "Apply coupon" button:
+                        // a real DOM node's el.disabled is true, so the
+                        // in-page guard reports 'disabled' — emulate it.
+                        json!({"value":{"__dexter_err":"disabled"}})
+                    } else if script.contains("__dexterNodes = nodes") {
                         let errs = *e2.lock().unwrap();
                         if *m2.lock().unwrap() {
                             // DOM changed: "Pay now" renamed → stale.
@@ -225,7 +236,7 @@ fn observation_maps_dom_to_elements() {
         .observe(&ObservationScope::default())
         .expect("observe");
 
-    assert_eq!(obs.elements.len(), 5);
+    assert_eq!(obs.elements.len(), 6);
     assert!(!obs.ax_limited);
     assert_eq!(
         obs.app,
@@ -480,7 +491,7 @@ fn observe_window_scope_switches_to_that_tab() {
             .unwrap()
             .on_screen
     );
-    assert_eq!(obs.elements.len(), 5);
+    assert_eq!(obs.elements.len(), 6);
 }
 
 #[test]
@@ -558,5 +569,35 @@ fn observe_reports_iframe_collection_errors() {
     // Two frames could not be walked — counted, not fatal.
     let obs = driver.observe(&ObservationScope::default()).unwrap();
     assert_eq!(obs.collection_errors, 2);
-    assert_eq!(obs.elements.len(), 5);
+    assert_eq!(obs.elements.len(), 6);
+}
+
+#[test]
+fn disabled_element_act_reports_failed_not_success() {
+    // The generator skips disabled elements, but Target::Element
+    // binds bypass it — the in-page guard is the last honesty line:
+    // a programmatic click on a disabled control must report Failed,
+    // not "clicked".
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let target = Target::Semantic(SemanticTarget {
+        role: Some("button".into()),
+        name: Some("Apply coupon".into()),
+        ..Default::default()
+    });
+    let result = driver
+        .act(
+            &Action::Click {
+                target,
+                button: MouseButton::Left,
+            },
+            &ActContext::default(),
+        )
+        .expect("act returns an honest result, not a driver error");
+
+    assert_eq!(result.status, ActionStatus::Failed);
+    assert_eq!(result.mechanism, Mechanism::Dom);
+    let scripts = server.scripts.lock().unwrap();
+    assert!(scripts.iter().any(|s| s.contains("__dexterNodes?.[5]")));
 }

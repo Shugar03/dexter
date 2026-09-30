@@ -67,6 +67,12 @@
   simulated claims) plus `uia_role()`, the UIA ControlType →
   normalized-role table the real backend will plug into. Docs:
   `docs/sdd/windows.md`.
+- **Browser driver honesty polish.** Every element act now runs
+  through a shared in-page guard: `disabled`/`aria-disabled` elements
+  report `ActionResult::failure(Failed)` instead of taking a
+  programmatic click that lands but does nothing a user could do —
+  the "never simulate success" invariant applied to Target::Element
+  binds that bypass the generator's enabled filter.
 
 ### Fixed
 

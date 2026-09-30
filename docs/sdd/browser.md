@@ -25,6 +25,13 @@
   error, cero matches → not-found). `Target::Element` valida que la
   observación siga cacheada + identidad (role+name) contra un walk
   fresco — DOM mutado → `StaleReference`.
+- **Disabled guard**: todo act sobre elemento pasa por un template
+  in-page que chequea `el.disabled`/`aria-disabled` antes de actuar —
+  un click/set programático sobre un control deshabilitado *aterriza*
+  pero no hace nada que un usuario pueda hacer, así que reporta
+  `ActionResult::failure(Failed, Dom, "element is disabled")` en vez
+  de simular éxito. `Target::Element` binds bypassean al generator
+  (que ya salta disabled) — el guard es la última línea honesta.
 - **Screenshots**: `GET /session/:id/screenshot` → PNG base64 → archivo.
 - **Windows = tabs**: cada handle WebDriver del session es un `Window`
   Dexter con id estable (`handle_ids`, nunca reutilizado). Solo el tab
@@ -102,7 +109,9 @@ Sin eso, `POST /session` devuelve http 500 con el mensaje exacto.
   → `Unsupported`, screenshot PNG, y multi-tab: ids de window estables,
   switch via `Focus{Window}` y `observe{window}`, refs stale cross-tab,
   `new_tab`/`close_tab` (incl. último tab → vacío), e `errors` de iframe
-  → `collection_errors`. Hermético, sin browser.
+  → `collection_errors`, y el disabled guard (act sobre elemento
+  `enabled:false` → `Failed`, nunca éxito simulado). Hermético, sin
+  browser.
 - `tests/safari_e2e.rs` — Safari real, gated `DEXTER_E2E_BROWSER=1`.
   data: URL → observe → click → verifica efecto DOM.
 
@@ -122,3 +131,6 @@ Sin eso, `POST /session` devuelve http 500 con el mensaje exacto.
 - `safaridriver` sin "Allow remote automation" → mensaje real del driver
   en el error (ya propagado).
 - DOM mutado entre observe y act → `StaleReference` (fail-closed).
+- Elemento deshabilitado (`disabled`/`aria-disabled`) →
+  `ActionResult::failure(Failed)` — el motor rutea Retry/Abstain
+  en vez de creer un click que no ocurrió.
