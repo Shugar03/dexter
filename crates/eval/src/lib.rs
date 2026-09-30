@@ -7,7 +7,9 @@
 //!
 //! - **coverage** — was the gold element among the generated candidates?
 //!   (a generator property: if the right action was never offered, no
-//!   engine can pick it)
+//!   engine can pick it). Only act-golds count — a route-gold is
+//!   scoreable regardless of what was generated, so counting it as
+//!   coverage inflates the metric.
 //! - **accuracy** — did the engine pick the gold candidate, given it was
 //!   offered? (an engine property)
 //! - **route correctness** — when gold says "don't act" (wait/abstain/
@@ -118,7 +120,10 @@ pub fn split_by_app(items: &[EvalItem]) -> Vec<(String, Vec<EvalItem>)> {
 #[derive(Debug)]
 pub struct ItemVerdict {
     pub item_id: String,
-    /// Gold element was among the generated candidates.
+    /// The item was scoreable: for act-golds, the gold element was
+    /// among the generated candidates; route-golds are always
+    /// scoreable (the engine can always route — routing is not a
+    /// generator-coverage signal and is excluded from `coverage()`).
     pub covered: bool,
     /// Engine picked the gold (only meaningful when covered).
     pub correct: Option<bool>,
@@ -132,9 +137,14 @@ pub struct ItemVerdict {
 #[derive(Debug, Default)]
 pub struct EvalReport {
     pub items: usize,
-    /// Items whose gold element appeared in the candidate set.
+    /// Items whose gold is an action (not a route) — the only items
+    /// that measure generator coverage.
+    pub act_items: usize,
+    /// Act items whose gold element appeared in the candidate set.
+    /// Route-golds never count here: routing isn't evidence the
+    /// generator offered anything.
     pub covered: usize,
-    /// Covered items the engine got right.
+    /// Covered act items the engine got right.
     pub correct: usize,
     /// Gold-route items where the engine routed correctly.
     pub routes_correct: usize,
@@ -149,19 +159,31 @@ pub struct EvalReport {
 }
 
 impl EvalReport {
+    /// Generator recall over actionable items: how often the gold
+    /// element was among the candidates. Route-golds are excluded from
+    /// both sides — they can't measure coverage.
     pub fn coverage(&self) -> f64 {
-        if self.items == 0 {
+        if self.act_items == 0 {
             return 0.0;
         }
-        self.covered as f64 / self.items as f64
+        self.covered as f64 / self.act_items as f64
     }
 
-    /// Accuracy over covered items — the engine's real decision quality.
+    /// Accuracy over covered act items — the engine's real decision
+    /// quality on actions. Route accuracy is tracked separately.
     pub fn accuracy(&self) -> f64 {
         if self.covered == 0 {
             return 0.0;
         }
         self.correct as f64 / self.covered as f64
+    }
+
+    /// Route-gold accuracy — correct routes over all route items.
+    pub fn route_accuracy(&self) -> f64 {
+        if self.route_items == 0 {
+            return 0.0;
+        }
+        self.routes_correct as f64 / self.route_items as f64
     }
 }
 
@@ -204,7 +226,10 @@ pub fn route_variant(r: &Route) -> &'static str {
     }
 }
 
-/// Is the gold's element among the candidates' targets?
+/// Is the gold scoreable — for act-golds, is its element among the
+/// candidates' targets? Route-golds are always scoreable (the engine
+/// can always route) but this does NOT feed aggregate coverage —
+/// `run_eval` excludes them from `covered`.
 fn gold_covered(gold: &Gold, ctx: &DecisionContext, obs: &Observation) -> bool {
     match gold {
         Gold::Act { element, .. } => ctx
@@ -327,21 +352,26 @@ pub fn run_eval(
         let is_route_gold = matches!(item.gold, Gold::Route { .. });
         if is_route_gold {
             report.route_items += 1;
+        } else {
+            report.act_items += 1;
         }
         if verdict.covered {
-            report.covered += 1;
-            if verdict.correct == Some(true) {
-                if is_route_gold {
+            if is_route_gold {
+                // Route-golds are scoreable but not coverage-bearing:
+                // they never enter `covered` (the generator offered
+                // nothing — routing is the engine's own choice).
+                if verdict.correct == Some(true) {
                     report.routes_correct += 1;
-                } else {
-                    report.correct += 1;
-                }
-            } else if is_route_gold {
-                if matches!(verdict.decision, Decision::Act { .. }) {
+                } else if matches!(verdict.decision, Decision::Act { .. }) {
                     report.false_acts += 1;
                 }
-            } else if matches!(verdict.decision, Decision::Route { .. }) {
-                report.false_routes += 1;
+            } else {
+                report.covered += 1;
+                if verdict.correct == Some(true) {
+                    report.correct += 1;
+                } else if matches!(verdict.decision, Decision::Route { .. }) {
+                    report.false_routes += 1;
+                }
             }
         }
         report.verdicts.push(verdict);

@@ -195,3 +195,43 @@ fn jsonl_roundtrip() {
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].id, "rt-1");
 }
+
+#[test]
+fn route_golds_do_not_inflate_coverage() {
+    // One act-gold the generator misses + one route-gold. Old math
+    // counted the route item as covered → coverage 1.0. Coverage is a
+    // generator signal: only act-golds may feed it → honest 0.0.
+    let o = obs(vec![el(1, "button", "Submit", &["press"])]);
+    let items = vec![
+        item(
+            "miss-1",
+            "a goal the generator can't match",
+            o.clone(),
+            Gold::Act {
+                target: SemanticTarget {
+                    role: Some("button".into()),
+                    name: Some("Submit".into()),
+                    ..Default::default()
+                },
+                element: ElementId(1),
+            },
+        ),
+        item(
+            "route-1",
+            "wait for the page",
+            o,
+            Gold::Route {
+                route: dexter_decision::Route::Wait { millis: 100 },
+            },
+        ),
+    ];
+    let report = run_eval(
+        &items,
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+    );
+    assert_eq!(report.act_items, 1);
+    assert_eq!(report.route_items, 1);
+    assert_eq!(report.covered, 0, "route-golds must not count as covered");
+    assert_eq!(report.coverage(), 0.0);
+}

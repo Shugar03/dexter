@@ -16,7 +16,9 @@ Gold     = Act { target, element } | Route { route } | AnyOf { options }
 
 - **coverage** — was the gold element among the generated candidates?
   A generator property: if the right action was never offered, no
-  engine can pick it.
+  engine can pick it. Only act-golds feed it (`covered / act_items`) —
+  a route-gold is scoreable no matter what was generated, so counting
+  it inflated coverage by construction.
 - **act-accuracy** — of covered act-golds, how often did the engine pick
   the gold element? An engine property.
 - **routes correct** — gold says "don't act"; did the engine route the
