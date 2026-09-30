@@ -135,17 +135,40 @@ impl BrowserDriver {
     /// Run `script` with the live DOM node for `id` as `arguments[0]`.
     /// The node comes from `window.__dexterNodes`, which `observe()`
     /// repopulates on every walk — callers must have a current
-    /// observation.
+    /// observation. Every element act runs inside this template, so
+    /// the disabled guard lives here once: a disabled control takes a
+    /// programmatic click/set silently (the DOM dispatch lands but does
+    /// nothing a user could do) — the guard reports it instead of
+    /// simulating success.
     fn exec_on(&self, id: ElementId, script: &str) -> Result<serde_json::Value, DriverError> {
         self.client.lock().unwrap().execute(
             &format!(
                 "return (() => {{ const el = window.__dexterNodes?.[{}]; \
                  if (!el) return {{__dexter_err: 'stale node'}}; \
+                 if (el.disabled === true || el.getAttribute('aria-disabled') === 'true') \
+                     return {{__dexter_err: 'disabled'}}; \
                  return (function(el) {{ {} }})(el); }})()",
                 id.0, script
             ),
             vec![],
         )
+    }
+
+    /// Map an in-page `__dexter_err` to the honest outcome: stale node
+    /// → stale error (caller re-observes); disabled → `ActionResult`
+    /// failure (the element resolved but can't take the act). `None`
+    /// = the act ran.
+    fn el_err(resp: &serde_json::Value) -> Result<Option<ActionResult>, DriverError> {
+        match resp["__dexter_err"].as_str() {
+            None => Ok(None),
+            Some("stale node") => Err(DriverError::StaleReference("stale node".into())),
+            Some("disabled") => Ok(Some(ActionResult::failure(
+                ActionStatus::Failed,
+                Mechanism::Dom,
+                "element is disabled",
+            ))),
+            Some(other) => Err(DriverError::Platform(format!("element error: {other}"))),
+        }
     }
 
     fn cache_observation(&self, obs: &Observation, tab: &str) {
@@ -361,8 +384,8 @@ impl ComputerDriver for BrowserDriver {
                     _ => "el.click(); 'clicked'",
                 };
                 let resp = self.exec_on(id, js)?;
-                if resp["__dexter_err"].is_string() {
-                    return Err(DriverError::StaleReference("stale node".into()));
+                if let Some(res) = Self::el_err(&resp)? {
+                    return Ok(res);
                 }
                 Ok(ActionResult::success(
                     Mechanism::Dom,
@@ -386,8 +409,8 @@ impl ComputerDriver for BrowserDriver {
                 }
                 let id = self.resolve(target)?;
                 let resp = self.exec_on(id, "el.focus(); 'focused'")?;
-                if resp["__dexter_err"].is_string() {
-                    return Err(DriverError::StaleReference("stale node".into()));
+                if let Some(res) = Self::el_err(&resp)? {
+                    return Ok(res);
                 }
                 Ok(ActionResult::success(
                     Mechanism::Dom,
@@ -400,6 +423,8 @@ impl ComputerDriver for BrowserDriver {
                     &format!(
                         "return (() => {{ const el = window.__dexterNodes?.[{}]; \
                          if (!el) return {{__dexter_err:'stale node'}}; \
+                         if (el.disabled === true || el.getAttribute('aria-disabled') === 'true') \
+                             return {{__dexter_err: 'disabled'}}; \
                          el.focus(); el.value = arguments[0]; \
                          el.dispatchEvent(new Event('input',{{bubbles:true}})); \
                          el.dispatchEvent(new Event('change',{{bubbles:true}})); \
@@ -408,8 +433,8 @@ impl ComputerDriver for BrowserDriver {
                     ),
                     vec![json!(value)],
                 )?;
-                if resp["__dexter_err"].is_string() {
-                    return Err(DriverError::StaleReference("stale node".into()));
+                if let Some(res) = Self::el_err(&resp)? {
+                    return Ok(res);
                 }
                 Ok(ActionResult::success(
                     Mechanism::Dom,
@@ -419,10 +444,12 @@ impl ComputerDriver for BrowserDriver {
             Action::TypeText { text, target } => {
                 let t = target.clone().unwrap_or(Target::Focused);
                 let id = self.resolve(&t)?;
-                self.client.lock().unwrap().execute(
+                let resp = self.client.lock().unwrap().execute(
                     &format!(
                         "return (() => {{ const el = window.__dexterNodes?.[{}]; \
                          if (!el) return {{__dexter_err:'stale node'}}; \
+                         if (el.disabled === true || el.getAttribute('aria-disabled') === 'true') \
+                             return {{__dexter_err: 'disabled'}}; \
                          el.focus(); el.value = (el.value||'') + arguments[0]; \
                          el.dispatchEvent(new Event('input',{{bubbles:true}})); \
                          return 'typed'; }})()",
@@ -430,6 +457,9 @@ impl ComputerDriver for BrowserDriver {
                     ),
                     vec![json!(text)],
                 )?;
+                if let Some(res) = Self::el_err(&resp)? {
+                    return Ok(res);
+                }
                 Ok(ActionResult::success(
                     Mechanism::Dom,
                     Some(format!("typed into element {id}")),

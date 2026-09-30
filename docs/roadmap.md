@@ -60,7 +60,10 @@ perception degrades to UNCERTAIN, policy outside the model, single
 
 ## Fase 4 — reach
 
-- [ ] Browser driver polish (biggest cross-platform reach).
+- [x] Browser driver polish — disabled guard on every element act
+  (`Target::Element` binds bypass the generator's enabled filter;
+  programmatic clicks on disabled controls now report `Failed`
+  instead of simulating success) — PR #TBD, 2026-09-30
 - [x] Windows driver skeleton — `dexter-windows` crate: honest
   `Unsupported` seam + `uia_role()` control-type → role table —
   PR #TBD, 2026-09-30
