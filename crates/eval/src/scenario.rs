@@ -288,7 +288,7 @@ pub fn run_scenario_with<D: ComputerDriver>(
         Duration::from_secs(60),
     );
     for fp in &spec.task.grants {
-        engine.grant_approval(fp);
+        engine.pre_grant_approval(fp);
     }
     if let Some(p) = journal_path {
         // Presence is best-effort — a journal that can't open doesn't

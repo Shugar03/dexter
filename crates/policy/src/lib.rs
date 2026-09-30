@@ -294,21 +294,67 @@ pub fn fingerprint(action: &Action, ctx: &ActionContext) -> String {
 }
 
 /// Granted approvals: bound to a fingerprint, single-use, time-boxed.
+/// A `grant` only answers a live pending request — the engine records
+/// one every time it escalates `RequireApproval` — so a caller cannot
+/// mint approval for an action that was never proposed. Operator
+/// pre-authorization (scenario `grants` lists) goes through
+/// `pre_grant`, which must never be reachable from agent-facing code.
 pub struct ApprovalStore {
     ttl: Duration,
+    pending: HashMap<String, Instant>,
     granted: HashMap<String, Instant>,
 }
+
+/// Cap on live pending requests — past it, the oldest escalation is
+/// dropped. Fail-closed either way: a dropped request just can't be
+/// granted and the action stays `needs_approval`.
+const PENDING_CAP: usize = 256;
 
 impl ApprovalStore {
     pub fn new(ttl: Duration) -> Self {
         Self {
             ttl,
+            pending: HashMap::new(),
             granted: HashMap::new(),
         }
     }
 
-    /// Record an approval for a fingerprint.
-    pub fn grant(&mut self, fingerprint: &str) {
+    /// Record a live approval request for a fingerprint — called by the
+    /// engine when it returns `NeedsApproval`.
+    pub fn request(&mut self, fingerprint: &str) {
+        self.pending.retain(|_, t| t.elapsed() <= self.ttl);
+        if self.pending.len() >= PENDING_CAP && !self.pending.contains_key(fingerprint) {
+            if let Some(oldest) = self
+                .pending
+                .iter()
+                .max_by_key(|(_, t)| t.elapsed())
+                .map(|(fp, _)| fp.clone())
+            {
+                self.pending.remove(&oldest);
+            }
+        }
+        self.pending.insert(fingerprint.to_string(), Instant::now());
+    }
+
+    /// Answer a pending approval request. Only honored while the
+    /// request is live (unexpired); consumes it either way so a grant
+    /// is always bound to one escalation. Returns false for unknown or
+    /// expired fingerprints.
+    pub fn grant(&mut self, fingerprint: &str) -> bool {
+        let Some(t) = self.pending.remove(fingerprint) else {
+            return false;
+        };
+        if t.elapsed() > self.ttl {
+            return false;
+        }
+        self.granted.insert(fingerprint.to_string(), Instant::now());
+        true
+    }
+
+    /// Operator pre-authorization (e.g. a scenario's `grants` list —
+    /// the suite author *is* the approver). Single-use and time-boxed
+    /// like any grant, but requires no pending request.
+    pub fn pre_grant(&mut self, fingerprint: &str) {
         self.granted.insert(fingerprint.to_string(), Instant::now());
     }
 

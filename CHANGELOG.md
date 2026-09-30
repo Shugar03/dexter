@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **`dexter_grant` can no longer mint approval for arbitrary
+  fingerprints.** Fingerprints are deterministic, so an agent could
+  compute one locally and grant it without any escalation — bypassing
+  every `require_approval` rule. `ApprovalStore` now tracks pending
+  requests: the engine records one on each `NeedsApproval`, and a grant
+  is honored only while its request is live (bounded, TTL-bound). Both
+  grant outcomes are journaled.
+- **Breaking (internal API):** `Engine::grant_approval` →
+  `Engine::pre_grant_approval` for operator pre-authorization (scenario
+  `grants` lists); the agent-facing path is `Engine::approve_pending`,
+  which returns whether the request existed.
+
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:

@@ -196,10 +196,29 @@ impl<D: ComputerDriver> Engine<D> {
         self.journal.clone()
     }
 
-    /// Pre-grant an approval fingerprint for this session (e.g. a scenario's
-    /// `grants` list). Grants remain single-use and time-boxed.
-    pub fn grant_approval(&mut self, fingerprint: &str) {
-        self.approvals.grant(fingerprint);
+    /// Operator pre-grant of an approval fingerprint (e.g. a scenario's
+    /// `grants` list — the suite author *is* the approver). Grants remain
+    /// single-use and time-boxed. Never wire this into an agent-facing
+    /// surface: use `approve_pending`, which only answers a live
+    /// `NeedsApproval` escalation.
+    pub fn pre_grant_approval(&mut self, fingerprint: &str) {
+        self.approvals.pre_grant(fingerprint);
+    }
+
+    /// The human-in-the-loop grant path: honors the fingerprint only if
+    /// it matches a live (unexpired) request this engine escalated via
+    /// `NeedsApproval`. Both outcomes are journaled — a grant never
+    /// happens silently, and a forged fingerprint leaves an audit trail.
+    pub fn approve_pending(&mut self, fingerprint: &str) -> bool {
+        let granted = self.approvals.grant(fingerprint);
+        self.journal(
+            EventKind::PolicyChecked,
+            serde_json::json!({
+                "decision": if granted { "granted" } else { "grant_rejected" },
+                "fingerprint": fingerprint,
+            }),
+        );
+        granted
     }
 
     /// Consent to physical input for this engine — fills the policy's
@@ -299,6 +318,10 @@ impl<D: ComputerDriver> Engine<D> {
                         }),
                     );
                 } else if !self.approvals.check_and_consume(&fp) {
+                    // Escalation recorded before it is announced — a
+                    // later `approve_pending` can only answer a request
+                    // that was actually made.
+                    self.approvals.request(&fp);
                     self.journal(
                         EventKind::HumanApprovalRequired,
                         serde_json::json!({"fingerprint": &fp, "reason": &reason}),

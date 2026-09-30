@@ -178,7 +178,11 @@ class Dexter:
         return self._call("dexter_act", args)
 
     def grant(self, fingerprint: str) -> dict:
-        """Grant a `needs_approval` fingerprint — the human path."""
+        """Answer a live `needs_approval` escalation — the human path.
+
+        Only honored while the engine's request is pending; arbitrary
+        or expired fingerprints are rejected server-side.
+        """
         return self._call("dexter_grant", {"fingerprint": fingerprint})
 
     def verify(self, expected: dict) -> dict:

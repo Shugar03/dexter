@@ -33,9 +33,14 @@ del target. La política no resuelve elementos — evalúa intención.
 4. Reglas se evalúan **en orden; primer match gana**. Sin match → defaults.
 5. Un TOML malformado → error explícito, nunca default-permisivo silencioso.
 6. Una aprobación está ligada al fingerprint `(action, app)`, es **de un
-   solo uso** y expira (TTL configurable, default 60s).
+   solo uso** y expira (TTL configurable, default 60s). Además, un grant
+   sólo responde a una solicitud pendiente viva: el engine registra cada
+   escalada `NeedsApproval`, y un fingerprint nunca escalado es
+   rechazado — no se puede acuñar aprobación para una acción no propuesta.
 7. `RequireApproval` nunca ejecuta; la aprobación la otorga un `Approver`
-   externo (humano interactivo o `--yes` explícito del caller).
+   externo (humano interactivo o `--yes` explícito del caller). Los grants
+   de operador (listas `grants` de escenarios) usan `pre_grant` — un
+   camino separado que nunca debe exponerse a superficies del agente.
 
 ## Formato TOML
 
