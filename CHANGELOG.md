@@ -107,6 +107,11 @@
 
 ### Fixed
 
+- **macOS `type_text` could split a surrogate pair across events.**
+  Text was posted in fixed 20-unit UTF-16 slices, so an emoji or other
+  astral char straddling a boundary went out as two lone surrogates
+  (typing U+FFFD or nothing). Chunking now goes through
+  `dexter_driver::utf16_chunks`, which only breaks on char boundaries.
 - **`run_step` paid a cosmetic observe on every act.** The overlay's
   `target_bounds` lookup ran a full observe before each non-`Point`
   single step even with no consumer (AX walk live; advanced `on_tick`

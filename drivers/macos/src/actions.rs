@@ -15,7 +15,7 @@ use dexter_core::{
     Action, ActionResult, ActionStatus, Element, ElementSource, Mechanism, MouseButton,
     Observation, ObservationId, Rect, Target,
 };
-use dexter_driver::{ActContext, DriverError};
+use dexter_driver::{utf16_chunks, ActContext, DriverError};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -325,8 +325,7 @@ fn cg_scroll(dx: i32, dy: i32) -> Result<(), DriverError> {
 fn cg_type_text(text: &str) -> Result<(), DriverError> {
     // Post text in small chunks — CGEventKeyboardSetUnicodeString has a
     // limited buffer per event.
-    let utf16: Vec<u16> = text.encode_utf16().collect();
-    for chunk in utf16.chunks(20) {
+    for chunk in utf16_chunks(text, 20) {
         unsafe {
             let down = ffi::CGEventCreateKeyboardEvent(std::ptr::null(), 0, true);
             let up = ffi::CGEventCreateKeyboardEvent(std::ptr::null(), 0, false);
