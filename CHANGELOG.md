@@ -11,6 +11,17 @@
   requests: the engine records one on each `NeedsApproval`, and a grant
   is honored only while its request is live (bounded, TTL-bound). Both
   grant outcomes are journaled.
+- **Browser walker no longer leaks password values into observations.**
+  `input[type=password]` emitted its live `el.value` — the typed secret
+  — into element records, digests and the event journal. Values are now
+  nulled at collection inside the page (same rule as
+  `is_sensitive_role` in the macOS walker).
+- **`Action::Navigate` flag injection.** `open <url>` parsed a url
+  beginning with `-` as flags (`-a App` opens an arbitrary
+  application); it now passes `--` before the argument.
+- **Sim driver: untargeted `Scroll` required no coordinate opt-in** —
+  same gate as `Key` chords and the macOS scroll path; now fails
+  `Unsupported` unless `allow_coordinates` is set.
 - **Breaking (internal API):** `Engine::grant_approval` →
   `Engine::pre_grant_approval` for operator pre-authorization (scenario
   `grants` lists); the agent-facing path is `Engine::approve_pending`,

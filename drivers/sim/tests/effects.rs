@@ -87,6 +87,35 @@ fn cycle_value_of_advances_per_observe_tick() {
 }
 
 #[test]
+fn untargeted_scroll_requires_coordinate_opt_in() {
+    // Same gate as macOS `Action::Scroll` and sim `Action::Key`:
+    // target-less scroll is physical input — never implied.
+    let sim = SimDriver::new(vec![el(1, "list", "items")]);
+    let scroll = Action::Scroll {
+        delta: ScrollDelta {
+            dx: 0.0,
+            dy: -100.0,
+        },
+        target: None,
+    };
+    let denied = sim.act(&scroll, &ActContext::default()).unwrap();
+    assert!(
+        matches!(denied.status, ActionStatus::Unsupported),
+        "untargeted scroll must fail closed without coords, got {denied:?}"
+    );
+    let ok = sim
+        .act(
+            &scroll,
+            &ActContext {
+                allow_coordinates: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(matches!(ok.status, ActionStatus::Success));
+}
+
+#[test]
 fn remove_by_target_vanishes_an_element_on_tick() {
     // World changes under the agent: the target disappears between
     // observations — the stale-reference path has to recover.

@@ -438,6 +438,13 @@ impl ComputerDriver for SimDriver {
                         Some(format!("scrolled {id} into view")),
                     ));
                 }
+                if !ctx.allow_coordinates {
+                    return Ok(ActionResult::failure(
+                        ActionStatus::Unsupported,
+                        Mechanism::Coordinates,
+                        "scroll without a target requires physical input",
+                    ));
+                }
                 Ok(ActionResult::success(
                     Mechanism::Coordinates,
                     Some("scrolled".into()),

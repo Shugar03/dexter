@@ -114,8 +114,13 @@ return (() => {
     const tag = el.tagName.toLowerCase();
     let value = null;
     if (tag === 'input' || tag === 'textarea' || tag === 'select') {
-      value = el.type === 'checkbox' || el.type === 'radio'
-        ? String(el.checked) : el.value;
+      // Password fields never leak their value — redacted at collection
+      // time, before anything leaves the page (mirrors is_sensitive_role
+      // in the macOS walker).
+      value = tag === 'input' && el.type === 'password'
+        ? null
+        : (el.type === 'checkbox' || el.type === 'radio'
+          ? String(el.checked) : el.value);
     } else if (TEXT_TAGS.has(tag)) {
       const t = (el.innerText || '').trim();
       value = t.length > 200 ? t.slice(0, 200) : (t || null);
@@ -253,4 +258,30 @@ pub fn parse_elements(raw: serde_json::Value) -> (Vec<Element>, u32) {
         })
         .collect();
     (elements, res.errors)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The walker script is the collection point for every browser
+    //! observation — a regression here leaks secrets straight into
+    //! digests and journals. Assert the redaction contract on the
+    //! embedded script itself (there is no DOM on test runners).
+    use super::WALKER_JS;
+
+    #[test]
+    fn walker_redacts_password_field_values() {
+        assert!(
+            WALKER_JS.contains("el.type === 'password'"),
+            "walker must special-case password inputs"
+        );
+        // The guard must null the value before the element record is
+        // pushed — `els.push(` is the last write in the script.
+        let guard = WALKER_JS.find("el.type === 'password'").unwrap();
+        let push = WALKER_JS.rfind("els.push(").unwrap();
+        assert!(guard < push, "password redaction must run before push");
+        assert!(
+            WALKER_JS.contains("? null"),
+            "password inputs must emit a null value"
+        );
+    }
 }

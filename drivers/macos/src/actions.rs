@@ -412,7 +412,11 @@ pub fn act(
             "Action::Observe is an engine directive, not a driver action".into(),
         )),
         Action::Navigate { url } => {
+            // `--` ends option parsing: a url like "-a Calculator"
+            // must reach open as an argument, not a flag — open(1)
+            // would otherwise open an arbitrary application.
             let status = std::process::Command::new("open")
+                .arg("--")
                 .arg(url)
                 .status()
                 .map_err(|e| DriverError::Platform(format!("open: {e}")))?;
