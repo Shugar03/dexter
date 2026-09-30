@@ -139,3 +139,66 @@ impl ComputerDriver for Box<dyn ComputerDriver> {
         (**self).restore(handle)
     }
 }
+
+/// Split `text` into UTF-16 chunks of at most `max_units` code units,
+/// never separating a surrogate pair — a lone surrogate posted as its
+/// own keyboard event types U+FFFD (or nothing) instead of the char.
+/// A chunk always holds at least one whole char, so `max_units < 2`
+/// still makes progress on astral chars.
+pub fn utf16_chunks(text: &str, max_units: usize) -> Vec<Vec<u16>> {
+    let mut chunks: Vec<Vec<u16>> = Vec::new();
+    let mut cur: Vec<u16> = Vec::new();
+    let mut buf = [0u16; 2];
+    for ch in text.chars() {
+        let units = ch.encode_utf16(&mut buf);
+        if !cur.is_empty() && cur.len() + units.len() > max_units {
+            chunks.push(std::mem::take(&mut cur));
+        }
+        cur.extend_from_slice(units);
+    }
+    if !cur.is_empty() {
+        chunks.push(cur);
+    }
+    chunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utf16_chunks;
+
+    fn roundtrip(chunks: &[Vec<u16>]) -> Vec<String> {
+        chunks
+            .iter()
+            .map(|c| String::from_utf16(c).expect("chunk splits a surrogate pair"))
+            .collect()
+    }
+
+    #[test]
+    fn utf16_chunks_never_split_surrogate_pairs() {
+        // 19 ASCII units + an emoji (2 units) straddles a 20-unit boundary.
+        let text = format!("{}😀tail", "a".repeat(19));
+        let chunks = utf16_chunks(&text, 20);
+        assert!(chunks.iter().all(|c| c.len() <= 20));
+        assert_eq!(roundtrip(&chunks).concat(), text);
+    }
+
+    #[test]
+    fn utf16_chunks_bmp_text_fills_chunks() {
+        let text = "ñ".repeat(45);
+        let chunks = utf16_chunks(&text, 20);
+        let lens: Vec<usize> = chunks.iter().map(Vec::len).collect();
+        assert_eq!(lens, vec![20, 20, 5]);
+    }
+
+    #[test]
+    fn utf16_chunks_tiny_budget_keeps_whole_chars() {
+        let text = "😀😀a";
+        let chunks = utf16_chunks(text, 1);
+        assert_eq!(roundtrip(&chunks), vec!["😀", "😀", "a"]);
+    }
+
+    #[test]
+    fn utf16_chunks_empty_text_is_empty() {
+        assert!(utf16_chunks("", 20).is_empty());
+    }
+}
