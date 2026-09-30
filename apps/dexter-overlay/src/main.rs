@@ -340,7 +340,7 @@ mod platform {
                     break; // terminal state shown long enough — leave quietly
                 }
                 loops += 1;
-                if loops % 30 == 0 {
+                if loops.is_multiple_of(30) {
                     // ~1s cadence: writer gone mid-run (crashed task,
                     // killed CLI) means nothing more is coming. A writer
                     // that died AFTER its terminal event still gets the

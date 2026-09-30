@@ -75,8 +75,8 @@ perception degrades to UNCERTAIN, policy outside the model, single
 - Done in PR #TBD: `secure_text_field` editable, `parse_goal` real
   word offsets, `max_empty_steps` dead field removed, `AppSelector`
   bundle-id shape, `token_rect` → `Option` on degenerate windows,
-  empty `SemanticTarget` → `InvalidInput`, overlay `is_multiple_of`
-  → `%`, browser walker skips `aria-hidden` subtrees.
+  empty `SemanticTarget` → `InvalidInput`, MSRV bumped to 1.87
+  (`is_multiple_of` was already in use, stabilized there), browser walker skips `aria-hidden` subtrees.
 - Remaining: no index-qualified candidates (ambiguous labels
   unresolvable); cosmetic per-step observe for overlay bounds;
   `split_whitespace` parse edges; UTF-16 surrogate split in

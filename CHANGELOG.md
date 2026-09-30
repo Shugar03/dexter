@@ -81,8 +81,9 @@
   ids ("TextEdit 1.2" stays a name); `token_rect` returns `Option`
   instead of NaN bounds on degenerate windows; resolving an all-None
   `SemanticTarget` is `InvalidInput`, never a wildcard match; the
-  browser walker skips `aria-hidden` subtrees; the overlay no longer
-  uses `is_multiple_of` (declared MSRV is 1.85, stabilized 1.87).
+  browser walker skips `aria-hidden` subtrees; workspace MSRV is now
+  honestly `1.87` (the code already used `is_multiple_of`, stabilized
+  in that release).
 
 ### Fixed
 
