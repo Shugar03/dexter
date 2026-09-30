@@ -120,6 +120,13 @@ pub fn resolve_element<'o>(
                 .ok_or_else(|| DexterError::NotFound(format!("element {element}")))
         }
         Target::Semantic(t) => {
+            // An all-None target matches every element — resolving it
+            // would act on a wildcard, not on anything the caller meant.
+            if t.is_unconstrained() {
+                return Err(DexterError::InvalidInput(
+                    "empty semantic target — at least one constraint required".into(),
+                ));
+            }
             let found = find_elements(obs, t);
             match t.index {
                 Some(i) => found.get(i).copied().ok_or_else(|| {

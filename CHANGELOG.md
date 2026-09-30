@@ -73,6 +73,16 @@
   programmatic click that lands but does nothing a user could do —
   the "never simulate success" invariant applied to Target::Element
   binds that bypass the generator's enabled filter.
+- **Cleanup sweep #1.** `parse_goal` now scans words at their real
+  byte offsets (a word inside a consumed phrase-verb no longer
+  swallows a later standalone occurrence); `is_editable` covers
+  `secure_text_field`; `RuleBased.max_empty_steps` dead knob removed;
+  `AppSelector::parse` only treats bundle-id-shaped strings as bundle
+  ids ("TextEdit 1.2" stays a name); `token_rect` returns `Option`
+  instead of NaN bounds on degenerate windows; resolving an all-None
+  `SemanticTarget` is `InvalidInput`, never a wildcard match; the
+  browser walker skips `aria-hidden` subtrees; the overlay no longer
+  uses `is_multiple_of` (declared MSRV is 1.85, stabilized 1.87).
 
 ### Fixed
 

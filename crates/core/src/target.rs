@@ -22,6 +22,19 @@ pub struct SemanticTarget {
     pub index: Option<usize>,
 }
 
+impl SemanticTarget {
+    /// No constraint field set — such a target matches every element,
+    /// i.e. an accidental wildcard (an `index` alone is not a constraint).
+    pub fn is_unconstrained(&self) -> bool {
+        self.role.is_none()
+            && self.name.is_none()
+            && self.name_contains.is_none()
+            && self.value_contains.is_none()
+            && self.identifier.is_none()
+            && self.enabled.is_none()
+    }
+}
+
 /// Where an action lands.
 ///
 /// Serde `untagged` tries variants in declaration order: the structurally

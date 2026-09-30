@@ -154,7 +154,10 @@ return (() => {
     if (depth > 24 || els.length >= 4000) return;
     for (const child of node.children) {
       const tag = child.tagName.toLowerCase();
-      if (SKIP.has(tag) || !visible(child)) continue;
+      // aria-hidden (on the node or any ancestor) removes the subtree
+      // from the accessibility tree — offering it as actable would let
+      // an agent target controls no user can reach.
+      if (SKIP.has(tag) || !visible(child) || child.closest('[aria-hidden="true"]')) continue;
       if (tag === 'iframe') {
         const fr = child.getBoundingClientRect();
         const fIdx = push(child, parentIdx, depth, ox, oy);
@@ -282,6 +285,23 @@ mod tests {
         assert!(
             WALKER_JS.contains("? null"),
             "password inputs must emit a null value"
+        );
+    }
+
+    #[test]
+    fn walker_skips_aria_hidden_subtrees() {
+        // aria-hidden removes a subtree from the accessibility tree —
+        // offering those elements as actable lets an agent target
+        // controls no user can reach.
+        assert!(
+            WALKER_JS.contains("aria-hidden=\"true\""),
+            "walker must skip aria-hidden subtrees"
+        );
+        // The check uses closest() so an attribute on ANY ancestor
+        // hides the subtree, not only the marked node.
+        assert!(
+            WALKER_JS.contains("closest('[aria-hidden=\"true\"]')"),
+            "aria-hidden must cover ancestors, not just the node itself"
         );
     }
 }
