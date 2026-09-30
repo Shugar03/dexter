@@ -21,7 +21,9 @@ mod windows;
 pub mod permissions;
 
 use accessibility::AXUIElement;
-use dexter_core::{Action, ActionResult, Observation, ObservationId, ObservationScope, Window};
+use dexter_core::{
+    Action, ActionResult, Observation, ObservationId, ObservationScope, Rect, Window,
+};
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError, WakeHandle};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
@@ -39,6 +41,10 @@ impl MacOsDriver {
             obs_cache: actions::ObsCache::new(),
         }
     }
+}
+
+fn rects_overlap(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
 }
 
 impl ComputerDriver for MacOsDriver {
@@ -125,9 +131,20 @@ impl ComputerDriver for MacOsDriver {
                         }
                         // The app doesn't expose that window via AX
                         // (degraded AXWindows, same-bounds ambiguity) —
-                        // walk the full tree; callers bounds-filter the
-                        // result, which is still correct, just slower.
-                        Err(_) => ax::collect(&app, scope.max_depth, scope.max_elements),
+                        // walk the full tree and bounds-filter to the
+                        // requested rect. Without the filter, a
+                        // single-window app's `windows == [win]` reads
+                        // as "natively scoped" to callers and they'd
+                        // skip their post-filter — silently returning
+                        // the whole app's element tree for a
+                        // window-scoped request.
+                        Err(_) => {
+                            let mut tree = ax::collect(&app, scope.max_depth, scope.max_elements);
+                            tree.elements
+                                .retain(|e| e.bounds.is_some_and(|b| rects_overlap(b, cg_bounds)));
+                            obs.windows.retain(|w| w.id == win_id);
+                            tree
+                        }
                     }
                 }
                 None => ax::collect(&app, scope.max_depth, scope.max_elements),

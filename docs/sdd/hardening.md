@@ -187,6 +187,41 @@ silent empty observation. Exposed as `dexter_observe { window }` and
 MCP `ObserveParams.window`; CLI `--window`. Test:
 `within_window_scopes_to_intersecting_elements`.
 
+### W10. Engine/CLI correctness batch
+
+Four independent defects along the run_task/map paths:
+
+- **Borrowed focus stranded on re-observe error.** `dexter map` and
+  MCP `dexter_map` propagated `?` out of the post-wake re-observe
+  *before* `driver.restore(&h)` — a failed re-observe left the target
+  app frontmost, stealing the user's focus.
+- **`Route::Retry` never retried.** The contract reads "repeat the
+  last action"; the closed loop treated `Retry | Reobserve` as a bare
+  `continue`, silently dropping the decider's intent. `Retry` now
+  replays `hist.attempts.last()` once (recorded in attempts, with the
+  same `pending_sig` bookkeeping as a normal act). `Reobserve` remains
+  a fallthrough — the loop observes fresh at the top of every step —
+  now documented at the seam.
+- **Expression stall check misfired on repeated digits.** The plan for
+  "5 más 22" is `[5,+,2,2,=]`; after `5 Sumar 2`, the pending step is
+  another "2" — legit, not stalled. Comparing `pressed.last()` to the
+  pending step decayed every consecutive-digit goal to prior 0.4 →
+  deterministic abstain. Only the error signal (`last_error` on the
+  same label) marks a stall — a raw label match can't distinguish a
+  press that didn't land from a legit repeat.
+- **`collect_window` fallback false-scoped single-window apps.** When
+  AX couldn't reach the window subtree the driver walked the whole app
+  tree — but kept `windows == [win]` on single-window apps, which
+  `scope_to_window` reads as "natively scoped", so callers skipped
+  their post-filter and got the full app element tree. The fallback now
+  bounds-filters elements to the window rect itself.
+
+**Implemented**: restore-before-`?` in `apps/dexter` map + MCP
+`dexter_map`; `Route::Retry` replay in `engine::run_task`; single-clause
+stall in `expr_next_candidate`; bounds-filtered fallback + `Rect` in
+`drivers/macos`. Tests: `route_retry_replays_last_action` (engine e2e),
+`expression_repeated_digit_is_not_stalled` (decision sequence).
+
 ## Remaining gaps (known, not yet scheduled)
 
 - **Incremental observe** — scoping filters *after* the walk; the

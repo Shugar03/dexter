@@ -369,6 +369,75 @@ fn physical_action_denied_before_touching_driver() {
 }
 
 #[test]
+fn route_retry_replays_last_action() {
+    // `Route::Retry`'s contract is "repeat the last action". A decider
+    // that acts once, then routes Retry, then abstains must leave TWO
+    // presses on the driver — a bare continue would silently drop the
+    // intent (old behavior: pressed().len() == 1).
+    use dexter_decision::{
+        Decision, DecisionContext, DecisionEngine, DecisionError, HeuristicGenerator, Route,
+    };
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    struct RetryOnce;
+    impl DecisionEngine for RetryOnce {
+        fn name(&self) -> &str {
+            "retry-once"
+        }
+        fn decide(&self, ctx: &DecisionContext) -> Result<Decision, DecisionError> {
+            Ok(match ctx.step {
+                1 => Decision::Act {
+                    action: Action::Click {
+                        target: Target::Semantic(SemanticTarget {
+                            role: Some("button".into()),
+                            name: Some("Guardar".into()),
+                            ..Default::default()
+                        }),
+                        button: MouseButton::Left,
+                    },
+                    candidate_index: None,
+                    rationale: "first press".into(),
+                },
+                2 => Decision::Route {
+                    route: Route::Retry,
+                    rationale: "again".into(),
+                },
+                _ => Decision::Route {
+                    route: Route::Abstain,
+                    rationale: "done".into(),
+                },
+            })
+        }
+    }
+
+    let sim = SimDriver::new(vec![el(1, "button", "Guardar")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let outcome = engine.run_task(
+        "click guardar twice",
+        &HeuristicGenerator::default(),
+        &RetryOnce,
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 5,
+            max_duration: None,
+            cancel: None,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("Imposible".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    assert!(matches!(outcome, TaskOutcome::Abstained { .. }));
+    assert_eq!(
+        engine.driver().pressed().len(),
+        2,
+        "Retry must replay the last action"
+    );
+}
+
+#[test]
 fn run_task_abstains_when_nothing_matches() {
     use dexter_decision::{HeuristicGenerator, RuleBased};
     use dexter_engine::{TaskConfig, TaskOutcome};

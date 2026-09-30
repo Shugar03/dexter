@@ -155,6 +155,31 @@ fn expression_goal_presses_next_keypad_key() {
 }
 
 #[test]
+fn expression_repeated_digit_is_not_stalled() {
+    // Plan for "5 más 22" is [5,+,2,2,=]: after "5 Sumar 2" lands, the
+    // next press is another "2" — the NEXT plan step, not a stall.
+    // Comparing the last pressed label to the pending step would decay
+    // every consecutive-digit goal under the act threshold (old
+    // behavior: prior 0.4 → deterministic abstain).
+    let g = HeuristicGenerator::default();
+    let cands = g.generate(
+        &obs(keypad()),
+        "calcular 5 más 22",
+        &history_with(&["5", "Sumar", "2"]),
+    );
+    let expr = cands
+        .iter()
+        .find(|c| c.rationale.contains("expression sequence"))
+        .expect("expr candidate offered");
+    assert_eq!(top_label(std::slice::from_ref(expr)), "2");
+    assert!(
+        expr.prior >= 0.9,
+        "repeated digit keeps full prior, got {}",
+        expr.prior
+    );
+}
+
+#[test]
 fn expression_path_ignores_non_expression_goals() {
     let g = HeuristicGenerator::default();
     // Same keypad, but the goal is not arithmetic — no forced presses.

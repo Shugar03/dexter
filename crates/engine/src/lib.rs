@@ -762,7 +762,44 @@ impl<D: ComputerDriver> Engine<D> {
                             slept += slice;
                         }
                     }
-                    Route::Retry | Route::Reobserve => {}
+                    Route::Retry => {
+                        // Contract: repeat the last action (transient
+                        // failure). A bare continue would silently drop
+                        // the decider's intent and burn a step.
+                        if let Some(last) = hist.attempts.last().cloned() {
+                            let mutating = is_mutating(&last);
+                            hist.attempts.push(last.clone());
+                            let status = self.run_step_inner(
+                                &Step {
+                                    note: Some(format!("retry: {rationale}")),
+                                    action: last,
+                                    expect: None,
+                                    max_attempts: Some(1),
+                                    app: cfg.run.app.clone(),
+                                },
+                                &cfg.run,
+                                Some(&obs),
+                            );
+                            match status {
+                                StepStatus::Done { .. } => {
+                                    last_error = None;
+                                    if matches!(done, Completion::FirstVerifiedAct) && mutating {
+                                        pending_sig = Some(world_signature(&obs));
+                                    }
+                                }
+                                other => last_error = Some(format!("{other:?}")),
+                            }
+                            if !cfg.run.post_act_settle.is_zero() {
+                                std::thread::sleep(cfg.run.post_act_settle);
+                            }
+                        }
+                        // No prior attempt: nothing to replay — the loop
+                        // simply re-observes next step.
+                    }
+                    Route::Reobserve => {
+                        // The loop observes fresh at the top of every
+                        // step; Reobserve just continues into it.
+                    }
                     Route::Abstain => {
                         self.journal(
                             EventKind::TaskFailed,
