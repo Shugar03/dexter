@@ -390,3 +390,41 @@ fn secure_field_is_editable_by_role() {
         "expected an edit candidate on the secure field, got {cands:?}"
     );
 }
+
+#[test]
+fn duplicate_labels_generate_index_qualified_targets() {
+    // Two "Save" buttons: a bare {role, name} target can never resolve
+    // (Ambiguous → fail-closed) — the generator must qualify by index
+    // so each offer lands as a single hit.
+    let o = obs(vec![
+        el(1, "button", "Save", &["press"]),
+        el(2, "button", "Save", &["press"]),
+        el(3, "button", "Open", &["press"]),
+    ]);
+    let cands = gen().generate(&o, "save the file", &empty());
+    let save_targets: Vec<&Target> = cands
+        .iter()
+        .filter_map(|c| match &c.action {
+            Action::Click { target, .. } => Some(target),
+            _ => None,
+        })
+        .filter(|t| matches!(t, Target::Semantic(st) if st.name.as_deref() == Some("Save")))
+        .collect();
+    assert_eq!(
+        save_targets.len(),
+        2,
+        "expected both Save offers: {cands:?}"
+    );
+
+    let mut resolved = std::collections::HashSet::new();
+    for t in &save_targets {
+        let st = match t {
+            Target::Semantic(st) => st,
+            _ => unreachable!(),
+        };
+        assert!(st.index.is_some(), "ambiguous label must carry index");
+        let hit = dexter_world_model::resolve_element(&o, t).expect("index resolves");
+        resolved.insert(hit.id.0);
+    }
+    assert_eq!(resolved.len(), 2, "each offer resolves to its own element");
+}
