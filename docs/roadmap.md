@@ -67,8 +67,10 @@ perception degrades to UNCERTAIN, policy outside the model, single
 - [x] Windows driver skeleton — `dexter-windows` crate: honest
   `Unsupported` seam + `uia_role()` control-type → role table —
   PR #13, 2026-09-30
-- [ ] Release hygiene: universal binary, homebrew tap refresh, demo
-  GIF in README.
+- [x] Release hygiene: universal binary, homebrew tap refresh, demo
+  GIF in README — universal `lipo -verify_arch` gate in CI, cask
+  single-sourced in `packaging/homebrew/` with a golden test against
+  the live tap, `docs/assets/suite.gif` — PR #20, 2026-09-30
 
 ## Cleanup backlog (low severity, pick when convenient)
 
