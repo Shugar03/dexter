@@ -39,8 +39,9 @@ perception degrades to UNCERTAIN, policy outside the model, single
   `gemini-2.5-flash-lite` (cheapest flash-lite tier); prompts bounded
   (≤8 candidates, ≤1500-char digest, 150 max_tokens, temperature 0) —
   same PR
-- [ ] Worker protocol versioning + laya health endpoint
-  (`dexter doctor --engine` coverage is partial today).
+- [x] Worker protocol versioning (`hello` handshake at spawn/respawn,
+  `"v"` on requests) + `dexter doctor` always probes an engine —
+  PR #TBD, 2026-09-30
 
 ## Fase 3 — measurable reliability
 

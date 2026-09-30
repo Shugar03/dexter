@@ -35,11 +35,30 @@ const ROUTE_OPTIONS: [(&str, Route); 4] = [
     ("escalate to a larger model", Route::EscalateLlm),
 ];
 
+/// Protocol revision spoken by both sides — bumped when request or
+/// response shapes change incompatibly. Negotiated by `hello` at spawn.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Serialize)]
 struct PredictRequest<'a> {
     id: u64,
+    v: u32,
     method: &'a str,
     params: PredictParams<'a>,
+}
+
+/// Version-negotiation request sent once per process spawn (and each
+/// respawn). Id 0 is reserved for it — rpc ids start at 1.
+#[derive(Serialize)]
+struct HelloRequest<'a> {
+    id: u64,
+    method: &'a str,
+    params: HelloParams,
+}
+
+#[derive(Serialize)]
+struct HelloParams {
+    protocol: u32,
 }
 
 #[derive(Serialize)]
@@ -124,6 +143,63 @@ impl WorkerProc {
 /// instead of masking a broken install.
 const MAX_RESPAWNS: u32 = 2;
 
+/// `hello` handshake: version negotiation once per (re)spawn. A
+/// legacy worker answering `ok` without `protocol`, a version
+/// mismatch, or a timeout is an error — running against a stale or
+/// incompatible sidecar is never allowed to proceed silently.
+fn hello(proc: &WorkerProc, timeout: Duration) -> std::io::Result<()> {
+    let req = HelloRequest {
+        id: 0,
+        method: "hello",
+        params: HelloParams {
+            protocol: PROTOCOL_VERSION,
+        },
+    };
+    let line = serde_json::to_string(&req)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut stdin = &proc.stdin;
+    stdin
+        .write_all(line.as_bytes())
+        .and_then(|_| stdin.write_all(b"\n"))
+        .and_then(|_| stdin.flush())?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "worker hello timed out")
+            })?;
+        let line = proc.responses.recv_timeout(remaining).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, format!("worker hello: {e}"))
+        })?;
+        let resp: serde_json::Value = serde_json::from_str(&line).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("worker hello: invalid json: {e}"),
+            )
+        })?;
+        // Only id 0 belongs to this handshake; anything else is a
+        // stale or startup line — skip it within the deadline.
+        if resp["id"].as_u64() != Some(0) {
+            continue;
+        }
+        if resp["ok"].as_bool() != Some(true) {
+            let err = resp["error"].as_str().unwrap_or("ok:false");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("worker hello rejected: {err}"),
+            ));
+        }
+        return match resp["protocol"].as_u64() {
+            Some(v) if v == PROTOCOL_VERSION as u64 => Ok(()),
+            other => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("worker hello: protocol mismatch (got {other:?}, need {PROTOCOL_VERSION})"),
+            )),
+        };
+    }
+}
+
 /// Transport-level failures justify a respawn+retry; protocol-level
 /// ones (bad JSON, ok:false) do not — the worker is alive, the answer
 /// was the problem.
@@ -152,9 +228,15 @@ pub struct LayaEngine {
 
 impl LayaEngine {
     /// Spawn a worker process speaking the NDJSON predict protocol.
+    /// Performs the `hello` handshake — a worker that doesn't answer
+    /// with a matching `protocol` (a pre-versioning build, or the
+    /// wrong binary) fails the spawn rather than running against an
+    /// incompatible sidecar silently.
     pub fn spawn(worker_cmd: &str, timeout: Duration) -> std::io::Result<Self> {
+        let proc = WorkerProc::spawn(worker_cmd)?;
+        hello(&proc, timeout)?;
         Ok(Self {
-            worker: Mutex::new(WorkerProc::spawn(worker_cmd)?),
+            worker: Mutex::new(proc),
             worker_cmd: worker_cmd.to_string(),
             next_id: Mutex::new(0),
             timeout,
@@ -213,10 +295,15 @@ impl LayaEngine {
         let mut w = self.worker.lock().unwrap();
         let _ = w.child.kill(); // already-dead is fine
         let _ = w.child.wait(); // reap
-        *w = WorkerProc::spawn(&self.worker_cmd).map_err(|e| DecisionError::Engine {
+        let proc = WorkerProc::spawn(&self.worker_cmd).map_err(|e| DecisionError::Engine {
             engine: self.name().into(),
             message: format!("worker respawn failed: {e}"),
         })?;
+        hello(&proc, self.timeout).map_err(|e| DecisionError::Engine {
+            engine: self.name().into(),
+            message: format!("worker respawn hello failed: {e}"),
+        })?;
+        *w = proc;
         Ok(())
     }
 
@@ -232,6 +319,7 @@ impl LayaEngine {
         };
         let req = PredictRequest {
             id,
+            v: PROTOCOL_VERSION,
             method: "predict",
             params: PredictParams { state, questions },
         };

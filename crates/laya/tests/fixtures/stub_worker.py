@@ -12,6 +12,13 @@ IDX = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
 for line in sys.stdin:
     req = json.loads(line)
+    if req.get("method") == "hello":
+        sys.stdout.write(
+            json.dumps({"id": req["id"], "ok": True, "protocol": 1, "worker": "stub"})
+            + "\n"
+        )
+        sys.stdout.flush()
+        continue
     answers = [
         {"type": "choice", "id": q["id"], "index": IDX, "confidence": CONF}
         for q in req.get("params", {}).get("questions", [])

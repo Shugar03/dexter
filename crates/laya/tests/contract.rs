@@ -154,9 +154,36 @@ fn missing_worker_is_an_honest_error() {
 
 #[test]
 fn malformed_worker_reply_is_a_decision_error() {
-    // A "worker" that just echoes garbage — the engine must surface a
-    // DecisionError, not panic or accept it.
-    let engine = LayaEngine::spawn("/bin/cat", Duration::from_secs(10)).expect("cat spawns");
+    // A plain non-worker binary can't even pass `hello` — the spawn
+    // itself rejects it now.
+    assert!(
+        LayaEngine::spawn("/bin/cat", Duration::from_secs(5)).is_err(),
+        "cat must fail the hello handshake"
+    );
+    // One that answers `hello` then echoes garbage on predict: the
+    // engine must surface a DecisionError, not panic or accept it.
+    let dir = std::env::temp_dir().join("dexter-laya-garbage");
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = dir.join("garbage_worker.py");
+    std::fs::write(
+        &stub,
+        r#"import json, sys
+for line in sys.stdin:
+    req = json.loads(line)
+    if req.get("method") == "hello":
+        sys.stdout.write(json.dumps({"id": req["id"], "ok": True,
+            "protocol": 1, "worker": "stub"}) + "\n")
+    else:
+        sys.stdout.write("definitely not a response\n")
+    sys.stdout.flush()
+"#,
+    )
+    .unwrap();
+    let engine = LayaEngine::spawn(
+        &format!("python3 {}", stub.display()),
+        Duration::from_secs(10),
+    )
+    .expect("garbage-on-predict worker spawns");
     let ctx = DecisionContext {
         goal: "g".into(),
         state_digest: "s".into(),
@@ -291,4 +318,55 @@ fn health_reports_ready_for_live_worker_and_down_for_dead() {
         EngineHealth::Down(_) => {}
         other => panic!("dead worker should report Down, got {other:?}"),
     }
+}
+
+#[test]
+fn spawn_rejects_worker_without_protocol_version() {
+    // A pre-versioning worker answers `ok` but carries no `protocol`
+    // field — spawning against it must fail, not proceed silently.
+    let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy_worker.py");
+    let err = LayaEngine::spawn(
+        &format!("python3 {}", stub.display()),
+        Duration::from_secs(10),
+    )
+    .err()
+    .expect("legacy worker must fail the hello handshake");
+    assert!(
+        err.to_string().contains("protocol"),
+        "error should name the protocol mismatch: {err}"
+    );
+}
+
+#[test]
+fn spawn_rejects_worker_declaring_wrong_protocol() {
+    // A worker that explicitly declines the requested version must
+    // fail the spawn with the worker's own message.
+    let dir = std::env::temp_dir().join("dexter-laya-v2");
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = dir.join("v2_worker.py");
+    std::fs::write(
+        &stub,
+        r#"import json, sys
+for line in sys.stdin:
+    req = json.loads(line)
+    if req.get("method") == "hello":
+        sys.stdout.write(json.dumps({"id": req["id"], "ok": False,
+            "error": "protocol 1 not supported (worker speaks 2)"}) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": req["id"], "ok": True,
+            "answers": []}) + "\n")
+    sys.stdout.flush()
+"#,
+    )
+    .unwrap();
+    let err = LayaEngine::spawn(
+        &format!("python3 {}", stub.display()),
+        Duration::from_secs(10),
+    )
+    .err()
+    .expect("v2-only worker must fail the hello handshake");
+    assert!(
+        err.to_string().contains("protocol 1 not supported"),
+        "error should carry the worker's reason: {err}"
+    );
 }

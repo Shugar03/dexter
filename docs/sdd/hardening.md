@@ -222,6 +222,37 @@ stall in `expr_next_candidate`; bounds-filtered fallback + `Rect` in
 `drivers/macos`. Tests: `route_retry_replays_last_action` (engine e2e),
 `expression_repeated_digit_is_not_stalled` (decision sequence).
 
+### W11. Laya protocol versioning + always-on engine probe
+
+Two gaps around the sidecar seam:
+
+- **No protocol negotiation.** A pre-versioning `worker.py` (or the
+  wrong binary entirely) answered `ok` on anything — the engine would
+  run against a stale or incompatible sidecar without ever knowing.
+  Every `(re)spawn` now performs a `hello` handshake
+  (`{"id":0,"method":"hello","params":{"protocol":N}}`); the worker
+  must reply `ok:true` with a matching `protocol`, else the spawn
+  fails with the reason. `predict` requests also carry `"v":1` so a
+  future worker can discriminate. The reply must echo `id:0`; stray
+  lines are skipped inside the deadline (same pairing rule as
+  `rpc_once`).
+- **`dexter doctor` skipped engines entirely without `--engine`.**
+  The probe now always runs — defaulting to `rule-based`, which is
+  what the runtime would actually pick — so `doctor` reports an
+  engine line on every invocation instead of silently omitting it.
+
+**Implemented**: `hello()` + `PROTOCOL_VERSION` + `v` field in
+`crates/laya`; `hello` handling + `PROTOCOL = 1` in
+`workers/laya/worker.py` and the test fixtures; `legacy_worker.py`
+fixture (pre-versioning worker) + `v2` inline fixture; doctor defaults
+the engine probe.
+
+**Tests**: `spawn_rejects_worker_without_protocol_version`,
+`spawn_rejects_worker_declaring_wrong_protocol`,
+`malformed_worker_reply_is_a_decision_error` (cat fails `hello` now —
+the garbage-on-predict path is covered by a purpose-built stub), all
+existing respawn/health tests re-verified through the handshake.
+
 ## Remaining gaps (known, not yet scheduled)
 
 - **Incremental observe** — scoping filters *after* the walk; the
