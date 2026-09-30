@@ -234,8 +234,18 @@ needs depth before the loop produces a real delta.
 | `tab-reveal` | tab → newly spawned goal element (delta signal) |
 | `download-wait` | wait correctly; pressing "Cancelar" is the fail |
 | `admin-absent` | unsatisfiable goal — success = `abstained` |
+| `ocr-canvas` | OCR path — goal element exists only as `source = "ocr"` |
+| `modal-confirm` | 2-step destructive-confirm dialog chain |
+| `field-disabled` | present-but-disabled affordance — success = `abstained` |
+| `cancel-polarity` | negative characterization: polarity-blind object match (`expected = "max_steps"` flips red when the gap closes) |
 | `web-login` | browser: fill→submit on a real DOM (needs `--browser-url`) |
 | `web-checkout` | browser: reveal → pay — hidden-until-acted sections |
+
+`SpecElement.source` (`ocr`/`vision`/`dom`/`accessibility`, default)
+declares which perception layer produced an element — needed so sim
+worlds can model affordances AX cannot see (canvas-rendered buttons).
+The digest renders it as the `[ocr]` provenance tag, so engines see
+where each candidate came from.
 
 ## Measured (first runs)
 
@@ -246,6 +256,10 @@ needs depth before the loop produces a real delta.
 | tab-reveal | completed, 2 | completed, 2 | escalated step 1 |
 | download-wait | completed, 1 | completed, 1 | completed, 1 |
 | admin-absent | abstained (pass) | **max_steps — never stopped** | abstained (pass) |
+| `ocr-canvas` | completed, 1 | — | — |
+| `modal-confirm` | completed, 2 | — | — |
+| `field-disabled` | abstained (pass) | — | — |
+| `cancel-polarity` | max_steps (characterizes polarity gap) | — | — |
 | suite | 100% | 60% | 40% |
 
 `decide_ms` on the real model: p50 ~50ms per step, but p95 **8.4s** on

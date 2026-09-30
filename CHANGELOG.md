@@ -46,6 +46,15 @@
   `"v"` for forward discrimination. `dexter doctor` now always probes
   an engine (`rule-based` by default) instead of skipping the engine
   section without `--engine`.
+- **Scenario dataset expansion** (`datasets/scenarios/`). Four new sim
+  worlds: `ocr-canvas` (goal element only exists as `source = "ocr"`),
+  `modal-confirm` (2-step destructive-confirm dialog), `field-disabled`
+  (present-but-disabled affordance must abstain) and
+  `cancel-polarity` (negative characterization of the generator's
+  polarity blindness — `expected = "max_steps"` flips red when the gap
+  closes). `SpecElement.source` declares the perception layer per
+  element (`ocr`/`vision`/`dom`/`accessibility`); a hermetic test now
+  runs every sim spec in the dataset against its declared outcome.
 
 ### Fixed
 

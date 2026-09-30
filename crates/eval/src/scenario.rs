@@ -6,7 +6,9 @@
 //! engine already writes — success, steps, phase latencies, recoveries —
 //! so this layer adds aggregation, not instrumentation.
 
-use dexter_core::{AppSelector, Element, ElementId, Event, ExpectedState, SemanticTarget};
+use dexter_core::{
+    AppSelector, Element, ElementId, ElementSource, Event, ExpectedState, SemanticTarget,
+};
 use dexter_decision::{CandidateGenerator, Decision, DecisionContext, DecisionEngine};
 use dexter_driver::ComputerDriver;
 use dexter_engine::{Engine, PlanOutcome, RunConfig, TaskConfig, TaskOutcome};
@@ -146,6 +148,12 @@ pub struct SpecElement {
     pub focused: bool,
     #[serde(default)]
     pub actions: Vec<String>,
+    /// Perception layer that produced the element — `ocr`, `vision`,
+    /// `dom`, or `accessibility` (default). Lets sim worlds model
+    /// elements AX can't see (a canvas label found by OCR), which the
+    /// digest renders with an `[ocr]` provenance tag.
+    #[serde(default)]
+    pub source: Option<ElementSource>,
 }
 
 impl SpecElement {
@@ -160,6 +168,7 @@ impl SpecElement {
             enabled: self.enabled,
             focused: self.focused,
             actions: self.actions.clone(),
+            source: self.source.unwrap_or(ElementSource::Accessibility),
             ..Default::default()
         }
     }

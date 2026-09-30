@@ -1,6 +1,7 @@
 //! Task-scenario harness: spec parsing, closed-loop runs, metrics.
 
 use dexter_decision::{HeuristicGenerator, RuleBased};
+use dexter_driver::ComputerDriver;
 use dexter_eval::scenario::*;
 
 const WIZARD: &str = r#"
@@ -360,4 +361,82 @@ fn successful_run_exports_training_rows() {
     let drun = run_scenario(&d, &HeuristicGenerator::default(), &RuleBased::default());
     let (drows, _) = rows_from_events(&drun.events, &d.scenario.id, "sim");
     assert!(drows.iter().any(|r| r.gold_route == Some("wait")));
+}
+
+/// Every sim scenario in the dataset must reach its declared `expected`
+/// outcome under the rule-based engine — the hermetic half of the
+/// `eval scenario --check` gate (live/browser specs need real drivers
+/// and stay CI-only).
+#[test]
+fn sim_dataset_scenarios_reach_expected_outcome() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../datasets/scenarios");
+    let mut ran = 0;
+    for entry in std::fs::read_dir(dir).expect("datasets/scenarios dir") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if name == "baseline.toml" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let s: ScenarioSpec = toml::from_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+        if s.driver() != "sim" {
+            continue;
+        }
+        let run = run_scenario(&s, &HeuristicGenerator::default(), &RuleBased::default());
+        assert_eq!(
+            run.outcome, s.task.expected,
+            "{name}: outcome != expected (steps={})",
+            run.steps
+        );
+        ran += 1;
+    }
+    assert!(ran >= 8, "expected the sim dataset, ran {ran}");
+}
+
+#[test]
+fn spec_parses_element_source() {
+    let s = spec(
+        r#"
+[scenario]
+id = "t"
+goal = "x"
+
+[task]
+done_when = { type = "element_exists", target = {} }
+
+[[world.element]]
+id = 1
+role = "button"
+name = "Jugar"
+source = "ocr"
+
+[[world.element]]
+id = 2
+role = "button"
+name = "Normal"
+"#,
+    );
+    let driver = build_driver(&s);
+    let obs = driver
+        .observe(&dexter_core::ObservationScope::default())
+        .unwrap();
+    let by_name = |n: &str| {
+        obs.elements
+            .iter()
+            .find(|e| e.name.as_deref() == Some(n))
+            .unwrap()
+    };
+    assert_eq!(by_name("Jugar").source, dexter_core::ElementSource::Ocr);
+    assert_eq!(
+        by_name("Normal").source,
+        dexter_core::ElementSource::Accessibility
+    );
+    assert!(
+        obs.digest.contains("[ocr]"),
+        "ocr provenance in digest: {}",
+        obs.digest
+    );
 }
