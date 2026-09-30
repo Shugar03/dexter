@@ -87,8 +87,10 @@ perception degrades to UNCERTAIN, policy outside the model, single
 - Done in `fb2b6f7` (landed directly on main, no PR): goal negation —
   `NEGATORS` flip the next term's polarity ("no guardar" offers
   "Descartar"); `negate-discard.toml` pins it end-to-end.
-- Remaining: cosmetic per-step observe for overlay bounds;
-  `split_whitespace` parse edges; UTF-16 surrogate split in
+- Done in PR #22 (2026-09-30): cosmetic per-step observe for overlay
+  bounds — `run_step` only takes the bounds observe when a live
+  journal sink consumes it.
+- Remaining: `split_whitespace` parse edges; UTF-16 surrogate split in
   `cg_type_text`; AX messaging timeout root-only; `--digest` skips
   truncation warnings; `windows --app bundle:` matches window owner
   name not bundle id; `dexter mcp` builds the driver twice;
