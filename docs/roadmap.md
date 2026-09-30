@@ -18,6 +18,12 @@ perception degrades to UNCERTAIN, policy outside the model, single
 
 ## Fase 1 — close the trust moat (review findings)
 
+- [ ] **CI gate is red on main**: the rule-based decider abstains on the
+  live scenarios `calc-scientific` and `clock-timer` (suite success
+  0.80 < baseline 1.00, failing since the live-eval commit). Fix the
+  decider coverage for those scenarios or repair the scenario specs —
+  until this is green every PR shows red CI. Do NOT relax the baseline
+  to make it pass.
 - [x] Approvals forgeable: pending-request binding for grants — PR #1
 - [ ] Laya NDJSON protocol: `PredictResponse` carries no request id —
   post-timeout stale lines desync the stream. Add ids end-to-end
