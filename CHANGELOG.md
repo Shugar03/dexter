@@ -37,6 +37,21 @@
   unattributable lines are dropped, while id-less `ok:false` lines
   (worker startup failures) still surface honestly. `worker_cmd` is
   shell-split (`shlex`) so quoted paths with spaces work.
+- **`dexter map`/`dexter_map` stranded borrowed focus on error.** A
+  failed post-wake re-observe propagated before `restore()`, leaving
+  the target app frontmost. Restore now runs before `?`.
+- **`Route::Retry` never retried.** The task loop treated it as a bare
+  continue — the "repeat the last action" contract was silently
+  dropped. Retry now replays the last attempt once.
+- **Repeated-digit goals abstained deterministically.** The expression
+  stall check compared the last pressed label against the pending plan
+  step — every consecutive-digit goal ("5 más 22") decayed to prior
+  0.4 → abstain. Only the error signal marks a stall now.
+- **`collect_window` fallback false-scoped single-window apps.** When
+  AX couldn't reach the window subtree, the driver returned the full
+  app element tree with `windows == [win]` — which callers read as
+  natively scoped and skipped their post-filter. The fallback now
+  bounds-filters to the window rect.
 
 ## 0.1.0
 

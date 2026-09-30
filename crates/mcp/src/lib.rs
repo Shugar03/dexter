@@ -327,8 +327,11 @@ impl DexterMcp {
                 if let Ok(h) = driver.wake(&selector) {
                     if h.activated {
                         std::thread::sleep(std::time::Duration::from_millis(800));
-                        obs = driver.observe(&scope).map_err(err)?;
+                        // Restore before propagating — a failed
+                        // re-observe must not strand the borrowed stage.
+                        let re = driver.observe(&scope);
                         driver.restore(&h);
+                        obs = re.map_err(err)?;
                     }
                 }
             }

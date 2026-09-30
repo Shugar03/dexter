@@ -658,21 +658,24 @@ fn expr_next_candidate(
                 .as_deref()
                 .is_some_and(|n| expr_step_matches(step, n))
     })?;
-    // A stalled step (pressed but world didn't move) decays so the
-    // generic path or an abstain can take over.
-    let stalled = pressed.last().is_some_and(|p| expr_step_matches(step, p))
-        || (hist.last_error.is_some()
-            && hist
-                .attempts
-                .last()
-                .and_then(|a| match a {
-                    Action::Click {
-                        target: Target::Semantic(st),
-                        ..
-                    } => st.name.clone(),
-                    _ => None,
-                })
-                .is_some_and(|n| expr_step_matches(step, &n)));
+    // A stalled step (the same press errored on the label we're about
+    // to offer again) decays so the generic path or an abstain can take
+    // over. Only the error signal distinguishes a stall: a raw label
+    // match can't tell "press didn't land" from a legit repeated token
+    // ("22") — comparing pressed.last() to the pending step would decay
+    // every consecutive-digit goal.
+    let stalled = hist.last_error.is_some()
+        && hist
+            .attempts
+            .last()
+            .and_then(|a| match a {
+                Action::Click {
+                    target: Target::Semantic(st),
+                    ..
+                } => st.name.clone(),
+                _ => None,
+            })
+            .is_some_and(|n| expr_step_matches(step, &n));
     Some(CandidateAction {
         action: Action::Click {
             target: element_target(el),

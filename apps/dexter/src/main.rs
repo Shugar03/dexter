@@ -545,11 +545,12 @@ fn run() -> Result<()> {
                     .context("map wake failed")?;
                 if handle.activated {
                     std::thread::sleep(Duration::from_millis(800));
-                    obs = engine
-                        .driver()
-                        .observe(&scope)
-                        .context("map re-observe failed")?;
+                    // Restore focus BEFORE propagating an error — a
+                    // failed re-observe must not strand the borrowed
+                    // stage.
+                    let re = engine.driver().observe(&scope);
                     engine.driver().restore(&handle);
+                    obs = re.context("map re-observe failed")?;
                 }
             }
             let map = dexter_world_model::app_map(&obs);
