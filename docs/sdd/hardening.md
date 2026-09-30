@@ -150,10 +150,23 @@ respawn + retry the request once. Protocol errors (bad JSON,
 the reply is wrong; retrying masks a provider bug. `recv_timeout`
 bounds every read. A crash-loop fails hard after the budget.
 
+Responses are **id-matched**, never positional: every reply echoes the
+request `id`, and a line whose id differs (or is absent) is dropped
+rather than consumed — a timed-out request still queues its late
+reply on the channel, and positional pairing would hand that stale
+line to the *next* request as if it were its own answer. The lone
+exception: an id-less `ok:false` is a global/startup error
+(provider failed to load) attributable to no request — surfaced
+honestly instead of masking it behind a timeout.
+
+`worker_cmd` is shell-split (`shlex`), not `split_whitespace()` —
+quoted paths with spaces reach `Command::new` as one arg.
+
 **Implemented**: `crates/laya` — `is_transport_error` classifier,
-`rpc()` → `rpc_once()` + respawn. Test:
-`dead_worker_is_respawned_and_request_retried` (stub that exits once,
-then serves).
+`rpc()` → `rpc_once()` + respawn, id-matched read loop, `shlex` cmd
+parsing. Tests: `dead_worker_is_respawned_and_request_retried`,
+`stale_response_is_dropped_not_consumed_positionally`,
+`worker_cmd_with_quoted_path_spawns`.
 
 ### W9. `observe` is whole-app only
 
