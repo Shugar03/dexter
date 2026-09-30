@@ -28,6 +28,9 @@ use dexter_core::{Action, Element, MouseButton, Observation, SemanticTarget, Tar
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod openai;
+pub use openai::OpenAiProvider;
+
 /// What the runtime should do next, beyond executing an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

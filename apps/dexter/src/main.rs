@@ -446,8 +446,31 @@ fn build_decider(
                 .with_min_confidence(min_confidence);
             Ok(Box::new(engine))
         }
+        "openai" => {
+            // Any OpenAI-compatible endpoint. Defaults point at
+            // Gemini's compat API with the cheapest flash-lite model —
+            // override via env for other providers.
+            let base = std::env::var("DEXTER_OPENAI_BASE_URL").unwrap_or_else(|_| {
+                "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
+            });
+            let model = engine_path
+                .clone()
+                .or_else(|| std::env::var("DEXTER_OPENAI_MODEL").ok())
+                .unwrap_or_else(|| "gemini-2.5-flash-lite".to_string());
+            let key_env = ["DEXTER_OPENAI_API_KEY", "GEMINI_API_KEY"]
+                .into_iter()
+                .find(|v| std::env::var(v).is_ok())
+                .unwrap_or("GEMINI_API_KEY")
+                .to_string();
+            Ok(Box::new(dexter_decision::OpenAiProvider::new(
+                base,
+                model,
+                key_env,
+                Duration::from_secs(15),
+            )))
+        }
         other => {
-            anyhow::bail!("unknown decision engine '{other}' — available: rule-based, laya")
+            anyhow::bail!("unknown decision engine '{other}' — available: rule-based, laya, openai")
         }
     }
 }
