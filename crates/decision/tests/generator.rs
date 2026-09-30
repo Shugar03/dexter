@@ -469,3 +469,65 @@ fn wrong_polarity_only_world_abstains() {
     let cands = gen().generate(&o, "save the draft", &empty());
     assert!(cands.is_empty(), "{cands:?}");
 }
+
+#[test]
+fn negated_goal_term_flips_polarity() {
+    // "no guardar" wants the opposite: Descartar is offered, Guardar
+    // is vetoed — the antonym of a negated term becomes a wanted term.
+    let o = obs(vec![
+        el(1, "button", "Guardar borrador", &["press"]),
+        el(2, "button", "Descartar borrador", &["press"]),
+    ]);
+    let cands = gen().generate(&o, "no guardar el borrador", &empty());
+    assert!(
+        cands.iter().any(|c| matches!(
+            &c.action,
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            } if st.name.as_deref() == Some("Descartar borrador")
+        )),
+        "{cands:?}"
+    );
+    assert!(
+        !cands.iter().any(|c| matches!(
+            &c.action,
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            } if st.name.as_deref() == Some("Guardar borrador")
+        )),
+        "the negated act must not be offered: {cands:?}"
+    );
+}
+
+#[test]
+fn english_contraction_negates_next_term() {
+    // "don't close" tokenizes as don+t → "close" negated → its
+    // antonym "open" becomes the wanted act.
+    let o = obs(vec![
+        el(1, "button", "Close window", &["press"]),
+        el(2, "button", "Open window", &["press"]),
+    ]);
+    let cands = gen().generate(&o, "don't close the window", &empty());
+    assert!(
+        cands.iter().any(|c| matches!(
+            &c.action,
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            } if st.name.as_deref() == Some("Open window")
+        )),
+        "{cands:?}"
+    );
+    assert!(
+        !cands.iter().any(|c| matches!(
+            &c.action,
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            } if st.name.as_deref() == Some("Close window")
+        )),
+        "{cands:?}"
+    );
+}

@@ -248,6 +248,13 @@ const ANTONYMS: &[(&str, &str)] = &[
     ("start", "stop"),
 ];
 
+/// Negation markers (es + en, incl. post-split contractions: "don't"
+/// tokenizes as "don"+"t"). A marker flips the NEXT term's polarity.
+const NEGATORS: &[&str] = &[
+    "no", "not", "never", "nunca", "jamas", "jamás", "sin", "don", "dont", "cant", "cannot",
+    "wont", "shouldnt", "wouldnt", "couldnt", "doesnt", "didnt",
+];
+
 /// Does `term` have a known opposite, and does the label offer THAT?
 fn offers_opposite(label: &str, term: &str) -> bool {
     ANTONYMS.iter().any(|(a, b)| {
@@ -739,6 +746,9 @@ struct GoalParse {
     verbs: Vec<String>,
     objects: Vec<String>,
     quoted: Option<String>,
+    /// Terms a negator precedes ("no guardar", "don't close") — the
+    /// goal wants their OPPOSITE polarity.
+    negated: Vec<String>,
 }
 
 fn parse_goal(goal: &str) -> GoalParse {
@@ -782,6 +792,7 @@ fn parse_goal(goal: &str) -> GoalParse {
     // consumed phrase and again standalone later ("log in to check the
     // log") silently lost its second occurrence.
     let mut start = None;
+    let mut negate_next = false;
     for (i, c) in lower
         .char_indices()
         .chain(std::iter::once((lower.len(), ' ')))
@@ -793,10 +804,25 @@ fn parse_goal(goal: &str) -> GoalParse {
             if consumed[s] {
                 continue;
             }
+            if NEGATORS.contains(&w) {
+                negate_next = true;
+                continue;
+            }
+            // The flag is consumed only by the next real TERM —
+            // noise between marker and term ("don't" splitting to
+            // "don"+"t", or a stopword) must not eat it.
             if PRESS_VERBS.contains(&w) || EDIT_VERBS.contains(&w) {
-                gp.verbs.push(w.to_string());
+                if std::mem::take(&mut negate_next) {
+                    gp.negated.push(w.to_string());
+                } else {
+                    gp.verbs.push(w.to_string());
+                }
             } else if w.len() >= 2 && !STOPWORDS.contains(&w) {
-                gp.objects.push(w.to_string());
+                if std::mem::take(&mut negate_next) {
+                    gp.negated.push(w.to_string());
+                } else {
+                    gp.objects.push(w.to_string());
+                }
             }
         }
     }
@@ -927,6 +953,27 @@ impl CandidateGenerator for HeuristicGenerator {
         };
         let want_edit = gp.verbs.iter().any(|v| EDIT_VERBS.contains(&v.as_str()));
 
+        // Negated terms invert polarity: their antonyms become wanted
+        // terms, and the terms themselves veto their own labels —
+        // "no guardar" wants "Descartar" and must never press
+        // "Guardar".
+        let mut terms = terms;
+        let mut veto_terms: Vec<&str> = Vec::new();
+        for t in &gp.negated {
+            veto_terms.push(t.as_str());
+            if let Some(opp) = ANTONYMS.iter().find_map(|(a, b)| {
+                if t == a {
+                    Some(*b)
+                } else if t == b {
+                    Some(*a)
+                } else {
+                    None
+                }
+            }) {
+                terms.push(opp);
+            }
+        }
+
         let mut out: Vec<CandidateAction> = Vec::new();
         for el in &obs.elements {
             if el.enabled == Some(false) {
@@ -939,14 +986,15 @@ impl CandidateGenerator for HeuristicGenerator {
             }
             let label = el.label().unwrap_or("").to_lowercase();
             let matched = terms.iter().filter(|t| term_matches(&label, t)).count();
-            // Polarity veto: a label matching the ANTONYM of a goal
-            // term (and not the term itself) is the opposite act, not
-            // a near-miss — offering it would press the wrong side.
-            // A goal carrying both polarities vetoes everything and
-            // honestly abstains.
-            if terms
-                .iter()
-                .any(|t| !term_matches(&label, t) && offers_opposite(&label, t))
+            // Polarity veto: a label matching a NEGATED term, or the
+            // ANTONYM of a wanted term (without matching the term
+            // itself), is the opposite act — offering it would press
+            // the wrong side. A goal carrying both polarities vetoes
+            // everything and honestly abstains.
+            if veto_terms.iter().any(|vt| term_matches(&label, vt))
+                || terms
+                    .iter()
+                    .any(|t| !term_matches(&label, t) && offers_opposite(&label, t))
             {
                 continue;
             }

@@ -17,7 +17,7 @@ Measured on Linux @ `main` (2026-09-30):
 | scenario | outcome | steps | over-opt | decide p50/p95 ms | recoveries | phys |
 |---|---|---|---|---|---|---|
 | admin-absent | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
-| cancel-polarity | max_steps | 1.0 | 1.0 | 0/0 | 0 | 0 |
+| cancel-polarity | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
 | download-wait | completed | 1.0 | 0.0 | 0/0 | 0 | 0 |
 | field-disabled | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
 | files-open-dialog | completed | 2.0 | 0.0 | 0/0 | 0 | 0 |
@@ -31,8 +31,8 @@ Measured on Linux @ `main` (2026-09-30):
 **55/55 runs — success rate 100%, worst decide p95 0ms, physical acts
 0.** `steps` is the rep mean; `over-opt` is mean steps over the
 declared optimum on successful reps (only where `optimal_steps` is
-set). `cancel-polarity` is a characterization scenario: its expected
-outcome is the one-step failure — see its spec header.
+set). `cancel-polarity` abstains by design since the polarity veto —
+see its spec header.
 
 ## Live suite (macOS gate)
 
@@ -54,9 +54,9 @@ otherwise — they keep the suite hermetic rather than pretending.
 
 - **Outcome ≠ success**: `abstained` is a pass where the world
   offers no honest act (`admin-absent`, `field-disabled`,
-  `ocr-label-only`); `max_steps` is the expected outcome of the
-  polarity characterization. The suite gate checks `outcome ==
-  expected`, not "did it click something".
+  `ocr-label-only`, `cancel-polarity` — only the wrong-polarity label
+  exists, so abstaining is the pass). The suite gate checks `outcome
+  == expected`, not "did it click something".
 - **physical acts** counts coordinate-mechanism acts only — every
   act in this suite is semantic, as designed.
 - **decide p95** is the engine-latency bound that matters for real

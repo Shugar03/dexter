@@ -48,6 +48,10 @@ max_mean_steps = 1.0
 min_success = 1.0
 max_mean_steps = 3.0
 
+[scenario.negate-discard]
+min_success = 1.0
+max_mean_steps = 1.0
+
 [scenario.ocr-label-only]
 min_success = 1.0
 max_mean_steps = 1.0

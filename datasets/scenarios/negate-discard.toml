@@ -1,0 +1,35 @@
+# negate-discard — negated goal polarity end-to-end: "no guardar el
+# borrador" must press "Descartar borrador" and never "Guardar
+# borrador". The negator flips "guardar" to the veto side and pulls
+# its antonym "descartar" into the wanted terms.
+[scenario]
+id = "negate-discard"
+goal = "no guardar el borrador"
+optimal_steps = 1
+app = "Editor"
+
+[task]
+done_when = { type = "element_absent", target = { name_contains = "Descartar" } }
+expected = "completed"
+max_steps = 3
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Editor de texto"
+
+[[world.element]]
+id = 2
+role = "button"
+name = "Guardar borrador"
+actions = ["press"]
+
+[[world.element]]
+id = 3
+role = "button"
+name = "Descartar borrador"
+actions = ["press"]
+
+[[world.rule]]
+when = { name = "Descartar borrador" }
+effect = { type = "remove_self" }
