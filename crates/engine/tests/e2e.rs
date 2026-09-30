@@ -702,3 +702,109 @@ fn run_plan_auto_complete_requires_world_change() {
         other => panic!("expected Failed (world never changed), got {other:?}"),
     }
 }
+
+/// Wraps the sim world and counts `observe` calls — observes are not
+/// free (a full AX walk live, a tick advance in sim).
+struct CountingDriver {
+    inner: SimDriver,
+    observes: std::sync::atomic::AtomicUsize,
+}
+
+impl dexter_driver::ComputerDriver for CountingDriver {
+    fn capabilities(&self) -> dexter_driver::DriverCapabilities {
+        self.inner.capabilities()
+    }
+    fn windows(&self) -> Result<Vec<Window>, dexter_driver::DriverError> {
+        self.inner.windows()
+    }
+    fn observe(&self, scope: &ObservationScope) -> Result<Observation, dexter_driver::DriverError> {
+        self.observes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.observe(scope)
+    }
+    fn act(
+        &self,
+        action: &Action,
+        ctx: &dexter_driver::ActContext,
+    ) -> Result<ActionResult, dexter_driver::DriverError> {
+        self.inner.act(action, ctx)
+    }
+}
+
+fn counting_engine() -> Engine<CountingDriver> {
+    let mut btn = el(1, "button", "Guardar");
+    btn.bounds = Some(Rect {
+        x: 10.0,
+        y: 20.0,
+        w: 80.0,
+        h: 24.0,
+    });
+    let driver = CountingDriver {
+        inner: SimDriver::new(vec![btn]),
+        observes: Default::default(),
+    };
+    Engine::new(driver, allow_all(), Duration::from_secs(60))
+}
+
+fn click_guardar() -> Step {
+    Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                name: Some("Guardar".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+        },
+        expect: None,
+        max_attempts: None,
+        app: None,
+    }
+}
+
+fn proposed_bounds<D: dexter_driver::ComputerDriver>(engine: &Engine<D>) -> serde_json::Value {
+    engine
+        .events()
+        .iter()
+        .find(|e| e.kind == EventKind::ActionProposed)
+        .expect("ActionProposed")
+        .data["target_bounds"]
+        .clone()
+}
+
+#[test]
+fn run_step_without_live_sink_skips_cosmetic_observe() {
+    // No presence consumer → no bounds observe: the act is the only
+    // driver call for an unverified step.
+    let mut engine = counting_engine();
+    assert!(engine.run_step(&click_guardar(), &cfg()).done());
+    let observes = engine
+        .driver()
+        .observes
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(observes, 0, "no consumer for target_bounds");
+    assert!(proposed_bounds(&engine).is_null());
+}
+
+#[test]
+fn run_step_with_live_sink_journals_target_bounds() {
+    let path = std::env::temp_dir().join(format!(
+        "dexter-e2e-sink-{}-{:?}.jsonl",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let mut engine = counting_engine();
+    engine.set_journal_sink(&path).unwrap();
+    assert!(engine.run_step(&click_guardar(), &cfg()).done());
+    let observes = engine
+        .driver()
+        .observes
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(observes, 1, "one cosmetic observe for the overlay");
+    let b = proposed_bounds(&engine);
+    assert_eq!(b["x"], 10.0);
+    assert_eq!(b["w"], 80.0);
+    let streamed = std::fs::read_to_string(&path).unwrap();
+    assert!(streamed.contains("\"target_bounds\":{"), "{streamed}");
+    let _ = std::fs::remove_file(&path);
+}
