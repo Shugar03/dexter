@@ -315,3 +315,24 @@ fn digest_marks_ocr_elements() {
     assert!(d.contains("[ocr] text \"Save document\""), "{d}");
     assert!(!d.contains("[ocr] button"), "{d}");
 }
+
+#[test]
+fn empty_semantic_target_is_invalid_not_wildcard() {
+    // All-None constraints match every element — resolving one would
+    // act on a wildcard the caller never meant.
+    let o = obs(vec![el(1, "AXButton", Some("Save"), 0)]);
+    let err = resolve_element(&o, &Target::Semantic(SemanticTarget::default()))
+        .expect_err("empty target must not resolve");
+    assert!(matches!(err, DexterError::InvalidInput(_)), "{err:?}");
+
+    // An index alone is still no constraint.
+    let err = resolve_element(
+        &o,
+        &Target::Semantic(SemanticTarget {
+            index: Some(0),
+            ..Default::default()
+        }),
+    )
+    .expect_err("index-only target must not resolve");
+    assert!(matches!(err, DexterError::InvalidInput(_)), "{err:?}");
+}

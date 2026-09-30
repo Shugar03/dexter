@@ -72,14 +72,15 @@ perception degrades to UNCERTAIN, policy outside the model, single
 
 ## Cleanup backlog (low severity, pick when convenient)
 
-- `is_editable` misses `secure_text_field`; `parse_goal`
-  first-occurrence find bug; no index-qualified candidates (ambiguous
-  labels unresolvable); `max_empty_steps` dead field; cosmetic per-step
-  observe for overlay bounds; parse edges (`split_whitespace`,
-  `AppSelector` '.', `token_rect` div-zero, empty `SemanticTarget`
-  wildcard); UTF-16 surrogate split in `cg_type_text`; MSRV 1.85 vs
-  `is_multiple_of` (needs 1.87); AX messaging timeout root-only;
-  `--digest` skips truncation warnings; `windows --app bundle:` matches
-  window owner name not bundle id; `dexter mcp` builds the driver
-  twice; aria-hidden elements in browser walker; primary-monitor-only
-  bounds; `pid_for_bundle` no ambiguity check.
+- Done in PR #TBD: `secure_text_field` editable, `parse_goal` real
+  word offsets, `max_empty_steps` dead field removed, `AppSelector`
+  bundle-id shape, `token_rect` → `Option` on degenerate windows,
+  empty `SemanticTarget` → `InvalidInput`, MSRV bumped to 1.87
+  (`is_multiple_of` was already in use, stabilized there), browser walker skips `aria-hidden` subtrees.
+- Remaining: no index-qualified candidates (ambiguous labels
+  unresolvable); cosmetic per-step observe for overlay bounds;
+  `split_whitespace` parse edges; UTF-16 surrogate split in
+  `cg_type_text`; AX messaging timeout root-only; `--digest` skips
+  truncation warnings; `windows --app bundle:` matches window owner
+  name not bundle id; `dexter mcp` builds the driver twice;
+  primary-monitor-only bounds; `pid_for_bundle` no ambiguity check.

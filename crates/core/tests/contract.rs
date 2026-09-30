@@ -187,3 +187,22 @@ fn uncertain_verification_is_not_success() {
     assert_eq!(v.status, VerificationStatus::Uncertain);
     assert_ne!(v.status, VerificationStatus::Verified);
 }
+
+#[test]
+fn app_selector_parse_distinguishes_names_from_bundle_ids() {
+    use dexter_core::AppSelector;
+    assert_eq!(AppSelector::parse("4242"), AppSelector::Pid(4242));
+    assert_eq!(
+        AppSelector::parse("com.apple.TextEdit"),
+        AppSelector::BundleId("com.apple.TextEdit".into())
+    );
+    // Dotted display names are names, not bundle ids.
+    assert_eq!(
+        AppSelector::parse("TextEdit 1.2"),
+        AppSelector::Name("TextEdit 1.2".into())
+    );
+    assert_eq!(
+        AppSelector::parse("My App.v2"),
+        AppSelector::Name("My App.v2".into())
+    );
+}

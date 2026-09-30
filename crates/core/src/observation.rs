@@ -20,17 +20,27 @@ pub enum AppSelector {
 }
 
 impl AppSelector {
-    /// Parse a CLI `--app` value: digits -> pid, contains `.` -> bundle id,
-    /// otherwise a name.
+    /// Parse a CLI `--app` value: digits -> pid, bundle-id-shaped ->
+    /// bundle id, otherwise a name.
     pub fn parse(s: &str) -> Self {
         if let Ok(pid) = s.parse::<i32>() {
             Self::Pid(pid)
-        } else if s.contains('.') {
+        } else if looks_like_bundle_id(s) {
             Self::BundleId(s.to_string())
         } else {
             Self::Name(s.to_string())
         }
     }
+}
+
+/// `com.foo.Bar`: non-empty dot-separated segments of alphanumerics and
+/// dashes — keeps display names that happen to contain a dot
+/// ("TextEdit 1.2") from being misread as bundle ids.
+fn looks_like_bundle_id(s: &str) -> bool {
+    s.contains('.')
+        && s.split('.').all(|seg| {
+            !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
 }
 
 /// What an [`crate::Observation`] should capture.

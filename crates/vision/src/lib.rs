@@ -85,18 +85,23 @@ pub fn png_dimensions(png: &[u8]) -> Option<(u32, u32)> {
 /// `img_*_px` is the captured image size in physical pixels and `window` is
 /// the captured region's screen bounds in points — on a Retina display the
 /// image is typically `2x` the point size, which is why both are needed.
-pub fn token_rect(token: &NormRect, img_w_px: u32, img_h_px: u32, window: &Rect) -> Rect {
+pub fn token_rect(token: &NormRect, img_w_px: u32, img_h_px: u32, window: &Rect) -> Option<Rect> {
+    // A degenerate window extent can't anchor a mapping — division by
+    // zero would emit NaN bounds that look like real coordinates.
+    if window.w <= 0.0 || window.h <= 0.0 {
+        return None;
+    }
     let px_per_pt_x = f64::from(img_w_px) / window.w;
     let px_per_pt_y = f64::from(img_h_px) / window.h;
     // Flip the vertical axis: Vision y grows up from the image bottom.
     // Bounds are rounded — sub-point precision is noise for targeting.
     let top_norm = 1.0 - token.y - token.h;
-    Rect {
+    Some(Rect {
         x: (window.x + token.x * f64::from(img_w_px) / px_per_pt_x).round(),
         y: (window.y + top_norm * f64::from(img_h_px) / px_per_pt_y).round(),
         w: (token.w * f64::from(img_w_px) / px_per_pt_x).round(),
         h: (token.h * f64::from(img_h_px) / px_per_pt_y).round(),
-    }
+    })
 }
 
 /// Turn OCR tokens into Dexter elements scoped to `window`.
@@ -121,7 +126,7 @@ pub fn tokens_to_elements(
             role: Some("text".into()),
             raw_role: Some("ocr".into()),
             name: Some(t.text.clone()),
-            bounds: Some(token_rect(&t.bounds, img_w_px, img_h_px, window)),
+            bounds: token_rect(&t.bounds, img_w_px, img_h_px, window),
             source: ElementSource::Ocr,
             ..Element::default()
         })
@@ -152,7 +157,8 @@ mod tests {
             800,
             600,
             &WIN,
-        );
+        )
+        .expect("mapped");
         // x: 100 + 0.25*800 = 300
         assert_eq!(r.x, 300.0);
         // y: 200 + (1 - 0.5 - 0.25)*600 = 350
@@ -188,7 +194,21 @@ mod tests {
             1200,
             &WIN,
         );
-        assert_eq!(r, WIN);
+        assert_eq!(r, Some(WIN));
+    }
+
+    #[test]
+    fn token_rect_rejects_degenerate_window() {
+        // Zero-size window: no point-space to map into — None, never
+        // NaN bounds masquerading as coordinates.
+        let zero = Rect { w: 0.0, ..WIN };
+        let norm = NormRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+        };
+        assert_eq!(token_rect(&norm, 800, 600, &zero), None);
     }
 
     #[test]

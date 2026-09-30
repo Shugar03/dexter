@@ -354,3 +354,39 @@ fn bare_verb_label_does_not_beat_specific_object_match() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn phrase_consumption_uses_real_word_offsets() {
+    // "proceed to checkout" consumes bytes 0..19; the standalone
+    // "check" later must not be swallowed — the old first-occurrence
+    // find() anchored "check" inside "checkout" and dropped the verb.
+    let o = obs(vec![
+        el(1, "button", "Check", &["press"]),
+        el(2, "button", "Box", &["press"]),
+    ]);
+    let cands = gen().generate(&o, "proceed to checkout, check the box", &empty());
+    assert!(
+        cands.iter().any(|c| matches!(
+            &c.action,
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            } if st.name.as_deref() == Some("Check")
+        )),
+        "expected a click on the standalone 'check' target, got {cands:?}"
+    );
+}
+
+#[test]
+fn secure_field_is_editable_by_role() {
+    // AX secure fields expose their role; driver action lists vary —
+    // the role alone must be enough to offer an edit.
+    let o = obs(vec![el(1, "secure_text_field", "Password", &[])]);
+    let cands = gen().generate(&o, "enter 'hunter2' in the password field", &empty());
+    assert!(
+        cands
+            .iter()
+            .any(|c| matches!(&c.action, Action::SetValue { .. } | Action::TypeText { .. })),
+        "expected an edit candidate on the secure field, got {cands:?}"
+    );
+}

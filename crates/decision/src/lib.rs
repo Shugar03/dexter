@@ -738,18 +738,27 @@ fn parse_goal(goal: &str) -> GoalParse {
             }
         }
     }
-    for w in lower.split(|c: char| !c.is_alphanumeric()) {
-        if w.is_empty() {
-            continue;
-        }
-        let pos = lower.find(w).unwrap_or(0);
-        if consumed[pos] {
-            continue;
-        }
-        if PRESS_VERBS.contains(&w) || EDIT_VERBS.contains(&w) {
-            gp.verbs.push(w.to_string());
-        } else if w.len() >= 2 && !STOPWORDS.contains(&w) {
-            gp.objects.push(w.to_string());
+    // Word scan with real byte offsets — `find(w)` would anchor every
+    // occurrence to the FIRST one, so a word that appears inside a
+    // consumed phrase and again standalone later ("log in to check the
+    // log") silently lost its second occurrence.
+    let mut start = None;
+    for (i, c) in lower
+        .char_indices()
+        .chain(std::iter::once((lower.len(), ' ')))
+    {
+        if c.is_alphanumeric() {
+            start.get_or_insert(i);
+        } else if let Some(s) = start.take() {
+            let w = &lower[s..i];
+            if consumed[s] {
+                continue;
+            }
+            if PRESS_VERBS.contains(&w) || EDIT_VERBS.contains(&w) {
+                gp.verbs.push(w.to_string());
+            } else if w.len() >= 2 && !STOPWORDS.contains(&w) {
+                gp.objects.push(w.to_string());
+            }
         }
     }
     gp
@@ -803,7 +812,14 @@ fn is_editable(el: &Element) -> bool {
     el.actions.iter().any(|a| a == "set_value" || a == "focus")
         || matches!(
             el.role.as_deref(),
-            Some("text_field" | "text_area" | "combo_box" | "slider" | "search_field")
+            Some(
+                "text_field"
+                    | "text_area"
+                    | "combo_box"
+                    | "slider"
+                    | "search_field"
+                    | "secure_text_field",
+            )
         )
 }
 
@@ -1029,8 +1045,6 @@ impl CandidateGenerator for HeuristicGenerator {
 /// after an error. Ships with the runtime so `run_task` works with zero
 /// model dependencies.
 pub struct RuleBased {
-    /// Escalate after this many consecutive steps with no candidates.
-    pub max_empty_steps: u32,
     /// Minimum prior for the top candidate to be executed.
     pub act_threshold: f32,
 }
@@ -1038,7 +1052,6 @@ pub struct RuleBased {
 impl Default for RuleBased {
     fn default() -> Self {
         Self {
-            max_empty_steps: 3,
             act_threshold: 0.65,
         }
     }
