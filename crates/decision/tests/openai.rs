@@ -59,8 +59,27 @@ fn stub_server_status(status: u16, body: &'static str) -> String {
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
         if let Some(Ok(mut stream)) = listener.incoming().next() {
-            let mut buf = [0u8; 8192];
-            let _ = stream.read(&mut buf);
+            // Read the full request before answering — replying after a
+            // single partial read and closing can reset the connection
+            // on some platforms; the client then sees a transport error
+            // instead of the status under test.
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf);
+                if let Some(len) = content_length(&text) {
+                    if let Some(pos) = text.find("\r\n\r\n") {
+                        if text.len() >= pos + 4 + len {
+                            break;
+                        }
+                    }
+                }
+            }
             let resp = format!(
                 "HTTP/1.1 {status} ERR\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len(),

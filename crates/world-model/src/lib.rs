@@ -35,7 +35,13 @@ pub fn normalize_ax_role(raw: &str) -> String {
 
 /// Elements matching every present field of `target`, in tree order.
 pub fn find_elements<'o>(obs: &'o Observation, target: &SemanticTarget) -> Vec<&'o Element> {
-    obs.elements
+    find_elements_in(&obs.elements, target)
+}
+
+/// Slice form of [`find_elements`] — same matching semantics, for
+/// callers holding bare element lists.
+pub fn find_elements_in<'o>(elements: &'o [Element], target: &SemanticTarget) -> Vec<&'o Element> {
+    elements
         .iter()
         .filter(|e| matches_target(e, target))
         .collect()

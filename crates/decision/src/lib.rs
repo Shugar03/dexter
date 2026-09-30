@@ -24,6 +24,8 @@
 //!   engines (Laya) express themselves through; the engine-internal
 //!   `decide()` call stays opaque.
 
+use dexter_world_model::find_elements_in;
+
 use dexter_core::{Action, Element, MouseButton, Observation, SemanticTarget, Target};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -681,7 +683,7 @@ fn expr_next_candidate(
             .is_some_and(|n| expr_step_matches(step, &n));
     Some(CandidateAction {
         action: Action::Click {
-            target: element_target(el),
+            target: element_target(el, &obs.elements),
             button: MouseButton::Left,
         },
         rationale: format!(
@@ -840,17 +842,28 @@ fn is_pressable(el: &Element) -> bool {
 }
 
 /// The target Dexter would pass to an action on this element.
-fn element_target(el: &Element) -> Target {
-    Target::Semantic(SemanticTarget {
+/// `{role, name}` alone is ambiguous whenever a sibling shares the
+/// label — resolve would then fail closed on every offer. Qualify
+/// with the element's position among matches (tree order, same
+/// semantics the resolver uses) so it lands as a single hit.
+fn element_target(el: &Element, elements: &[Element]) -> Target {
+    let mut t = SemanticTarget {
         role: el.role.clone(),
         name: el.name.clone(),
         ..Default::default()
-    })
+    };
+    if !t.is_unconstrained() {
+        let matches = find_elements_in(elements, &t);
+        if matches.len() > 1 {
+            t.index = matches.iter().position(|e| e.id == el.id);
+        }
+    }
+    Target::Semantic(t)
 }
 
 /// Does `attempted` already contain an action on this same element?
-fn already_tried(el: &Element, attempts: &[Action]) -> bool {
-    let wanted = element_target(el);
+fn already_tried(el: &Element, elements: &[Element], attempts: &[Action]) -> bool {
+    let wanted = element_target(el, elements);
     attempts.iter().any(|a| match a {
         Action::Click { target, .. }
         | Action::Focus { target }
@@ -901,10 +914,10 @@ impl CandidateGenerator for HeuristicGenerator {
                     let action = match &gp.quoted {
                         Some(text) => Action::TypeText {
                             text: text.clone(),
-                            target: Some(element_target(el)),
+                            target: Some(element_target(el, &obs.elements)),
                         },
                         None => Action::Focus {
-                            target: element_target(el),
+                            target: element_target(el, &obs.elements),
                         },
                     };
                     out.push(CandidateAction {
@@ -972,11 +985,11 @@ impl CandidateGenerator for HeuristicGenerator {
                     prior += 0.15;
                 }
             }
-            if already_tried(el, &hist.attempts) {
+            if already_tried(el, &obs.elements, &hist.attempts) {
                 prior *= 0.35;
             }
             let prior = prior.min(1.0);
-            let target = element_target(el);
+            let target = element_target(el, &obs.elements);
             let role = el.role.as_deref().unwrap_or("?");
             let name = el.label().unwrap_or("?");
             let base = format!(

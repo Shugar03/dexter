@@ -72,13 +72,12 @@ perception degrades to UNCERTAIN, policy outside the model, single
 
 ## Cleanup backlog (low severity, pick when convenient)
 
-- Done in PR #TBD: `secure_text_field` editable, `parse_goal` real
+- Done in PR #16: `secure_text_field` editable, `parse_goal` real
   word offsets, `max_empty_steps` dead field removed, `AppSelector`
   bundle-id shape, `token_rect` → `Option` on degenerate windows,
   empty `SemanticTarget` → `InvalidInput`, MSRV bumped to 1.87
   (`is_multiple_of` was already in use, stabilized there), browser walker skips `aria-hidden` subtrees.
-- Remaining: no index-qualified candidates (ambiguous labels
-  unresolvable); cosmetic per-step observe for overlay bounds;
+- Remaining: cosmetic per-step observe for overlay bounds;
   `split_whitespace` parse edges; UTF-16 surrogate split in
   `cg_type_text`; AX messaging timeout root-only; `--digest` skips
   truncation warnings; `windows --app bundle:` matches window owner

@@ -84,6 +84,12 @@
   browser walker skips `aria-hidden` subtrees; workspace MSRV is now
   honestly `1.87` (the code already used `is_multiple_of`, stabilized
   in that release).
+- **Index-qualified generated targets.** When several elements share a
+  label, the generator's `{role, name}` target could never resolve —
+  the resolver failed closed as Ambiguous on every offer. Generated
+  targets now carry `SemanticTarget.index` (position among matches in
+  tree order, via `world_model::find_elements_in` — the same matching
+  semantics the resolver uses), so duplicate labels are resolvable.
 
 ### Fixed
 
