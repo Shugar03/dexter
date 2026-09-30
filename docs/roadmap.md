@@ -18,42 +18,27 @@ perception degrades to UNCERTAIN, policy outside the model, single
 
 ## Fase 1 — close the trust moat (review findings)
 
-- [ ] **CI gate is red on main**: the rule-based decider abstains on the
-  live scenarios `calc-scientific` and `clock-timer` (suite success
-  0.80 < baseline 1.00, failing since the live-eval commit). Fix the
-  decider coverage for those scenarios or repair the scenario specs —
-  until this is green every PR shows red CI. Do NOT relax the baseline
-  to make it pass.
+- [x] CI gate red — live scenarios pinned to es-ES per app
+  (`AppleLanguages` defaults + `open --args` launch pin) — PR #3,
+  2026-09-30 (suite 100%, `clock-timer` 2/2 steps)
 - [x] Approvals forgeable: pending-request binding for grants — PR #1
-- [ ] Laya NDJSON protocol: `PredictResponse` carries no request id —
-  post-timeout stale lines desync the stream. Add ids end-to-end
-  (`LayaClient` ↔ `workers/laya/worker.py`), drop stale responses.
-  Also `worker_cmd.split_whitespace()` breaks paths with spaces.
-- [ ] Driver hardening:
-  - `drivers/browser` walker emits `el.value` for `type=password`
-    inputs into observations/digest/journal — redact like macOS
-    `is_sensitive_role`.
-  - `Action::Navigate` runs `open <url>` without flag-injection guard
-    (`-a App` smuggling) — validate/prepend `--`.
-  - `drivers/sim` untargeted `Scroll` is not gated on
-    `allow_coordinates` — same gate as macOS Key/untargeted-Scroll.
-- [ ] Engine/CLI correctness:
-  - `dexter_map` (MCP + CLI `map`) skips `driver.restore` when the
-    re-observe errors (`?` before restore) — stolen focus.
-  - `Route::Retry | Route::Reobserve` are silent no-ops in the closed
-    loop — implement or fail honestly.
-  - `expr_next_candidate` stalled detection misfires on repeated-digit
-    expressions ("22") — tighten the stalled flag.
-  - `scope_to_window` on single-window apps produces false scoping.
+- [x] Laya NDJSON protocol desync (id-matched responses, shlex-split
+  `worker_cmd`) — PR #5
+- [x] Driver hardening (password-value redaction, `open --` Navigate,
+  sim scroll gate) — PR #6
+- [x] Engine/CLI correctness (map restore-before-error, `Route::Retry`
+  replay, repeated-digit stall fix, `collect_window` fallback
+  bounds-filter) — PR #7
 
 ## Fase 2 — real decision layer (`DecisionProvider`)
 
-- [ ] Trait `DecisionProvider` in Rust replacing the ad-hoc laya
-  protocol as the supported seam: `decide(observation, goal) ->
-  Decision`. Providers: `stub`/`sim` (deterministic, tests),
-  `http-openai-compatible`, `gemini`.
-- [ ] Gemini provider using `GEMINI_API_KEY` (user secret) — default
-  model the cheapest flash-lite variant available; minimal spend.
+- [x] `OpenAiProvider` behind the existing `DecisionEngine` trait —
+  works with any OpenAI-compatible endpoint; Gemini reached via its
+  `v1beta/openai` compat API — PR #TBD, 2026-09-30
+- [x] Gemini provider = `OpenAiProvider` defaults: `GEMINI_API_KEY`,
+  `gemini-2.5-flash-lite` (cheapest flash-lite tier); prompts bounded
+  (≤8 candidates, ≤1500-char digest, 150 max_tokens, temperature 0) —
+  same PR
 - [ ] Worker protocol versioning + laya health endpoint
   (`dexter doctor --engine` coverage is partial today).
 

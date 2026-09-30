@@ -27,6 +27,19 @@
   `grants` lists); the agent-facing path is `Engine::approve_pending`,
   which returns whether the request existed.
 
+### Added
+
+- **`OpenAiProvider` — model-backed decision engine over any
+  OpenAI-compatible endpoint** (`--engine openai`). The model may only
+  pick an index from the generated candidate list or take a route —
+  incoherent replies (bad JSON, out-of-range index, unknown route)
+  decay to `Abstain`, never an invented action. Transport/config
+  failures stay honest engine errors. Defaults point at Gemini's
+  `v1beta/openai` compat API with `gemini-2.5-flash-lite` and
+  `GEMINI_API_KEY`; prompts are bounded (≤8 candidates, ≤1500-char
+  digest, 150 completion tokens, temperature 0). Docs:
+  `docs/sdd/decision.md`.
+
 ### Fixed
 
 - **Laya worker protocol desync.** Responses were paired positionally:
