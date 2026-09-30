@@ -43,3 +43,11 @@ max_mean_steps = 1.0
 [scenario.cancel-polarity]
 min_success = 1.0
 max_mean_steps = 1.0
+
+[scenario.form-fill]
+min_success = 1.0
+max_mean_steps = 3.0
+
+[scenario.ocr-label-only]
+min_success = 1.0
+max_mean_steps = 1.0

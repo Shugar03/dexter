@@ -52,7 +52,11 @@ perception degrades to UNCERTAIN, policy outside the model, single
 - [x] Route-gold coverage inflation fixed — coverage is act-golds
   only (`covered / act_items`), `route_accuracy()` separate — PR #TBD,
   2026-09-30
-- [ ] OSWorld-style scenario set + published numbers.
+- [x] OSWorld-style scenario set + published numbers — 13 sim specs
+  across affordance categories (enable chains, dialogs, OCR +/-
+  paths, negatives, sequential goals), reproducible suite report
+  (`dexter-eval` example) + `docs/eval-numbers.md` — PR #TBD,
+  2026-09-30
 
 ## Fase 4 — reach
 

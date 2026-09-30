@@ -55,6 +55,12 @@
   closes). `SpecElement.source` declares the perception layer per
   element (`ocr`/`vision`/`dom`/`accessibility`); a hermetic test now
   runs every sim spec in the dataset against its declared outcome.
+  Second batch: `form-fill` (sequential goal — edit subgoal
+  auto-completes on the value change, submit closes) and
+  `ocr-label-only` (OCR text with no affordance must abstain).
+  `crates/eval/examples/suite_report.rs` prints the reproducible
+  sim-suite metrics table; current numbers live in
+  `docs/eval-numbers.md`.
 
 ### Fixed
 
