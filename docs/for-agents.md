@@ -50,7 +50,9 @@ baseline, `--min-confidence 0.3` to make low-confidence picks abstain.
 3. **`dexter_act {action}`** — runs policy → act → verify. Statuses:
    `done`, `needs_approval` (carries a `fingerprint` — a human calls
    `dexter_grant {fingerprint}`, then you retry), `denied`, `failed`,
-   `error`.
+   `error`. `dexter_grant` only answers a live `needs_approval` — a
+   fingerprint you computed yourself, or one whose request expired, is
+   rejected; approval can't be minted for an action never escalated.
 4. **`dexter_verify {expected}`** — check an `ExpectedState` against a
    fresh observation. Three-valued: VERIFIED / FAILED / UNCERTAIN.
 5. **`dexter_task {goal, done, max_steps?, max_secs?}`** — hand the

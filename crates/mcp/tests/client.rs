@@ -256,6 +256,35 @@ async fn act_needs_approval_returns_grantable_fingerprint() {
     client.cancel().await.ok();
 }
 
+#[tokio::test]
+async fn grant_rejects_forged_fingerprints() {
+    // The fingerprint is deterministic, so an agent could compute one
+    // locally and call dexter_grant without ever being escalated. The
+    // tool must refuse: a grant only answers a live needs_approval.
+    let client = client_server("").await;
+    let forged = dexter_policy::fingerprint(
+        &dexter_core::Action::Click {
+            target: dexter_core::Target::Semantic(dexter_core::SemanticTarget {
+                name: Some("Save".into()),
+                ..Default::default()
+            }),
+            button: dexter_core::MouseButton::Left,
+        },
+        &dexter_policy::ActionContext::default(),
+    );
+    let res = client
+        .call_tool(CallToolRequestParam {
+            name: "dexter_grant".into(),
+            arguments: Some(json!({"fingerprint": forged}).as_object().unwrap().clone()),
+        })
+        .await;
+    assert!(
+        res.is_err(),
+        "a fingerprint that was never escalated must not be grantable"
+    );
+    client.cancel().await.ok();
+}
+
 fn save_button() -> dexter_core::Element {
     dexter_core::Element {
         id: dexter_core::ElementId(4),

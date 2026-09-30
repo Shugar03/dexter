@@ -41,6 +41,16 @@ mutating default still applies — a coordinate click lands on
 `agent_cannot_self_approve_or_request_physical`,
 `operator_opt_in_allows_coords`.
 
+**Follow-up**: `dexter_grant` also minted approval for *any* fingerprint
+— including ones the engine never escalated, since fingerprints are
+deterministic. `ApprovalStore` now tracks pending requests: the engine
+records one on every `NeedsApproval`, `grant` only answers a live
+(unexpired) request, and both outcomes journal. Operator pre-grants
+(scenario `grants` lists) moved to `Engine::pre_grant_approval` /
+`ApprovalStore::pre_grant` — a path never exposed to agents. Tests:
+`grant_requires_a_live_pending_request`, `pending_request_expires`,
+`grant_rejects_forged_fingerprints`.
+
 ### W2. MCP handlers block the async executor (responsiveness)
 
 Tool handlers run synchronous driver/engine work (`observe` AX walks,

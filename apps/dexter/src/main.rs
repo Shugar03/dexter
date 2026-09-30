@@ -980,7 +980,7 @@ fn run_scenario(
     let file: ScenarioFile =
         toml::from_str(&text).with_context(|| format!("parsing scenario '{path}'"))?;
     for fp in &file.grants {
-        engine.grant_approval(fp);
+        engine.pre_grant_approval(fp);
     }
     if coords {
         engine.permit_physical();

@@ -172,8 +172,11 @@ fn approval_flow_bound_single_use() {
         StepStatus::NeedsApproval { fingerprint, .. } => fingerprint,
         other => panic!("expected NeedsApproval, got {other:?}"),
     };
+    // A forged fingerprint is rejected: only a live escalation can be
+    // granted.
+    assert!(!engine.approve_pending("forged-fingerprint"));
     // Grant it -> the same step now runs.
-    engine.grant_approval(&fp);
+    assert!(engine.approve_pending(&fp));
     assert!(engine.run_step(&step, &cfg()).done());
     assert_eq!(engine.driver().pressed().len(), 1);
     // Single-use: the identical step asks again.

@@ -463,8 +463,10 @@ impl DexterMcp {
         status_json(status)
     }
 
-    /// Grant an approval fingerprint for this session (single use,
-    /// TTL-bound). This is the human-in-the-loop hook.
+    /// Answer a live approval request (single use, TTL-bound). This is
+    /// the human-in-the-loop hook: the fingerprint must come from a
+    /// `needs_approval` escalation — arbitrary fingerprints are
+    /// rejected, so the tool can't mint authority out of thin air.
     #[tool(
         name = "dexter_grant",
         description = "Grant an approval fingerprint returned by a needs_approval step (single-use, session-scoped)"
@@ -474,7 +476,12 @@ impl DexterMcp {
         Parameters(params): Parameters<GrantParams>,
     ) -> Result<Json<serde_json::Value>, McpError> {
         let mut engine = self.runtime.engine.lock().map_err(err)?;
-        engine.grant_approval(&params.fingerprint);
+        if !engine.approve_pending(&params.fingerprint) {
+            return Err(err(
+                "no live approval request for this fingerprint — dexter_grant \
+                 only answers fingerprints returned by a needs_approval status",
+            ));
+        }
         Ok(Json(serde_json::json!({
             "granted": true,
             "fingerprint": params.fingerprint,

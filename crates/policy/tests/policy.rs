@@ -271,7 +271,7 @@ fn approvals_are_bound_single_use_and_expiring() {
     let fp = dexter_policy::fingerprint(&a, &c);
 
     assert!(!store.check_and_consume(&fp), "nothing granted yet");
-    store.grant(&fp);
+    store.pre_grant(&fp);
     assert!(store.check_and_consume(&fp), "granted once");
     assert!(!store.check_and_consume(&fp), "consumed — not reusable");
 
@@ -284,12 +284,40 @@ fn approvals_are_bound_single_use_and_expiring() {
 fn expired_approval_is_denied() {
     let mut store = ApprovalStore::new(Duration::from_millis(0));
     let fp = dexter_policy::fingerprint(&click(), &ctx(None));
-    store.grant(&fp);
+    store.pre_grant(&fp);
     std::thread::sleep(Duration::from_millis(2));
     assert!(
         !store.check_and_consume(&fp),
         "expired approvals are invalid"
     );
+}
+
+#[test]
+fn grant_requires_a_live_pending_request() {
+    let mut store = ApprovalStore::new(Duration::from_secs(60));
+    let fp = dexter_policy::fingerprint(&click(), &ctx(None));
+
+    // An arbitrary fingerprint — the caller computed it locally — is
+    // not grantable: no approval request was ever escalated for it.
+    assert!(!store.grant(&fp), "no pending request, nothing to grant");
+    assert!(!store.check_and_consume(&fp));
+
+    // Once the engine escalates it, exactly one grant answers it.
+    store.request(&fp);
+    assert!(store.grant(&fp));
+    assert!(!store.grant(&fp), "the request is consumed by the grant");
+    assert!(store.check_and_consume(&fp), "granted once");
+    assert!(!store.check_and_consume(&fp), "consumed — not reusable");
+}
+
+#[test]
+fn pending_request_expires() {
+    let mut store = ApprovalStore::new(Duration::from_millis(0));
+    let fp = dexter_policy::fingerprint(&click(), &ctx(None));
+    store.request(&fp);
+    std::thread::sleep(Duration::from_millis(2));
+    assert!(!store.grant(&fp), "stale requests cannot be granted");
+    assert!(!store.check_and_consume(&fp));
 }
 
 #[test]
