@@ -61,6 +61,12 @@
   `crates/eval/examples/suite_report.rs` prints the reproducible
   sim-suite metrics table; current numbers live in
   `docs/eval-numbers.md`.
+- **`dexter-windows` driver skeleton.** The Windows side of the driver
+  seam before a backend exists: `WindowsDriver` declines every
+  operation with `Unsupported` (all capability flags false — no
+  simulated claims) plus `uia_role()`, the UIA ControlType →
+  normalized-role table the real backend will plug into. Docs:
+  `docs/sdd/windows.md`.
 
 ### Fixed
 

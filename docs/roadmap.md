@@ -61,7 +61,9 @@ perception degrades to UNCERTAIN, policy outside the model, single
 ## Fase 4 — reach
 
 - [ ] Browser driver polish (biggest cross-platform reach).
-- [ ] Windows driver skeleton.
+- [x] Windows driver skeleton — `dexter-windows` crate: honest
+  `Unsupported` seam + `uia_role()` control-type → role table —
+  PR #TBD, 2026-09-30
 - [ ] Release hygiene: universal binary, homebrew tap refresh, demo
   GIF in README.
 
