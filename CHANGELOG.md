@@ -27,7 +27,6 @@
   `grants` lists); the agent-facing path is `Engine::approve_pending`,
   which returns whether the request existed.
 
-<<<<<<< HEAD
 ### Fixed
 
 - **Laya worker protocol desync.** Responses were paired positionally:
