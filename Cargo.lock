@@ -986,6 +986,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dexter-windows"
+version = "0.1.0"
+dependencies = [
+ "dexter-core",
+ "dexter-driver",
+]
+
+[[package]]
 name = "dexter-world-model"
 version = "0.1.0"
 dependencies = [
