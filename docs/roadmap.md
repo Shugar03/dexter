@@ -45,8 +45,10 @@ perception degrades to UNCERTAIN, policy outside the model, single
 
 ## Fase 3 — measurable reliability
 
-- [ ] Expand `datasets/scenarios` coverage (more apps, negative cases,
-  OCR paths) and keep `eval scenario --check baseline.toml` green.
+- [x] Scenario coverage expanded — `ocr-canvas` (OCR path via
+  `SpecElement.source`), `modal-confirm`, `field-disabled` (negative:
+  disabled affordance), `cancel-polarity` (negative characterization
+  of the polarity-match gap) — PR #TBD, 2026-09-30
 - [x] Route-gold coverage inflation fixed — coverage is act-golds
   only (`covered / act_items`), `route_accuracy()` separate — PR #TBD,
   2026-09-30

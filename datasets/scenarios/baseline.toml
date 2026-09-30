@@ -27,3 +27,19 @@ max_physical_acts = 0
 [scenario.admin-absent]
 min_success = 1.0
 max_mean_steps = 1.0
+
+[scenario.ocr-canvas]
+min_success = 1.0
+max_mean_steps = 2.0
+
+[scenario.modal-confirm]
+min_success = 1.0
+max_mean_steps = 3.0
+
+[scenario.field-disabled]
+min_success = 1.0
+max_mean_steps = 1.0
+
+[scenario.cancel-polarity]
+min_success = 1.0
+max_mean_steps = 1.0

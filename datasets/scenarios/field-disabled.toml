@@ -1,0 +1,41 @@
+# field-disabled — negative case: the affordance exists but is
+# disabled. Goal asks to rename a file whose name field is read-only
+# (permissions). The generator skips `enabled = false` elements, so
+# there is no candidate — the honest outcome is abstain, not a doomed
+# click. Complements admin-absent (absent affordance) with the
+# present-but-disabled variant.
+[scenario]
+id = "field-disabled"
+goal = "renombrar el archivo"
+optimal_steps = 0
+app = "Permisos"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "renombrado" } }
+expected = "abstained"
+max_steps = 4
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Permisos de archivo"
+
+[[world.element]]
+id = 2
+role = "static_text"
+name = "Archivo: informe.pdf (solo lectura)"
+
+# The rename target — present, labeled, and disabled.
+[[world.element]]
+id = 3
+role = "text_field"
+name = "Nombre"
+value = "informe"
+enabled = false
+actions = ["set_value", "focus"]
+
+[[world.element]]
+id = 4
+role = "button"
+name = "Aceptar"
+actions = ["press"]

@@ -1,0 +1,45 @@
+# ocr-canvas — the actionable element only exists because OCR read it.
+# A game-canvas app exposes no AX affordances: the window and the
+# canvas surface are visible, but the "Jugar" button is rendered
+# pixels — it reaches the observation as `source = "ocr"`. Measures
+# that OCR-sourced elements flow through candidate generation like any
+# other (and carry the `[ocr]` provenance tag in the digest).
+[scenario]
+id = "ocr-canvas"
+goal = "jugar una partida"
+optimal_steps = 1
+app = "Arcade"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "iniciada" } }
+max_steps = 6
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Arcade"
+
+[[world.element]]
+id = 2
+role = "image"
+name = "Lienzo del juego"
+
+# Rendered by the canvas, not AX — OCR is the only way this element
+# exists in the observation at all.
+[[world.element]]
+id = 5
+role = "button"
+name = "Jugar"
+actions = ["press"]
+source = "ocr"
+
+# OCR noise: a static label that must not outrank the real button.
+[[world.element]]
+id = 6
+role = "static_text"
+name = "Arcade v1.0 — record: 4200"
+source = "ocr"
+
+[[world.rule]]
+when = { name = "Jugar" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Partida iniciada" } }
