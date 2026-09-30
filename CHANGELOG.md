@@ -98,6 +98,12 @@
   both polarities vetoes everything and abstains — fail-closed on a
   genuinely ambiguous intent. `cancel-polarity` flipped from the
   pinned wrong-act outcome to `abstained`, as designed.
+- **Goal negation.** `NEGATORS` markers ("no", "not", "never",
+  "nunca", "jamas", "sin", contractions like "don't"→"don"+"t") flip
+  the next term's polarity: the negated term vetoes its own labels
+  and its antonym (when known) joins the wanted terms — "no guardar
+  el borrador" offers "Descartar borrador", never "Guardar".
+  `negate-discard.toml` pins the flow end-to-end.
 
 ### Fixed
 
