@@ -1,0 +1,24 @@
+# Devin environment blueprint (git-managed — synced from this file).
+# Toolchain (rust 1.97+, python3) is already on the image; nothing to install.
+initialize: |
+  true
+# Warm the cargo registry cache for faster first builds.
+maintenance: |
+  cargo fetch --locked
+# Reference info for agent.
+knowledge:
+  - name: build
+    contents: |
+      # dexter-macos, dexter-cu and dexter-overlay only compile on macOS.
+      cargo build --workspace --exclude dexter-macos --exclude dexter-cu --exclude dexter-overlay
+  - name: test
+    contents: |
+      cargo test --workspace --exclude dexter-macos --exclude dexter-cu --exclude dexter-overlay
+  - name: lint
+    contents: |
+      cargo clippy --workspace --exclude dexter-macos --exclude dexter-cu --exclude dexter-overlay --all-targets --all-features -- -D warnings
+      cargo fmt --all -- --check
+  - name: eval
+    contents: |
+      # The eval scenario gate only runs on macOS CI (live AX scenarios); the
+      # Linux cargo test suite is hermetic.
