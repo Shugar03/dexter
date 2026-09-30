@@ -8,7 +8,10 @@
 #
 # Targets are Spanish AX names: prep pins the app to es-ES via
 # AppleLanguages so the scenario is deterministic on any host locale
-# (CI runners are en-US); teardown deletes the override.
+# (CI runners are en-US); teardown deletes the override. Prep kills via
+# `pkill`, not an osascript quit — `tell application ... to quit`
+# *launches* the app in the host locale before the pin lands, and
+# `open -a` then reactivates that English instance.
 [scenario]
 id = "calc-scientific"
 driver = "macos"
@@ -18,7 +21,7 @@ app = "Calculadora"
 
 [live]
 app = "com.apple.calculator"
-prep = "osascript -e 'tell application id \"com.apple.calculator\" to quit' 2>/dev/null || true; defaults write com.apple.calculator AppleLanguages -array es; sleep 0.5; open -a Calculator; sleep 0.8; dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true"
+prep = "pkill -x 'Calculator' 2>/dev/null || true; sleep 0.5; defaults write com.apple.calculator AppleLanguages -array es; sleep 0.5; open -a Calculator; sleep 0.8; dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true"
 teardown = "dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true; osascript -e 'tell application id \"com.apple.calculator\" to quit'; defaults delete com.apple.calculator AppleLanguages 2>/dev/null || true"
 settle_ms = 1200
 

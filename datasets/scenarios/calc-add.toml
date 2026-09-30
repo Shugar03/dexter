@@ -17,7 +17,7 @@ app = "Calculadora"
 
 [live]
 app = "com.apple.calculator"
-prep = "osascript -e 'tell application id \"com.apple.calculator\" to quit' 2>/dev/null || true; defaults write com.apple.calculator AppleLanguages -array es; sleep 0.5; open -a Calculator; sleep 0.8; dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true; dexter click --app com.apple.calculator --target '{\"role\":\"button\",\"name\":\"Borrar todo\"}' --approve 2>/dev/null || true"
+prep = "pkill -x 'Calculator' 2>/dev/null || true; sleep 0.5; defaults write com.apple.calculator AppleLanguages -array es; sleep 0.5; open -a Calculator; sleep 0.8; dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true; dexter click --app com.apple.calculator --target '{\"role\":\"button\",\"name\":\"Borrar todo\"}' --approve 2>/dev/null || true"
 teardown = "osascript -e 'tell application id \"com.apple.calculator\" to quit' 2>/dev/null || true; defaults delete com.apple.calculator AppleLanguages 2>/dev/null || true"
 settle_ms = 800
 

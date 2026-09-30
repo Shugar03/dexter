@@ -58,7 +58,11 @@
   abstained deterministically on `calc-scientific` and `clock-timer`
   (suite 0.80 < baseline 1.00). `prep` now pins each live app to
   `AppleLanguages = [es]` and `teardown` deletes the override; a
-  contract test guards the convention.
+  contract test guards the convention. Preps also quit via `pkill`
+  instead of `osascript ... to quit`: AppleScript *launches* the app to
+  deliver the quit, so on a cold start the app booted English before
+  the pin landed and `open -a` reactivated that instance — the race
+  that kept `clock-timer` abstaining even after pinning.
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:

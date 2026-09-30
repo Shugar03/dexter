@@ -171,7 +171,11 @@ fn spec_parses_live_macos_section() {
 /// and any live scenario that launches a real app must pin the app's
 /// locale to es-ES (`defaults write <bundle> AppleLanguages -array es`)
 /// so Spanish AX names resolve on any host locale — CI runners are
-/// en-US and unpinned specs abstain deterministically.
+/// en-US and unpinned specs abstain deterministically. Preps must also
+/// never `tell application ... to quit`: AppleScript *launches* the app
+/// to deliver the quit, so on a cold start the app boots in the host
+/// locale before the pin is written and `open -a` then reactivates that
+/// English instance. `pkill` terminates without launching.
 #[test]
 fn dataset_specs_parse_and_live_prep_pins_locale() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../datasets/scenarios");
@@ -187,6 +191,11 @@ fn dataset_specs_parse_and_live_prep_pins_locale() {
             toml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         if let Some(live) = &s.live {
             let prep = live.prep.as_deref().unwrap_or("");
+            assert!(
+                !(prep.contains("tell application") && prep.contains("to quit")),
+                "{name}: live prep uses 'tell application ... to quit', which launches \
+                 the app pre-pin on a cold start — use pkill instead"
+            );
             if prep.contains("open -a") {
                 assert!(
                     prep.contains("AppleLanguages"),

@@ -15,7 +15,7 @@ app = "Settings"
 
 [live]
 app = "com.apple.systempreferences"
-prep = "osascript -e 'tell application id \"com.apple.systempreferences\" to quit' 2>/dev/null || true; defaults write com.apple.systempreferences AppleLanguages -array es; sleep 0.5; open -a 'System Settings'"
+prep = "pkill -x 'System Settings' 2>/dev/null || true; sleep 0.5; defaults write com.apple.systempreferences AppleLanguages -array es; sleep 0.5; open -a 'System Settings'"
 teardown = "osascript -e 'tell application id \"com.apple.systempreferences\" to quit'; defaults delete com.apple.systempreferences AppleLanguages 2>/dev/null || true"
 settle_ms = 1800
 
