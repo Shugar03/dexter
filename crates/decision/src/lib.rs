@@ -225,6 +225,43 @@ const PHRASE_VERBS: &[&str] = &[
     "proceed to checkout",
 ];
 
+/// Opposed-action pairs. A label offering the *opposite* of a goal
+/// term is not partial evidence — it is the wrong act entirely
+/// ("Cancelar pedido" under "confirmar el pedido"). Both sides must be
+/// non-stopwords or the pair can never fire.
+const ANTONYMS: &[(&str, &str)] = &[
+    ("confirmar", "cancelar"),
+    ("aceptar", "rechazar"),
+    ("aceptar", "cancelar"),
+    ("guardar", "descartar"),
+    ("abrir", "cerrar"),
+    ("habilitar", "deshabilitar"),
+    ("crear", "eliminar"),
+    ("confirm", "cancel"),
+    ("accept", "reject"),
+    ("accept", "cancel"),
+    ("save", "discard"),
+    ("open", "close"),
+    ("enable", "disable"),
+    ("create", "delete"),
+    ("add", "remove"),
+    ("start", "stop"),
+];
+
+/// Does `term` have a known opposite, and does the label offer THAT?
+fn offers_opposite(label: &str, term: &str) -> bool {
+    ANTONYMS.iter().any(|(a, b)| {
+        let opp = if term == *a {
+            Some(*b)
+        } else if term == *b {
+            Some(*a)
+        } else {
+            None
+        };
+        opp.is_some_and(|o| term_matches(label, o))
+    })
+}
+
 /// Verbs that imply an editing action (type into a field).
 const EDIT_VERBS: &[&str] = &[
     "type",
@@ -902,6 +939,17 @@ impl CandidateGenerator for HeuristicGenerator {
             }
             let label = el.label().unwrap_or("").to_lowercase();
             let matched = terms.iter().filter(|t| term_matches(&label, t)).count();
+            // Polarity veto: a label matching the ANTONYM of a goal
+            // term (and not the term itself) is the opposite act, not
+            // a near-miss — offering it would press the wrong side.
+            // A goal carrying both polarities vetoes everything and
+            // honestly abstains.
+            if terms
+                .iter()
+                .any(|t| !term_matches(&label, t) && offers_opposite(&label, t))
+            {
+                continue;
+            }
             if terms.is_empty() {
                 continue;
             }

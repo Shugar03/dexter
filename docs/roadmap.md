@@ -77,6 +77,11 @@ perception degrades to UNCERTAIN, policy outside the model, single
   bundle-id shape, `token_rect` → `Option` on degenerate windows,
   empty `SemanticTarget` → `InvalidInput`, MSRV bumped to 1.87
   (`is_multiple_of` was already in use, stabilized there), browser walker skips `aria-hidden` subtrees.
+- Done in PR #17: index-qualified generated targets (duplicate
+  labels resolvable via `SemanticTarget.index`).
+- Done in PR #TBD: polarity veto — antonym labels (`confirmar` vs
+  `cancelar`, `save` vs `discard`, ...) skipped before scoring;
+  `cancel-polarity` scenario re-pointed at `abstained`.
 - Remaining: cosmetic per-step observe for overlay bounds;
   `split_whitespace` parse edges; UTF-16 surrogate split in
   `cg_type_text`; AX messaging timeout root-only; `--digest` skips
