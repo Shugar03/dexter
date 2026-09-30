@@ -70,6 +70,13 @@ observación viva; `null` cuando no hay rect (p.ej. `Point` ya trae coords,
 journal JSONL y dibuja un cursor etiquetado en esas bounds — la ventana
 es click-through (`ignoresMouseEvents`), jamás captura input.
 
+En `run_step` (acto único, sin observación viva) las bounds cuestan un
+observe extra — un walk AX completo en vivo, un tick en sim. Ese observe
+cosmético solo se hace cuando hay un journal sink vivo
+(`set_journal_sink`) que lo consuma; sin sink, `target_bounds` de
+targets no-`Point` es `null` y el driver solo ve el `act`. `run_task`
+/`run_plan` no cambian: reusan la observación que ya tienen.
+
 `PolicyChecked` registra `intrusiveness` para auditoría.
 
 ## Errores

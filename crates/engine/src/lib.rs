@@ -252,8 +252,9 @@ impl<D: ComputerDriver> Engine<D> {
         // The journal carries the target's on-screen bounds so the
         // presence overlay can draw the cursor where the act lands.
         // run_plan already holds a live observation; single steps take
-        // one here — cosmetic only, a failed observe never blocks the act.
-        let obs = if bounds_need_observation(&step.action) {
+        // one here only when a live sink exists to consume it — cosmetic
+        // only, a failed observe never blocks the act.
+        let obs = if self.journal_sink.is_some() && bounds_need_observation(&step.action) {
             let scope = ObservationScope {
                 app: step.app.clone().or_else(|| cfg.app.clone()),
                 max_elements: cfg.observe_max_elements,
