@@ -90,8 +90,13 @@ perception degrades to UNCERTAIN, policy outside the model, single
 - Done in PR #22 (2026-09-30): cosmetic per-step observe for overlay
   bounds — `run_step` only takes the bounds observe when a live
   journal sink consumes it.
-- Remaining: `split_whitespace` parse edges; UTF-16 surrogate split in
-  `cg_type_text`; AX messaging timeout root-only; `--digest` skips
+- Done in PR #5 (verified 2026-09-30): `split_whitespace` parse edges
+  — the only production use was laya `worker_cmd`, now `shlex`-split;
+  the remaining one is the test-only `fake_webdriver` HTTP parser.
+- Done in PR #24 (2026-09-30): UTF-16 surrogate split in
+  `cg_type_text` — chunking via `dexter_driver::utf16_chunks`, which
+  breaks only on char boundaries.
+- Remaining: AX messaging timeout root-only; `--digest` skips
   truncation warnings; `windows --app bundle:` matches window owner
   name not bundle id; `dexter mcp` builds the driver twice;
   primary-monitor-only bounds; `pid_for_bundle` no ambiguity check.
