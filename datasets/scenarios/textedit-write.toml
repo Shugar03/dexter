@@ -12,8 +12,8 @@ app = "TextEdit"
 
 [live]
 app = "com.apple.TextEdit"
-prep = "osascript -e 'tell application id \"com.apple.TextEdit\" to quit' 2>/dev/null || true; rm -f /tmp/dexter-live.txt; touch /tmp/dexter-live.txt; open -a TextEdit /tmp/dexter-live.txt; sleep 1; osascript -e 'tell application id \"com.apple.TextEdit\" to close (every document whose name is not \"dexter-live.txt\") saving no' 2>/dev/null || true"
-teardown = "osascript -e 'tell application id \"com.apple.TextEdit\" to close document \"dexter-live.txt\" saving no' -e 'tell application id \"com.apple.TextEdit\" to quit' 2>/dev/null || true; rm -f /tmp/dexter-live.txt"
+prep = "osascript -e 'tell application id \"com.apple.TextEdit\" to quit' 2>/dev/null || true; defaults write com.apple.TextEdit AppleLanguages -array es; rm -f /tmp/dexter-live.txt; touch /tmp/dexter-live.txt; open -a TextEdit /tmp/dexter-live.txt; sleep 1; osascript -e 'tell application id \"com.apple.TextEdit\" to close (every document whose name is not \"dexter-live.txt\") saving no' 2>/dev/null || true"
+teardown = "osascript -e 'tell application id \"com.apple.TextEdit\" to close document \"dexter-live.txt\" saving no' -e 'tell application id \"com.apple.TextEdit\" to quit' 2>/dev/null || true; rm -f /tmp/dexter-live.txt; defaults delete com.apple.TextEdit AppleLanguages 2>/dev/null || true"
 settle_ms = 1500
 
 [task]

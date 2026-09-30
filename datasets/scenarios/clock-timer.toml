@@ -6,6 +6,10 @@
 # teardown restores the world: stop the timer if running, switch back
 # to Reloj mundial, then quit. `dexter` is expected on PATH (the same
 # contract as a real install); `|| true` keeps teardown best-effort.
+#
+# Targets are Spanish AX names: prep pins the app to es-ES via
+# AppleLanguages so the scenario is deterministic on any host locale
+# (CI runners are en-US); teardown deletes the override.
 [scenario]
 id = "clock-timer"
 driver = "macos"
@@ -15,8 +19,8 @@ app = "Clock"
 
 [live]
 app = "com.apple.clock"
-prep = "osascript -e 'tell application id \"com.apple.clock\" to quit' 2>/dev/null || true; sleep 0.5; open -a Clock; sleep 1; dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true"
-teardown = "dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true; osascript -e 'tell application id \"com.apple.clock\" to quit'"
+prep = "osascript -e 'tell application id \"com.apple.clock\" to quit' 2>/dev/null || true; defaults write com.apple.clock AppleLanguages -array es; sleep 0.5; open -a Clock; sleep 1; dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true"
+teardown = "dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true; osascript -e 'tell application id \"com.apple.clock\" to quit'; defaults delete com.apple.clock AppleLanguages 2>/dev/null || true"
 settle_ms = 1500
 
 [task]
