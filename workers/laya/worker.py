@@ -3,10 +3,17 @@
 
 Protocol (one JSON object per line, stdin -> stdout):
 
-    -> {"id": 1, "method": "predict",
+    -> {"id": 0, "method": "hello", "params": {"protocol": 1}}
+    <- {"id": 0, "ok": true, "protocol": 1, "worker": "laya-worker"}
+    -> {"id": 1, "method": "predict", "v": 1,
         "params": {"state": "...", "questions": [Question...]}}
     <- {"id": 1, "ok": true, "provider": "dev", "answers": [Answer...]}
     <- {"id": 1, "ok": false, "error": "..."}
+
+The engine sends `hello` at spawn; a worker that answers `ok` without a
+matching `protocol` field (a pre-versioning build) is rejected with an
+`ok:false`… or the engine errors — spawning against a stale worker is
+never allowed to proceed silently.
 
 Question/Answer shapes mirror crates/decision (`type: choice|score|bool`).
 
@@ -26,6 +33,10 @@ import sys
 # Die on SIGPIPE like a normal Unix filter instead of raising
 # BrokenPipeError at interpreter shutdown when dexter exits first.
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+# Protocol revision this worker speaks — bumped when request/response
+# shapes change incompatibly. The engine checks it on `hello`.
+PROTOCOL = 1
 
 
 def answer_dev(question: dict, state: str) -> dict:
@@ -136,6 +147,17 @@ class LayaProvider:
 
 
 def handle(req: dict, provider) -> dict:
+    if req.get("method") == "hello":
+        want = req.get("params", {}).get("protocol")
+        if want != PROTOCOL:
+            return {
+                "id": req.get("id"), "ok": False,
+                "error": f"protocol {want} not supported (worker speaks {PROTOCOL})",
+            }
+        return {
+            "id": req.get("id"), "ok": True,
+            "protocol": PROTOCOL, "worker": "laya-worker",
+        }
     params = req.get("params", {})
     state = params.get("state", "")
     questions = params.get("questions", [])

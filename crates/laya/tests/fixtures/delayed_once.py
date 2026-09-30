@@ -1,7 +1,8 @@
-"""Protocol stub: delays its FIRST response by argv ms, then answers
-instantly. Exercises stale-line handling — a request that times out
-still queues its (late) response on the channel; the engine must drop
-it by id, not consume it positionally.
+"""Protocol stub: delays its FIRST predict response by argv ms, then
+answers instantly. Exercises stale-line handling — a request that
+times out still queues its (late) response on the channel; the engine
+must drop it by id, not consume it positionally. `hello` is always
+answered without delay.
 
 Usage: delayed_once.py [delay_ms]
 """
@@ -14,6 +15,13 @@ DELAY = float(sys.argv[1]) / 1000.0 if len(sys.argv) > 1 else 0.3
 first = True
 for line in sys.stdin:
     req = json.loads(line)
+    if req.get("method") == "hello":
+        sys.stdout.write(
+            json.dumps({"id": req["id"], "ok": True, "protocol": 1, "worker": "stub"})
+            + "\n"
+        )
+        sys.stdout.flush()
+        continue
     if first:
         first = False
         time.sleep(DELAY)

@@ -1183,14 +1183,15 @@ fn doctor(
 ) -> Result<()> {
     let caps = driver.capabilities();
     println!("driver: {}", caps.name);
-    if let Some(name) = &engine_name {
-        let decider = build_decider(name, &engine_path, 0.0)?;
-        use dexter_decision::EngineHealth;
-        match decider.health() {
-            EngineHealth::Ready => println!("engine '{}': ready", decider.name()),
-            EngineHealth::Degraded(d) => println!("engine '{}': DEGRADED — {d}", decider.name()),
-            EngineHealth::Down(d) => println!("engine '{}': DOWN — {d}", decider.name()),
-        }
+    // Always probe an engine — without `--engine` the runtime default
+    // (rule-based) is what tasks would actually use.
+    let name = engine_name.as_deref().unwrap_or("rule-based");
+    let decider = build_decider(name, &engine_path, 0.0)?;
+    use dexter_decision::EngineHealth;
+    match decider.health() {
+        EngineHealth::Ready => println!("engine '{}': ready", decider.name()),
+        EngineHealth::Degraded(d) => println!("engine '{}': DEGRADED — {d}", decider.name()),
+        EngineHealth::Down(d) => println!("engine '{}': DOWN — {d}", decider.name()),
     }
     if is_browser {
         println!("element tree: {}", onoff(caps.element_tree));
