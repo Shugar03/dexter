@@ -29,15 +29,42 @@ jobs:
       - name: Scenario eval gate
         run: cargo run -p dexter-cu -- eval scenario datasets/scenarios --check datasets/scenarios/baseline.toml
 
+  # Same universal (arm64 + x86_64) build the release workflow ships,
+  # so a slice that stops building fails the PR instead of the tag.
   release-build:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
-      - name: Release build
-        run: cargo build --release -p dexter-cu
+      - name: Release build (both slices)
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p dexter-cu -p dexter-overlay --target "$t"
+          done
+      - name: Universal binary
+        run: |
+          set -euo pipefail
+          mkdir -p universal
+          for bin in dexter dexter-overlay; do
+            lipo -create -output "universal/$bin" \
+              "target/aarch64-apple-darwin/release/$bin" \
+              "target/x86_64-apple-darwin/release/$bin"
+            lipo "universal/$bin" -verify_arch arm64 x86_64
+            file "universal/$bin"
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: dexter-macos-arm64
-          path: target/release/dexter
+          name: dexter-macos-universal
+          path: universal/
+
+  # Homebrew cask template golden test — the release `tap` job renders
+  # the published cask from packaging/homebrew/dexter.rb.in.
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cask template
+        run: scripts/test-render-cask.sh
