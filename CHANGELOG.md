@@ -52,7 +52,20 @@
   app element tree with `windows == [win]` — which callers read as
   natively scoped and skipped their post-filter. The fallback now
   bounds-filters to the window rect.
-
+- **Eval CI gate red since live scenarios landed.** Live scenario
+  specs target Spanish AX names but CI runners are en-US — the decider
+  abstained deterministically on `calc-scientific` and `clock-timer`
+  (suite 0.80 < baseline 1.00). `prep` now pins each live app to
+  `AppleLanguages = [es]` and `teardown` deletes the override; a
+  contract test guards the convention. Preps also quit via `pkill`
+  instead of `osascript ... to quit`: AppleScript *launches* the app to
+  deliver the quit, so on a cold start the app booted English before
+  the pin landed and `open -a` reactivated that instance — the race
+  that kept `clock-timer` abstaining even after pinning. Launches also
+  pass `-AppleLanguages '(es)'` as a launch arg (NSArgumentDomain
+  outranks any prefs domain), and the live runner prints the last
+  decision digest on abstain so future live failures show the world
+  the decider actually saw.
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:

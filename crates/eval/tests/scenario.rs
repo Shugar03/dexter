@@ -167,6 +167,47 @@ fn spec_parses_live_macos_section() {
     assert!(spec(WEB_LOGIN).live.is_none());
 }
 
+/// The committed dataset is a product surface: every spec must parse,
+/// and any live scenario that launches a real app must pin the app's
+/// locale to es-ES (`defaults write <bundle> AppleLanguages -array es`)
+/// so Spanish AX names resolve on any host locale — CI runners are
+/// en-US and unpinned specs abstain deterministically. Preps must also
+/// never `tell application ... to quit`: AppleScript *launches* the app
+/// to deliver the quit, so on a cold start the app boots in the host
+/// locale before the pin is written and `open -a` then reactivates that
+/// English instance. `pkill` terminates without launching.
+#[test]
+fn dataset_specs_parse_and_live_prep_pins_locale() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../datasets/scenarios");
+    let mut parsed = 0;
+    for entry in std::fs::read_dir(dir).expect("datasets/scenarios dir") {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") || name == "baseline.toml" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let s: ScenarioSpec =
+            toml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        if let Some(live) = &s.live {
+            let prep = live.prep.as_deref().unwrap_or("");
+            assert!(
+                !(prep.contains("tell application") && prep.contains("to quit")),
+                "{name}: live prep uses 'tell application ... to quit', which launches \
+                 the app pre-pin on a cold start — use pkill instead"
+            );
+            if prep.contains("open -a") {
+                assert!(
+                    prep.contains("AppleLanguages"),
+                    "{name}: live prep launches an app but does not pin AppleLanguages"
+                );
+            }
+        }
+        parsed += 1;
+    }
+    assert!(parsed >= 10, "expected the full dataset, parsed {parsed}");
+}
+
 #[test]
 fn spec_parses_world_rules_and_ticks() {
     let s = spec(WIZARD);

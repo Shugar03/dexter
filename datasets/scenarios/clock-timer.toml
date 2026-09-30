@@ -6,6 +6,16 @@
 # teardown restores the world: stop the timer if running, switch back
 # to Reloj mundial, then quit. `dexter` is expected on PATH (the same
 # contract as a real install); `|| true` keeps teardown best-effort.
+#
+# Targets are Spanish AX names: prep pins the app to es-ES via
+# AppleLanguages so the scenario is deterministic on any host locale
+# (CI runners are en-US); teardown deletes the override. Prep kills via
+# `pkill`, not an osascript quit — `tell application ... to quit`
+# *launches* the app in the host locale before the pin lands, and
+# `open -a` then reactivates that English instance. The launch itself
+# also passes `-AppleLanguages` (NSArgumentDomain outranks any prefs
+# domain, so a per-app defaults write that misses a container can't
+# leave it English).
 [scenario]
 id = "clock-timer"
 driver = "macos"
@@ -15,8 +25,8 @@ app = "Clock"
 
 [live]
 app = "com.apple.clock"
-prep = "osascript -e 'tell application id \"com.apple.clock\" to quit' 2>/dev/null || true; sleep 0.5; open -a Clock; sleep 1; dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true"
-teardown = "dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true; osascript -e 'tell application id \"com.apple.clock\" to quit'"
+prep = "pkill -x 'Clock' 2>/dev/null || true; sleep 0.5; defaults write com.apple.clock AppleLanguages -array es; sleep 0.5; open -a Clock --args -AppleLanguages '(es)'; sleep 1; dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true"
+teardown = "dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true; osascript -e 'tell application id \"com.apple.clock\" to quit'; defaults delete com.apple.clock AppleLanguages 2>/dev/null || true"
 settle_ms = 1500
 
 [task]
