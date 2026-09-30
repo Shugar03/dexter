@@ -201,6 +201,64 @@ fn crashed_worker_is_respawned_and_call_retried() {
 }
 
 #[test]
+fn stale_response_is_dropped_not_consumed_positionally() {
+    // delayed_once.py answers its first request ~300ms late. A health
+    // probe with a 100ms timeout abandons that response — but the line
+    // still lands on the channel. The next request must drop it by id
+    // and wait for its own, not pair it positionally: a stale empty
+    // answer would surface as "ok but no answers" on a healthy worker.
+    let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/delayed_once.py");
+    let engine = LayaEngine::spawn(
+        &format!("python3 {} 300", stub.display()),
+        Duration::from_millis(100),
+    )
+    .expect("stub spawns");
+
+    // Probe times out; the stale response arrives afterwards.
+    let _ = engine.health();
+    std::thread::sleep(Duration::from_millis(500));
+
+    // With the stale line queued, decide must still get ITS response.
+    let ctx = DecisionContext {
+        goal: "click save".into(),
+        state_digest: "button Save".into(),
+        candidates: vec![candidate("Save")],
+        last_error: None,
+        step: 1,
+    };
+    match engine.decide(&ctx) {
+        Ok(Decision::Act {
+            candidate_index, ..
+        }) => assert_eq!(candidate_index, Some(0)),
+        other => panic!("stale line desynced the stream, got {other:?}"),
+    }
+}
+
+#[test]
+fn worker_cmd_with_quoted_path_spawns() {
+    // Paths with spaces must reach Command::new as one arg — whitespace
+    // splitting breaks "my dir/worker.py" into bogus pieces.
+    let stub_src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stub_worker.py");
+    let dir = std::env::temp_dir().join("dexter laya space dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = dir.join("stub.py");
+    std::fs::copy(&stub_src, &stub).unwrap();
+    let engine = LayaEngine::spawn(
+        &format!("python3 \"{}\"", stub.display()),
+        Duration::from_secs(10),
+    )
+    .expect("quoted worker path spawns");
+    let ctx = DecisionContext {
+        goal: "g".into(),
+        state_digest: "s".into(),
+        candidates: vec![candidate("X")],
+        last_error: None,
+        step: 1,
+    };
+    assert!(matches!(engine.decide(&ctx), Ok(Decision::Act { .. })));
+}
+
+#[test]
 fn health_reports_ready_for_live_worker_and_down_for_dead() {
     use dexter_decision::EngineHealth;
     let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stub_worker.py");

@@ -16,6 +16,17 @@
   `grants` lists); the agent-facing path is `Engine::approve_pending`,
   which returns whether the request existed.
 
+### Fixed
+
+- **Laya worker protocol desync.** Responses were paired positionally:
+  a request that timed out still queued its late reply on the channel,
+  and the *next* request consumed it as its own (wrong answers or
+  phantom "ok but no answers" errors — e.g. after a slow `health()`
+  probe). Responses are now matched by request `id`; stale or
+  unattributable lines are dropped, while id-less `ok:false` lines
+  (worker startup failures) still surface honestly. `worker_cmd` is
+  shell-split (`shlex`) so quoted paths with spaces work.
+
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:

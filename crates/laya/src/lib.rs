@@ -50,6 +50,11 @@ struct PredictParams<'a> {
 
 #[derive(Deserialize)]
 struct PredictResponse {
+    /// Echo of the request id — a response is only consumed when its
+    /// id matches the request that produced it. Late replies to
+    /// timed-out requests stay on the channel; pairing positionally
+    /// would hand them to the *next* request as if they were its own.
+    id: Option<u64>,
     ok: bool,
     #[serde(default)]
     provider: Option<String>,
@@ -69,10 +74,18 @@ struct WorkerProc {
 
 impl WorkerProc {
     fn spawn(worker_cmd: &str) -> std::io::Result<Self> {
-        let mut parts = worker_cmd.split_whitespace();
-        let program = parts.next().unwrap_or(worker_cmd);
+        // Shell-style split: quoting keeps paths with spaces as one arg.
+        let parts = shlex::split(worker_cmd).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("worker cmd has unmatched quotes: {worker_cmd:?}"),
+            )
+        })?;
+        let (program, args) = parts.split_first().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "worker cmd is empty")
+        })?;
         let mut child = Command::new(program)
-            .args(parts)
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -238,17 +251,42 @@ impl LayaEngine {
                 engine: self.name().into(),
                 message: format!("worker io: {e}"),
             })?;
-        let line = w
-            .responses
-            .recv_timeout(self.timeout)
-            .map_err(|_| DecisionError::Timeout {
-                engine: self.name().into(),
-                millis: self.timeout.as_millis() as u64,
-            })?;
-        serde_json::from_str(&line).map_err(|e| DecisionError::Engine {
-            engine: self.name().into(),
-            message: format!("bad worker response '{line}': {e}"),
-        })
+        // Read until a response whose id matches this request arrives
+        // or the deadline expires. Lines with a different (or missing)
+        // id are stale replies to earlier timed-out requests — dropping
+        // them is what keeps the stream paired.
+        let deadline = std::time::Instant::now() + self.timeout;
+        loop {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .ok_or_else(|| DecisionError::Timeout {
+                    engine: self.name().into(),
+                    millis: self.timeout.as_millis() as u64,
+                })?;
+            let line = w
+                .responses
+                .recv_timeout(remaining)
+                .map_err(|_| DecisionError::Timeout {
+                    engine: self.name().into(),
+                    millis: self.timeout.as_millis() as u64,
+                })?;
+            let resp: PredictResponse =
+                serde_json::from_str(&line).map_err(|e| DecisionError::Engine {
+                    engine: self.name().into(),
+                    message: format!("bad worker response '{line}': {e}"),
+                })?;
+            match resp.id {
+                Some(rid) if rid == id => return Ok(resp),
+                // Response for an earlier timed-out request — drop it.
+                Some(_) => {}
+                // id-less errors are global (startup failures, malformed
+                // requests) — they belong to no request, so surfacing
+                // them honestly beats timing out on a dead worker.
+                None if !resp.ok => return Ok(resp),
+                // An id-less success can't be trusted as ours — drop.
+                None => {}
+            }
+        }
     }
 }
 
