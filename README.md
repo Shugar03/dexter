@@ -8,6 +8,14 @@ perception, explicit policy, executed actions and *verified* results.
 > interact with the computer, executes the action, checks the result, and
 > recovers within bounds if it fails.
 
+![dexter sim suite: completed and abstained scenarios under the rule-based engine](docs/assets/suite.gif)
+
+*The hermetic scenario suite, captured from a real run
+(`cargo run -p dexter-eval --example suite_report 1`; regenerate with
+`python3 scripts/demo_gif.py`). "abstained" rows are the fail-closed
+cases — absent, disabled, or opposite-polarity targets are refused,
+not guessed.*
+
 This is not a screenshot-and-mouse-move toy:
 
 - **Semantic first.** Actions target elements by role/name through the
@@ -57,7 +65,7 @@ cargo build --release
 # the binary is target/release/dexter
 ```
 
-Requires macOS 13+ and Rust 1.85+. For real-machine use, grant the
+Requires macOS 13+ and Rust 1.87+. For real-machine use, grant the
 `dexter` binary **Accessibility** and **Screen Recording** in System
 Settings → Privacy & Security. Run `dexter doctor` to check.
 

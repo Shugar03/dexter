@@ -151,6 +151,23 @@
   outranks any prefs domain), and the live runner prints the last
   decision digest on abstain so future live failures show the world
   the decider actually saw.
+### Packaging
+
+- **Homebrew cask has one source of truth.** The release `tap` job
+  rendered the cask from an inline heredoc that had drifted from the
+  published tap (it still advertised the removed `--no-quarantine`
+  flag). It now renders `packaging/homebrew/dexter.rb.in` via
+  `scripts/render-cask.sh` (strict version/sha256 validation), writes
+  the rendered cask to the run summary when `TAP_GITHUB_TOKEN` is
+  absent, and a golden test (`scripts/test-render-cask.sh`, CI
+  `packaging` job) pins it byte-for-byte to the live `0.1.0-rc.1` cask.
+- **Universal binary gated on every PR.** CI `release-build` now builds
+  both `aarch64` and `x86_64` slices of `dexter` and `dexter-overlay`,
+  `lipo`s them and asserts both architectures (`-verify_arch`) — the
+  release `package` job asserts the same before signing.
+- **README demo GIF** (`docs/assets/suite.gif`) replaying a real run of
+  the hermetic sim suite; reproducible with `scripts/demo_gif.py`.
+
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:

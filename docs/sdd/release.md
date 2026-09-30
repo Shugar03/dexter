@@ -64,6 +64,29 @@ Verified end-to-end on `v0.1.0-rc.1` (run 35875691047):
 - Cask `depends_on macos:` modernized to `:ventura` (the `">= :"` string
   form is deprecated — `brew` flagged it on install).
 
+## Hygiene (post-rc.1)
+
+- **Cask single source.** `packaging/homebrew/dexter.rb.in` is the only
+  cask definition; `scripts/render-cask.sh <version> <sha256>` fills
+  `@VERSION@`/`@SHA256@` and refuses anything but `X.Y.Z[-pre]` and a
+  64-char lowercase hex digest (fail closed — a bad input fails the
+  release instead of publishing a broken cask). The hand fixes made to
+  the tap after rc.1 (`:ventura`, no `--no-quarantine`) live in the
+  template, so the next tag cannot regress them.
+- **Golden test.** `scripts/test-render-cask.sh` renders rc.1's values
+  and diffs against `packaging/homebrew/testdata/dexter-0.1.0-rc.1.rb`
+  (a verbatim copy of the published cask), plus rejection cases. Runs
+  in CI job `packaging`.
+- **Tap push still needs `TAP_GITHUB_TOKEN`.** Without it the `tap` job
+  publishes the rendered cask to the run summary for a copy-paste
+  update rather than failing the release.
+- **Universal gate.** CI `release-build` builds both slices, `lipo`s,
+  and checks `lipo -verify_arch arm64 x86_64`; the release `package`
+  job runs the same assertion before signing.
+- **Demo GIF.** `docs/assets/suite.gif` is rendered by
+  `scripts/demo_gif.py` from the captured stdout of the real sim-suite
+  run — no hand-authored frames.
+
 ## Honest caveats (user-facing)
 
 - Ad-hoc signing ≠ notarized. `xattr -d com.apple.quarantine` is
