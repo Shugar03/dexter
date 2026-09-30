@@ -79,9 +79,12 @@ perception degrades to UNCERTAIN, policy outside the model, single
   (`is_multiple_of` was already in use, stabilized there), browser walker skips `aria-hidden` subtrees.
 - Done in PR #17: index-qualified generated targets (duplicate
   labels resolvable via `SemanticTarget.index`).
-- Done in PR #TBD: polarity veto — antonym labels (`confirmar` vs
+- Done in PR #18: polarity veto — antonym labels (`confirmar` vs
   `cancelar`, `save` vs `discard`, ...) skipped before scoring;
   `cancel-polarity` scenario re-pointed at `abstained`.
+- Done in `fb2b6f7` (landed directly on main, no PR): goal negation —
+  `NEGATORS` flip the next term's polarity ("no guardar" offers
+  "Descartar"); `negate-discard.toml` pins it end-to-end.
 - Remaining: cosmetic per-step observe for overlay bounds;
   `split_whitespace` parse edges; UTF-16 surrogate split in
   `cg_type_text`; AX messaging timeout root-only; `--digest` skips
