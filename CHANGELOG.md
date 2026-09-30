@@ -107,6 +107,11 @@
 
 ### Fixed
 
+- **`run_step` paid a cosmetic observe on every act.** The overlay's
+  `target_bounds` lookup ran a full observe before each non-`Point`
+  single step even with no consumer (AX walk live; advanced `on_tick`
+  effects in sim). It now runs only when a live journal sink is
+  attached; otherwise `target_bounds` is `null` (PR #22).
 - **Laya worker protocol desync.** Responses were paired positionally:
   a request that timed out still queued its late reply on the channel,
   and the *next* request consumed it as its own (wrong answers or
