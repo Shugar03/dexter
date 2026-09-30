@@ -428,3 +428,44 @@ fn duplicate_labels_generate_index_qualified_targets() {
     }
     assert_eq!(resolved.len(), 2, "each offer resolves to its own element");
 }
+
+#[test]
+fn antonym_label_is_never_offered() {
+    // "Cancelar pedido" under goal "confirmar el pedido" matched the
+    // object "pedido" and scored high enough to press — the polarity
+    // veto drops it before scoring; only the same-polarity side is
+    // offered.
+    let o = obs(vec![
+        el(1, "button", "Cancelar pedido", &["press"]),
+        el(2, "button", "Confirmar pedido", &["press"]),
+    ]);
+    let cands = gen().generate(&o, "confirmar el pedido", &empty());
+    assert!(
+        cands.iter().any(|c| matches!(
+            &c.action,
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            } if st.name.as_deref() == Some("Confirmar pedido")
+        )),
+        "{cands:?}"
+    );
+    assert!(
+        !cands.iter().any(|c| matches!(
+            &c.action,
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            } if st.name.as_deref() == Some("Cancelar pedido")
+        )),
+        "the opposite polarity must not be offered: {cands:?}"
+    );
+}
+
+#[test]
+fn wrong_polarity_only_world_abstains() {
+    // Only "Discard" exists under "save" — nothing honest to offer.
+    let o = obs(vec![el(1, "button", "Discard draft", &["press"])]);
+    let cands = gen().generate(&o, "save the draft", &empty());
+    assert!(cands.is_empty(), "{cands:?}");
+}

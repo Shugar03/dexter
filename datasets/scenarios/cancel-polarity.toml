@@ -1,17 +1,10 @@
-# cancel-polarity — NEGATIVE CHARACTERIZATION of a known generator
-# gap, not a desired outcome. Goal is "confirmar el pedido"; the only
-# candidate is "Cancelar pedido", which stem-matches the object term
-# "pedido" and gets a passing prior — polarity blindness: the
-# generator can't tell a cancel verb from a confirm verb when they
-# share an object. The engine presses it, the order is cancelled, and
-# the run honestly reports failure (done_when never satisfied).
-#
-# `expected = "max_steps"` locks the behavior in place: the run must
-# exhaust its step budget having pressed the wrong thing. When a
-# future engine/generator learns to refuse the polarity mismatch
-# (abstains instead of pressing Cancel), this scenario flips red and
-# must be re-pointed at the new honest outcome — self-updating
-# pressure against the gap.
+# cancel-polarity — polarity-veto POSITIVE test. Goal is "confirmar el
+# pedido"; the only label in the world is "Cancelar pedido", which
+# stem-matches the object term "pedido" — but the antonym veto
+# (confirmar↔cancelar) drops it before scoring, so no candidate is
+# generated and the engine honestly abstains. Before the veto this
+# scenario pinned the wrong-act outcome ("max_steps" after pressing
+# Cancel); if the veto regresses, it flips red again.
 [scenario]
 id = "cancel-polarity"
 goal = "confirmar el pedido"
@@ -20,9 +13,8 @@ app = "Tienda"
 
 [task]
 done_when = { type = "element_exists", target = { role = "static_text", name_contains = "confirmado" } }
-expected = "max_steps"
-# 1 step: the run must end the moment the wrong act lands — no room
-# for the engine to abstain afterwards and launder the outcome.
+expected = "abstained"
+# 1 step is all an abstention needs.
 max_steps = 1
 
 [[world.element]]

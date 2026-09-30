@@ -90,6 +90,14 @@
   targets now carry `SemanticTarget.index` (position among matches in
   tree order, via `world_model::find_elements_in` — the same matching
   semantics the resolver uses), so duplicate labels are resolvable.
+- **Generator polarity veto.** A label matching the ANTONYM of a goal
+  term (and not the term itself) is now skipped before scoring —
+  `"confirmar el pedido"` can no longer press `"Cancelar pedido"`.
+  `ANTONYMS` covers es+en pairs (confirmar↔cancelar, aceptar↔rechazar,
+  guardar↔descartar, open↔close, save↔discard, ...). A goal naming
+  both polarities vetoes everything and abstains — fail-closed on a
+  genuinely ambiguous intent. `cancel-polarity` flipped from the
+  pinned wrong-act outcome to `abstained`, as designed.
 
 ### Fixed
 
