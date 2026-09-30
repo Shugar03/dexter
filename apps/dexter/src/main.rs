@@ -1812,6 +1812,28 @@ fn eval_scenario(
             } else {
                 run_scenario(&spec, &generator, decider.as_ref())
             };
+            // Live worlds aren't reproducible — when the decider
+            // abstains, print the decision context it saw so locale or
+            // AX-shape mismatches are diagnosable from the log alone.
+            if macos.is_some() && run.outcome == "abstained" {
+                if let Some(ev) = run
+                    .events
+                    .iter()
+                    .rev()
+                    .find(|e| e.kind == EventKind::CandidatesGenerated)
+                {
+                    let digest = ev.data["context"]["state_digest"].as_str().unwrap_or("?");
+                    let mut cut = digest.len().min(900);
+                    while !digest.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    println!(
+                        "{:<24} abstained — last decision digest:\n{}",
+                        spec.scenario.id,
+                        &digest[..cut]
+                    );
+                }
+            }
             if let Some(dir) = &journal_out {
                 let name = if reps > 1 {
                     format!("{}-rep{}.jsonl", spec.scenario.id, rep + 1)

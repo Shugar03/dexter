@@ -62,7 +62,11 @@
   instead of `osascript ... to quit`: AppleScript *launches* the app to
   deliver the quit, so on a cold start the app booted English before
   the pin landed and `open -a` reactivated that instance — the race
-  that kept `clock-timer` abstaining even after pinning.
+  that kept `clock-timer` abstaining even after pinning. Launches also
+  pass `-AppleLanguages '(es)'` as a launch arg (NSArgumentDomain
+  outranks any prefs domain), and the live runner prints the last
+  decision digest on abstain so future live failures show the world
+  the decider actually saw.
 ## 0.1.0
 
 First public release. Dexter is a local-first Agent Computer Runtime:
