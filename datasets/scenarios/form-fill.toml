@@ -1,0 +1,38 @@
+# form-fill — a chained form task (OSWorld form category): type a
+# literal into the Asunto field, then submit. The goal carries a hard
+# sequencing delimiter (`luego`) so `split_goal` runs it as two
+# sub-intents through the same closed loop — the edit subgoal
+# auto-completes on the value change, the submit subgoal closes on
+# the spawned confirmation. Measures sequential-goal plumbing plus
+# the set_value affordance path, which press-only scenarios never
+# exercise.
+[scenario]
+id = "form-fill"
+goal = "escribir 'informe final' en el asunto, luego enviar"
+optimal_steps = 2
+app = "Correo"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "enviado" } }
+max_steps = 8
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Nuevo mensaje"
+
+[[world.element]]
+id = 3
+role = "text_field"
+name = "Asunto"
+actions = ["set_value", "focus"]
+
+[[world.element]]
+id = 4
+role = "button"
+name = "Enviar"
+actions = ["press"]
+
+[[world.rule]]
+when = { name = "Enviar" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Mensaje enviado" } }

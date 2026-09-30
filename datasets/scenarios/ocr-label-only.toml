@@ -1,0 +1,40 @@
+# ocr-label-only — negative OCR case: the screen SHOWS the target
+# text, but it's an inert label, not a control. A kiosk display
+# renders "Pagar" as printed pixels — OCR reports it as a
+# `static_text` with no press affordance, so there is no candidate
+# and the honest outcome is abstain. Guards the OCR path's negative
+# space: recognized text must not hallucinate affordances.
+[scenario]
+id = "ocr-label-only"
+goal = "pagar la cuenta"
+optimal_steps = 0
+app = "Kiosco"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "pagada" } }
+expected = "abstained"
+max_steps = 4
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Kiosco"
+
+[[world.element]]
+id = 2
+role = "image"
+name = "Pantalla del kiosco"
+
+# The word "Pagar" is on the screen — as pixels only. OCR yields an
+# inert label: no actions, nothing to press.
+[[world.element]]
+id = 5
+role = "static_text"
+name = "Pagar"
+source = "ocr"
+
+[[world.element]]
+id = 6
+role = "static_text"
+name = "Total: $104.00"
+source = "ocr"

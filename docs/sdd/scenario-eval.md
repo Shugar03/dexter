@@ -238,6 +238,8 @@ needs depth before the loop produces a real delta.
 | `modal-confirm` | 2-step destructive-confirm dialog chain |
 | `field-disabled` | present-but-disabled affordance — success = `abstained` |
 | `cancel-polarity` | negative characterization: polarity-blind object match (`expected = "max_steps"` flips red when the gap closes) |
+| `form-fill` | sequential goal (`luego` split): edit subgoal auto-completes, submit closes |
+| `ocr-label-only` | negative OCR — recognized text without affordance must abstain |
 | `web-login` | browser: fill→submit on a real DOM (needs `--browser-url`) |
 | `web-checkout` | browser: reveal → pay — hidden-until-acted sections |
 
@@ -260,6 +262,8 @@ where each candidate came from.
 | `modal-confirm` | completed, 2 | — | — |
 | `field-disabled` | abstained (pass) | — | — |
 | `cancel-polarity` | max_steps (characterizes polarity gap) | — | — |
+| `form-fill` | completed, 2 | — | — |
+| `ocr-label-only` | abstained (pass) | — | — |
 | suite | 100% | 60% | 40% |
 
 `decide_ms` on the real model: p50 ~50ms per step, but p95 **8.4s** on
