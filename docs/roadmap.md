@@ -34,28 +34,28 @@ perception degrades to UNCERTAIN, policy outside the model, single
 
 - [x] `OpenAiProvider` behind the existing `DecisionEngine` trait —
   works with any OpenAI-compatible endpoint; Gemini reached via its
-  `v1beta/openai` compat API — PR #TBD, 2026-09-30
+  `v1beta/openai` compat API — PR #8, 2026-09-30
 - [x] Gemini provider = `OpenAiProvider` defaults: `GEMINI_API_KEY`,
   `gemini-2.5-flash-lite` (cheapest flash-lite tier); prompts bounded
   (≤8 candidates, ≤1500-char digest, 150 max_tokens, temperature 0) —
   same PR
 - [x] Worker protocol versioning (`hello` handshake at spawn/respawn,
   `"v"` on requests) + `dexter doctor` always probes an engine —
-  PR #TBD, 2026-09-30
+  PR #9, 2026-09-30
 
 ## Fase 3 — measurable reliability
 
 - [x] Scenario coverage expanded — `ocr-canvas` (OCR path via
   `SpecElement.source`), `modal-confirm`, `field-disabled` (negative:
   disabled affordance), `cancel-polarity` (negative characterization
-  of the polarity-match gap) — PR #TBD, 2026-09-30
+  of the polarity-match gap) — PR #11, 2026-09-30
 - [x] Route-gold coverage inflation fixed — coverage is act-golds
-  only (`covered / act_items`), `route_accuracy()` separate — PR #TBD,
+  only (`covered / act_items`), `route_accuracy()` separate — PR #10,
   2026-09-30
 - [x] OSWorld-style scenario set + published numbers — 13 sim specs
   across affordance categories (enable chains, dialogs, OCR +/-
   paths, negatives, sequential goals), reproducible suite report
-  (`dexter-eval` example) + `docs/eval-numbers.md` — PR #TBD,
+  (`dexter-eval` example) + `docs/eval-numbers.md` — PR #12,
   2026-09-30
 
 ## Fase 4 — reach
@@ -63,10 +63,10 @@ perception degrades to UNCERTAIN, policy outside the model, single
 - [x] Browser driver polish — disabled guard on every element act
   (`Target::Element` binds bypass the generator's enabled filter;
   programmatic clicks on disabled controls now report `Failed`
-  instead of simulating success) — PR #TBD, 2026-09-30
+  instead of simulating success) — PR #14, 2026-09-30
 - [x] Windows driver skeleton — `dexter-windows` crate: honest
   `Unsupported` seam + `uia_role()` control-type → role table —
-  PR #TBD, 2026-09-30
+  PR #13, 2026-09-30
 - [ ] Release hygiene: universal binary, homebrew tap refresh, demo
   GIF in README.
 
