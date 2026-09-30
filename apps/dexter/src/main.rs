@@ -1402,19 +1402,13 @@ fn eval_export(datasets: &[String], out: &str) -> Result<()> {
 /// One matrix row: label → eval report. Shared formatting with
 /// `eval run`'s summary line.
 fn matrix_row(label: &str, report: &dexter_eval::EvalReport) {
-    let act_items = report.covered.saturating_sub(report.route_items);
-    let act_acc = if act_items > 0 {
-        report.correct as f64 / act_items as f64
-    } else {
-        0.0
-    };
     println!(
         "{label:<38} {:>3} items | cov {:>3.0}% | act {}/{} ({:>3.0}%) | routes {}/{} | fa {} | fr {}",
         report.items,
         report.coverage() * 100.0,
         report.correct,
-        act_items,
-        act_acc * 100.0,
+        report.covered,
+        report.accuracy() * 100.0,
         report.routes_correct,
         report.route_items,
         report.false_acts,
@@ -1491,19 +1485,13 @@ fn eval_run(
             v.item_id, v.covered, v.note
         );
     }
-    let act_items = report.covered.saturating_sub(report.route_items);
-    let act_acc = if act_items > 0 {
-        report.correct as f64 / act_items as f64
-    } else {
-        0.0
-    };
     println!(
         "\n{} items | coverage {:.0}% | act-accuracy {}/{} ({:.0}%) | routes {}/{} | false_acts {} | false_routes {}",
         report.items,
         report.coverage() * 100.0,
         report.correct,
-        act_items,
-        act_acc * 100.0,
+        report.covered,
+        report.accuracy() * 100.0,
         report.routes_correct,
         report.route_items,
         report.false_acts,

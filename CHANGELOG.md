@@ -39,6 +39,13 @@
   `GEMINI_API_KEY`; prompts are bounded (≤8 candidates, ≤1500-char
   digest, 150 completion tokens, temperature 0). Docs:
   `docs/sdd/decision.md`.
+- **Laya worker protocol versioning.** Every spawn/respawn performs a
+  `hello` handshake: the worker must answer `ok` with a matching
+  `protocol` or the spawn fails — a pre-versioning or wrong binary can
+  no longer serve as a silent stale sidecar. `predict` requests carry
+  `"v"` for forward discrimination. `dexter doctor` now always probes
+  an engine (`rule-based` by default) instead of skipping the engine
+  section without `--engine`.
 
 ### Fixed
 
@@ -65,6 +72,13 @@
   app element tree with `windows == [win]` — which callers read as
   natively scoped and skipped their post-filter. The fallback now
   bounds-filters to the window rect.
+- **Eval route-gold coverage inflation.** `Gold::Route` items counted
+  as `covered` unconditionally — "routes are always available" meant
+  every route item inflated `coverage()` without the generator
+  offering anything. Coverage is now `covered / act_items` (generator
+  recall over actionable items); `accuracy()` numerator and
+  denominator are act-only (previously mixed); `route_accuracy()`
+  reported separately (`routes_correct / route_items`).
 - **Eval CI gate red since live scenarios landed.** Live scenario
   specs target Spanish AX names but CI runners are en-US — the decider
   abstained deterministically on `calc-scientific` and `clock-timer`

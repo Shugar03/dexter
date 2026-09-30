@@ -47,8 +47,9 @@ perception degrades to UNCERTAIN, policy outside the model, single
 
 - [ ] Expand `datasets/scenarios` coverage (more apps, negative cases,
   OCR paths) and keep `eval scenario --check baseline.toml` green.
-- [ ] Fix route-gold coverage inflation in eval (`Gold::Route` always
-  counts covered).
+- [x] Route-gold coverage inflation fixed — coverage is act-golds
+  only (`covered / act_items`), `route_accuracy()` separate — PR #TBD,
+  2026-09-30
 - [ ] OSWorld-style scenario set + published numbers.
 
 ## Fase 4 — reach
