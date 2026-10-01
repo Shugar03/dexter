@@ -134,3 +134,17 @@ fn remove_by_target_vanishes_an_element_on_tick() {
         .collect();
     assert_eq!(names, vec!["notas_viaje.txt"]);
 }
+
+#[test]
+fn session_export_is_unsupported_outside_web_drivers() {
+    // The trait default is honest: sim has no credential store.
+    let sim = SimDriver::new(vec![]);
+    assert!(matches!(
+        sim.export_session(),
+        Err(dexter_driver::DriverError::Unsupported(_))
+    ));
+    assert!(matches!(
+        sim.import_session(&serde_json::json!({})),
+        Err(dexter_driver::DriverError::Unsupported(_))
+    ));
+}

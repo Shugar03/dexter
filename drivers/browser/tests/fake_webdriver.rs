@@ -56,6 +56,8 @@ struct FakeServer {
     scripts: Arc<Mutex<Vec<String>>>,
     /// JSON bodies posted to /session/:id/actions, in order.
     action_bodies: Arc<Mutex<Vec<Value>>>,
+    /// Cookies accepted at POST /session/:id/cookie, in order.
+    posted_cookies: Arc<Mutex<Vec<Value>>>,
     /// Toggle: make the walker return a *different* tree to simulate a
     /// mutated DOM (stale detection test).
     mutated: Arc<Mutex<bool>>,
@@ -70,17 +72,19 @@ fn fake_webdriver() -> FakeServer {
     let port = listener.local_addr().unwrap().port();
     let scripts = Arc::new(Mutex::new(Vec::new()));
     let action_bodies = Arc::new(Mutex::new(Vec::new()));
+    let posted_cookies = Arc::new(Mutex::new(Vec::new()));
     let mutated = Arc::new(Mutex::new(false));
     let handles = Arc::new(Mutex::new(vec!["h1".to_string()]));
     let current = Arc::new(Mutex::new("h1".to_string()));
     let iframe_errors = Arc::new(Mutex::new(0u32));
-    let (s2, m2, h2, c2, e2, a2) = (
+    let (s2, m2, h2, c2, e2, a2, p2) = (
         scripts.clone(),
         mutated.clone(),
         handles.clone(),
         current.clone(),
         iframe_errors.clone(),
         action_bodies.clone(),
+        posted_cookies.clone(),
     );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -183,6 +187,30 @@ fn fake_webdriver() -> FakeServer {
                     json!({"value":null})
                 }
                 ("DELETE", p) if p.ends_with("/actions") => json!({"value":null}),
+                ("GET", p) if p.ends_with("/cookie") => json!({"value":[
+                    {"name":"sid","value":"tok-123","domain":".fake.test",
+                     "path":"/","secure":true,"httpOnly":true,"expiry":1893456000},
+                    {"name":"cart","value":"abc","domain":"fake.test",
+                     "path":"/","secure":false,"httpOnly":false}
+                ]}),
+                ("POST", p) if p.ends_with("/cookie") => {
+                    let cookie = serde_json::from_str::<Value>(body)
+                        .map(|b| b["cookie"].clone())
+                        .unwrap_or(json!({}));
+                    // Spec domain check: only the current document's
+                    // domain (fake.test, per GET /url) takes cookies.
+                    let dom_ok = cookie["domain"]
+                        .as_str()
+                        .map(|d| d.trim_start_matches('.') == "fake.test")
+                        .unwrap_or(false);
+                    if dom_ok {
+                        p2.lock().unwrap().push(cookie);
+                        json!({"value":null})
+                    } else {
+                        json!({"value":{"error":"invalid cookie domain",
+                                       "message":"cookie domain doesn't match document"}})
+                    }
+                }
                 ("POST", p) if p.ends_with("/execute/sync") => {
                     let script = serde_json::from_str::<Value>(body)
                         .ok()
@@ -222,8 +250,15 @@ fn fake_webdriver() -> FakeServer {
                 }
             };
             let out = serde_json::to_vec(&resp_body).unwrap();
+            // Spec: WebDriver errors ride a 4xx status so the client's
+            // `read_json` surfaces them — `value.error` marks one.
+            let status = if resp_body["value"]["error"].is_string() {
+                "400 Bad Request"
+            } else {
+                "200 OK"
+            };
             let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                 out.len()
             );
             let _ = stream.write_all(response.as_bytes());
@@ -235,6 +270,7 @@ fn fake_webdriver() -> FakeServer {
         url: format!("http://127.0.0.1:{port}"),
         scripts,
         action_bodies,
+        posted_cookies,
         mutated,
         iframe_errors,
     }
@@ -881,4 +917,55 @@ fn key_chord_without_coords_keeps_dom_dispatch() {
     let scripts = server.scripts.lock().unwrap();
     assert!(scripts.iter().any(|s| s.contains("KeyboardEvent")));
     assert!(server.action_bodies.lock().unwrap().is_empty());
+}
+
+#[test]
+fn export_session_wraps_jar_in_versioned_envelope() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let data = driver.export_session().unwrap();
+    assert_eq!(data["format"], "dexter-web-session/1");
+    assert_eq!(data["driver"], "safari");
+    let cookies = data["cookies"].as_array().unwrap();
+    assert_eq!(cookies.len(), 2);
+    assert_eq!(cookies[0]["name"], "sid");
+    // The blob carries the credential verbatim — transport only;
+    // callers never read `value` out of it.
+    assert_eq!(cookies[0]["value"], "tok-123");
+}
+
+#[test]
+fn import_session_posts_cookies_and_reports_domain_rejections() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let jar = json!({
+        "format": "dexter-web-session/1",
+        "driver": "safari",
+        "cookies": [
+            {"name":"sid","value":"t1","domain":".fake.test","path":"/"},
+            {"name":"other","value":"x","domain":"other.test","path":"/"}
+        ]
+    });
+    let rep = driver.import_session(&jar).unwrap();
+
+    assert_eq!(rep.imported, 1);
+    assert_eq!(rep.rejected.len(), 1);
+    assert_eq!(rep.rejected[0].0, "other");
+    assert!(rep.rejected[0].1.contains("cookie domain"));
+    // Exactly the same-domain cookie reached the endpoint.
+    let posted = server.posted_cookies.lock().unwrap();
+    assert_eq!(posted.len(), 1);
+    assert_eq!(posted[0]["name"], "sid");
+}
+
+#[test]
+fn import_session_rejects_foreign_file() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let err = driver.import_session(&json!({"cookies":[]})).unwrap_err();
+    assert!(err.to_string().contains("dexter-web-session"), "{err}");
+    assert!(server.posted_cookies.lock().unwrap().is_empty());
 }

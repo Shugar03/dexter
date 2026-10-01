@@ -187,6 +187,13 @@ enum Command {
         #[command(flatten)]
         args: ActionArgs,
     },
+    /// Persist or restore the browser session's credentials — cookie
+    /// export/import. Cookie values are never printed; the file is the
+    /// only carrier and is written owner-only (0600).
+    Session {
+        #[command(subcommand)]
+        cmd: SessionCommand,
+    },
     /// Eval harness: replay labeled decision points against engines,
     /// or harvest new labeled items by observing real pages/apps.
     Eval {
@@ -217,6 +224,28 @@ enum Command {
         /// Turn the presence overlay off for this run.
         #[arg(long, conflicts_with = "overlay")]
         no_overlay: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionCommand {
+    /// Export the session's cookies to FILE. The file is live
+    /// credentials: written owner-only (0600), and cookie values are
+    /// never printed to stdout or the journal.
+    Export {
+        /// Output path — overwritten.
+        file: String,
+    },
+    /// Import cookies previously written by `session export`.
+    /// WebDriver only accepts cookies for the current document's
+    /// domain — rejected cookies are named in the report; pass --url
+    /// to navigate to a different domain first.
+    Import {
+        /// The exported session file.
+        file: String,
+        /// Navigate to this URL before importing.
+        #[arg(long)]
+        url: Option<String>,
     },
 }
 
@@ -524,6 +553,7 @@ fn run() -> Result<()> {
             engine_path,
         ),
         Command::Navigate { url, args } => run_action(&mut engine, &args, Action::Navigate { url }),
+        Command::Session { cmd } => run_session(&mut engine, cmd),
         Command::Windows { app } => windows(engine.driver(), app),
         Command::Observe {
             app,
@@ -908,6 +938,84 @@ fn run_action(
     } else {
         anyhow::bail!("step did not complete")
     }
+}
+
+/// `dexter session export|import` — protected-session persistence.
+/// The blob is live credentials: it goes file↔driver only, and cookie
+/// values are never printed (the report names cookies, never values).
+fn run_session(engine: &mut Engine<Box<dyn ComputerDriver>>, cmd: SessionCommand) -> Result<()> {
+    match cmd {
+        SessionCommand::Export { file } => {
+            let data = engine.driver().export_session()?;
+            write_protected(&file, &serde_json::to_vec_pretty(&data)?)?;
+            let n = data["cookies"].as_array().map(|a| a.len()).unwrap_or(0);
+            let mut domains: Vec<&str> = data["cookies"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|c| c["domain"].as_str())
+                        .map(|d| d.trim_start_matches('.'))
+                        .collect()
+                })
+                .unwrap_or_default();
+            domains.sort_unstable();
+            domains.dedup();
+            println!(
+                "exported {n} cookies for {} domain(s) to {file} (0600 — treat as credentials)",
+                domains.len()
+            );
+        }
+        SessionCommand::Import { file, url } => {
+            if let Some(url) = url {
+                run_action(
+                    engine,
+                    &ActionArgs {
+                        app: None,
+                        target: None,
+                        coords: false,
+                        approve: false,
+                        expect: None,
+                        attempts: 3,
+                        events: None,
+                        overlay: false,
+                        no_overlay: true,
+                    },
+                    Action::Navigate { url },
+                )?;
+            }
+            let data: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(&file).with_context(|| format!("reading '{file}'"))?,
+            )
+            .with_context(|| format!("'{file}' is not a session export"))?;
+            let rep = engine.driver().import_session(&data)?;
+            println!("imported {} cookies", rep.imported);
+            for (name, err) in &rep.rejected {
+                eprintln!("rejected '{name}': {err}");
+            }
+            if !rep.rejected.is_empty() {
+                eprintln!(
+                    "note: WebDriver only accepts cookies for the current document's \
+                     domain — navigate to each domain (`session import --url`) and re-import"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Session exports carry live credentials — the file is owner-only.
+fn write_protected(path: &str, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)
+        .and_then(|mut f| f.write_all(bytes))
+        .with_context(|| format!("writing '{path}'"))
 }
 
 fn print_status(status: &StepStatus) {

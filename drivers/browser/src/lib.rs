@@ -14,12 +14,16 @@
 mod walker;
 mod webdriver;
 
+/// Session export format tag — versioned like the laya protocol so a
+/// foreign or truncated file fails closed at `import_session`.
+const SESSION_FORMAT: &str = "dexter-web-session/1";
+
 use dexter_core::{
     Action, ActionResult, ActionStatus, AppSelector, Element, ElementId, Mechanism, Observation,
     ObservationId, ObservationScope, Rect, Target, Window,
 };
-use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
-use serde_json::json;
+use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError, SessionImport};
+use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -685,6 +689,45 @@ impl ComputerDriver for BrowserDriver {
                 ))
             }
         }
+    }
+
+    /// Protected-session export: the jar as an opaque envelope —
+    /// `format` tags it so `import` fails closed on foreign files.
+    /// Cookie values are live credentials: this blob is written to
+    /// disk owner-only by the CLI and never journalized.
+    fn export_session(&self) -> Result<Value, DriverError> {
+        let cookies = self.client.lock().unwrap().cookies()?;
+        Ok(json!({
+            "format": SESSION_FORMAT,
+            "driver": self.label,
+            "cookies": cookies,
+        }))
+    }
+
+    /// Restore a jar produced by `export_session`. WebDriver accepts a
+    /// cookie only when its domain matches the current document's —
+    /// rejected cookies are reported by name in `SessionImport` so a
+    /// partial restore is never silent.
+    fn import_session(&self, session: &Value) -> Result<SessionImport, DriverError> {
+        if session["format"].as_str() != Some(SESSION_FORMAT) {
+            return Err(DriverError::Platform(format!(
+                "not a {SESSION_FORMAT} export"
+            )));
+        }
+        let cookies = session["cookies"].as_array().cloned().unwrap_or_default();
+        let mut imported = 0usize;
+        let mut rejected = Vec::new();
+        let mut c = self.client.lock().unwrap();
+        for cookie in cookies {
+            match c.add_cookie(&cookie) {
+                Ok(()) => imported += 1,
+                Err(e) => rejected.push((
+                    cookie["name"].as_str().unwrap_or("?").to_string(),
+                    e.to_string(),
+                )),
+            }
+        }
+        Ok(SessionImport { imported, rejected })
     }
 }
 
