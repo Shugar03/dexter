@@ -253,6 +253,21 @@ the engine probe.
 the garbage-on-predict path is covered by a purpose-built stub), all
 existing respawn/health tests re-verified through the handshake.
 
+### W-AX. Messaging timeout covered the root only
+
+`AXUIElementSetMessagingTimeout` is per-ref: refs copied out of the
+app element (windows, children, action targets) use the global default
+(~6 s per message), not the root's 1.5 s — a hung app could stall a
+walk for `elements × attributes × 6 s`.
+
+**Contract**: every AX root comes from `ax::app_element(pid)`, which
+arms `MESSAGING_TIMEOUT_SECS` on the root *and* once on the
+system-wide element (the process-wide default every descendant ref
+inherits). No call site sets its own timeout.
+
+**Test**: `app_element_arms_process_wide_timeout` (macOS CI; the call
+is local to the AX client, no TCC grant needed).
+
 ## Remaining gaps (known, not yet scheduled)
 
 - **Incremental observe** — scoping filters *after* the walk; the

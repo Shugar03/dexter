@@ -89,9 +89,7 @@ fn resolve_app(ctx: &ActContext) -> Result<(i32, AXUIElement), DriverError> {
         .clone()
         .ok_or_else(|| DriverError::NotFound("this target requires an app scope".into()))?;
     let pid = apps::resolve_pid(&sel)?;
-    let app = AXUIElement::application(pid);
-    let _ = app.set_messaging_timeout(1.5);
-    Ok((pid, app))
+    Ok((pid, ax::app_element(pid)))
 }
 
 fn bounds_close(a: Option<Rect>, b: Option<Rect>) -> bool {
@@ -157,8 +155,7 @@ fn resolve_element(
                     "observation was not app-scoped — cannot re-resolve element".into(),
                 )
             })?;
-            let app = AXUIElement::application(pid);
-            let _ = app.set_messaging_timeout(1.5);
+            let app = ax::app_element(pid);
             let tree = ax::collect(&app, ACTION_WALK_DEPTH, ACTION_WALK_MAX);
             let idx = element.0 as usize - 1;
             let fresh = tree.elements.get(idx).ok_or_else(|| {
