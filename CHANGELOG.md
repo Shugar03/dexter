@@ -29,6 +29,18 @@
 
 ### Added
 
+- **`Cascade` decision engine — rules → Laya → LLM escalation**
+  (`--engine cascade`). Tiers run in order (cheap/deterministic first,
+  model-heavy last): a tier's `Abstain`/`EscalateLlm` route — or an
+  engine error — hands the step to the next tier; anything else is
+  final, so the LLM only answers when cheaper engines can't. The
+  returned rationale carries the escalation chain, so the journal
+  always shows why a heavier tier answered and never hides a tier
+  failure; `health()` aggregates (all-down → `Down`, partial →
+  `Degraded`). `--engine-path`/`DEXTER_LAYA_WORKER` selects the laya
+  worker; the openai tier is env-configured. The MCP server now also
+  accepts `openai`/`cascade` — it previously only wired rule-based and
+  laya. Docs: `docs/sdd/decision.md`.
 - **Browser driver: W3C `/actions` endpoint — real input for what DOM
   synthesis can't cover.** `allow_coordinates` (the same `--coords`
   consent that unlocks CGEvent on macOS) upgrades `Click`/`Key`/

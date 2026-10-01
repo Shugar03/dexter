@@ -98,7 +98,10 @@ tarea real en una app macOS nativa, con aprobación humana en acciones sensibles
   (click/focus/set_value/type_text), señales focused/delta/repeat
 - Pendiente: dataset sobre árboles AX macOS reales (mismo harness,
   `eval harvest` ya es driver-agnóstico)
-- Calibración de umbrales sobre datos reales; cascada reglas → Laya → LLM
+- Cascada reglas → Laya → LLM ✅ `Cascade` (`--engine cascade`):
+  `Abstain`/`EscalateLlm` o error de tier escalan al siguiente; el
+  rationale lleva la cadena de escalación; health agrega
+- Pendiente: calibración de umbrales sobre datos reales
 - Usos concretos: detección de modal bloqueante, "¿la acción tuvo efecto?",
   resolución de targets ambiguos, detección de completitud
 - Si los números lo justifican: fine-tune propio sobre el dataset

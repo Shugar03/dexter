@@ -51,7 +51,7 @@ enum Command {
         /// Ask macOS to show the permission prompts.
         #[arg(long)]
         request: bool,
-        /// Also probe a decision engine's health (rule-based | laya).
+        /// Also probe a decision engine's health (rule-based | laya | openai | cascade).
         #[arg(long)]
         engine: Option<String>,
         /// Worker command for --engine laya (or DEXTER_LAYA_WORKER).
@@ -157,7 +157,7 @@ enum Command {
     /// Serve MCP over stdio — exposes observe/act/verify/task/journal to
     /// agent clients (Claude Desktop, MCP SDKs). Same engine path as CLI.
     Mcp {
-        /// Decider for dexter_task: rule-based | laya.
+        /// Decider for dexter_task: rule-based | laya | openai | cascade.
         #[arg(long, default_value = "rule-based")]
         engine: String,
         /// Worker command for --engine laya.
@@ -227,10 +227,10 @@ enum EvalCommand {
     Run {
         /// Dataset JSONL (one EvalItem per line).
         dataset: String,
-        /// Decision engine under test: rule-based | laya.
+        /// Decision engine under test: rule-based | laya | openai | cascade.
         #[arg(long, default_value = "rule-based")]
         engine: String,
-        /// Worker command for --engine laya.
+        /// Worker command for --engine laya (or the laya tier of cascade).
         #[arg(long)]
         engine_path: Option<String>,
         /// Abstain below this calibrated confidence (laya). 0 = never.
@@ -257,10 +257,10 @@ enum EvalCommand {
     Matrix {
         /// Dataset JSONL files (one or more).
         datasets: Vec<String>,
-        /// Decision engine under test: rule-based | laya.
+        /// Decision engine under test: rule-based | laya | openai | cascade.
         #[arg(long, default_value = "rule-based")]
         engine: String,
-        /// Worker command for --engine laya.
+        /// Worker command for --engine laya (or the laya tier of cascade).
         #[arg(long)]
         engine_path: Option<String>,
         /// Abstain below this calibrated confidence (laya). 0 = never.
@@ -284,10 +284,10 @@ enum EvalCommand {
     Scenario {
         /// Directory of scenario TOML files, or a single file.
         path: String,
-        /// Decision engine under test: rule-based | laya.
+        /// Decision engine under test: rule-based | laya | openai | cascade.
         #[arg(long, default_value = "rule-based")]
         engine: String,
-        /// Worker command for --engine laya.
+        /// Worker command for --engine laya (or the laya tier of cascade).
         #[arg(long)]
         engine_path: Option<String>,
         /// Abstain below this calibrated confidence (laya). 0 = never.
@@ -329,7 +329,8 @@ struct TaskArgs {
     /// Structural completion check (JSON ExpectedState).
     #[arg(long)]
     done: String,
-    /// Decision engine: `rule-based` | `laya` (needs --engine-path or
+    /// Decision engine: `rule-based` | `laya` | `openai` | `cascade`
+    /// (laya, and cascade's laya tier, need --engine-path or
     /// DEXTER_LAYA_WORKER).
     #[arg(long, default_value = "rule-based")]
     engine: String,
@@ -426,9 +427,41 @@ fn load_policy(path: &Option<String>) -> Result<Policy> {
     }
 }
 
-/// Build the decision engine for `task`/`mcp`/`doctor --engine`.
 /// `laya` spawns the sidecar worker; a spawn failure is an error,
 /// never a silent fallback to rule-based.
+fn laya_engine(
+    engine_path: &Option<String>,
+    min_confidence: f32,
+) -> Result<dexter_laya::LayaEngine> {
+    let cmd = engine_path
+        .clone()
+        .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
+        .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
+    Ok(
+        dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(30))
+            .with_context(|| format!("spawning laya worker '{cmd}'"))?
+            .with_min_confidence(min_confidence),
+    )
+}
+
+/// Any OpenAI-compatible endpoint. Defaults point at Gemini's compat
+/// API with the cheapest flash-lite model — override via env for other
+/// providers. `model_override` is `--engine-path` under `--engine openai`.
+fn openai_provider(model_override: Option<String>) -> dexter_decision::OpenAiProvider {
+    let base = std::env::var("DEXTER_OPENAI_BASE_URL")
+        .unwrap_or_else(|_| "https://generativelanguage.googleapis.com/v1beta/openai".to_string());
+    let model = model_override
+        .or_else(|| std::env::var("DEXTER_OPENAI_MODEL").ok())
+        .unwrap_or_else(|| "gemini-2.5-flash-lite".to_string());
+    let key_env = ["DEXTER_OPENAI_API_KEY", "GEMINI_API_KEY"]
+        .into_iter()
+        .find(|v| std::env::var(v).is_ok())
+        .unwrap_or("GEMINI_API_KEY")
+        .to_string();
+    dexter_decision::OpenAiProvider::new(base, model, key_env, Duration::from_secs(15))
+}
+
+/// Build the decision engine for `task`/`mcp`/`doctor --engine`.
 fn build_decider(
     engine_name: &str,
     engine_path: &Option<String>,
@@ -436,42 +469,22 @@ fn build_decider(
 ) -> Result<Box<dyn dexter_decision::DecisionEngine>> {
     match engine_name {
         "rule-based" => Ok(Box::new(dexter_decision::RuleBased::default())),
-        "laya" => {
-            let cmd = engine_path
-                .clone()
-                .or_else(|| std::env::var("DEXTER_LAYA_WORKER").ok())
-                .unwrap_or_else(|| "python3 workers/laya/worker.py --provider dev".to_string());
-            let engine = dexter_laya::LayaEngine::spawn(&cmd, Duration::from_secs(30))
-                .with_context(|| format!("spawning laya worker '{cmd}'"))?
-                .with_min_confidence(min_confidence);
-            Ok(Box::new(engine))
+        "laya" => Ok(Box::new(laya_engine(engine_path, min_confidence)?)),
+        "openai" => Ok(Box::new(openai_provider(engine_path.clone()))),
+        "cascade" => {
+            // rules → laya → LLM: cheap/deterministic first, model-heavy
+            // last. --engine-path selects the laya worker (as in
+            // --engine laya); the openai tier is env-configured.
+            let tiers: Vec<Box<dyn dexter_decision::DecisionEngine>> = vec![
+                Box::new(dexter_decision::RuleBased::default()),
+                Box::new(laya_engine(engine_path, min_confidence)?),
+                Box::new(openai_provider(None)),
+            ];
+            Ok(Box::new(dexter_decision::Cascade::new(tiers)))
         }
-        "openai" => {
-            // Any OpenAI-compatible endpoint. Defaults point at
-            // Gemini's compat API with the cheapest flash-lite model —
-            // override via env for other providers.
-            let base = std::env::var("DEXTER_OPENAI_BASE_URL").unwrap_or_else(|_| {
-                "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
-            });
-            let model = engine_path
-                .clone()
-                .or_else(|| std::env::var("DEXTER_OPENAI_MODEL").ok())
-                .unwrap_or_else(|| "gemini-2.5-flash-lite".to_string());
-            let key_env = ["DEXTER_OPENAI_API_KEY", "GEMINI_API_KEY"]
-                .into_iter()
-                .find(|v| std::env::var(v).is_ok())
-                .unwrap_or("GEMINI_API_KEY")
-                .to_string();
-            Ok(Box::new(dexter_decision::OpenAiProvider::new(
-                base,
-                model,
-                key_env,
-                Duration::from_secs(15),
-            )))
-        }
-        other => {
-            anyhow::bail!("unknown decision engine '{other}' — available: rule-based, laya, openai")
-        }
+        other => anyhow::bail!(
+            "unknown decision engine '{other}' — available: rule-based, laya, openai, cascade"
+        ),
     }
 }
 
@@ -732,7 +745,8 @@ fn run_mcp(
                     .with_min_confidence(min_confidence),
             ))
         }
-        other => anyhow::bail!("unknown engine '{other}' — rule-based, laya"),
+        "openai" | "cascade" => Some(build_decider(engine_name, &engine_path, min_confidence)?),
+        other => anyhow::bail!("unknown engine '{other}' — rule-based, laya, openai, cascade"),
     };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

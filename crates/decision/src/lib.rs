@@ -1218,3 +1218,100 @@ impl DecisionEngine for RuleBased {
         })
     }
 }
+
+/// Escalating composition: tiers run in order (cheap/deterministic
+/// first, model-heavy last). A tier's `Abstain` or `EscalateLlm` route
+/// — or an engine error — hands the step to the next tier; anything
+/// else is final. The returned rationale carries the escalation chain,
+/// so the journal always shows why a heavier tier answered. The last
+/// tier's verdict always stands: an abstain there is the honest end
+/// state, and `EscalateLlm`/`EscalateHuman` surface to the runtime.
+pub struct Cascade {
+    name: String,
+    tiers: Vec<Box<dyn DecisionEngine>>,
+}
+
+impl Cascade {
+    /// `tiers` in escalation order — e.g. `RuleBased`, `LayaEngine`,
+    /// `OpenAiProvider`.
+    pub fn new(tiers: Vec<Box<dyn DecisionEngine>>) -> Self {
+        let name = format!(
+            "cascade({})",
+            tiers.iter().map(|e| e.name()).collect::<Vec<_>>().join(",")
+        );
+        Self { name, tiers }
+    }
+}
+
+impl DecisionEngine for Cascade {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn decide(&self, ctx: &DecisionContext) -> Result<Decision, DecisionError> {
+        let mut trail: Vec<String> = Vec::new();
+        for (i, eng) in self.tiers.iter().enumerate() {
+            let last = i + 1 == self.tiers.len();
+            match eng.decide(ctx) {
+                Ok(Decision::Route { route, rationale })
+                    if !last && matches!(route, Route::Abstain | Route::EscalateLlm) =>
+                {
+                    trail.push(format!("{}: {route:?} — {rationale}", eng.name()));
+                }
+                Ok(mut decision) => {
+                    if !trail.is_empty() {
+                        let r = match &mut decision {
+                            Decision::Act { rationale, .. } | Decision::Route { rationale, .. } => {
+                                rationale
+                            }
+                        };
+                        *r = format!("{} → {}", trail.join(" | "), r);
+                    }
+                    return Ok(decision);
+                }
+                Err(e) if !last => {
+                    // A broken tier is not a verdict — try the next one,
+                    // but never silently: the trail records what failed.
+                    trail.push(format!("{}: error — {e}", eng.name()));
+                }
+                Err(e) => {
+                    return Err(DecisionError::Engine {
+                        engine: eng.name().to_string(),
+                        message: format!("{e} — escalation trail: {}", trail.join(" | ")),
+                    });
+                }
+            }
+        }
+        Err(DecisionError::Engine {
+            engine: self.name.clone(),
+            message: "cascade has no tiers".into(),
+        })
+    }
+
+    /// Aggregate health: `Down` only when *every* tier is down (the
+    /// cascade can't answer at all); any impaired tier degrades the
+    /// report — a dropped middle tier changes what you'll get.
+    fn health(&self) -> EngineHealth {
+        let mut parts = Vec::new();
+        let mut downs = 0usize;
+        for eng in &self.tiers {
+            match eng.health() {
+                EngineHealth::Ready => {}
+                EngineHealth::Degraded(d) => {
+                    parts.push(format!("{} degraded: {}", eng.name(), d));
+                }
+                EngineHealth::Down(d) => {
+                    downs += 1;
+                    parts.push(format!("{} down: {}", eng.name(), d));
+                }
+            }
+        }
+        if downs == self.tiers.len() && !self.tiers.is_empty() {
+            return EngineHealth::Down(format!("every tier down ({})", parts.join("; ")));
+        }
+        if !parts.is_empty() {
+            return EngineHealth::Degraded(parts.join("; "));
+        }
+        EngineHealth::Ready
+    }
+}
