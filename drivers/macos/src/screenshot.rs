@@ -8,6 +8,7 @@
 use crate::permissions;
 use dexter_core::Window;
 use dexter_driver::DriverError;
+use dexter_vision::{capture_monitor, monitor_pixel_crop, MonitorGeometry};
 use std::path::Path;
 
 /// Capture the app's frontmost window to a PNG file.
@@ -99,39 +100,56 @@ pub fn capture_window_region(window: &Window, path: &Path) -> Result<(), DriverE
     crop_monitor_to(&window.bounds, path)
 }
 
-/// Capture the primary monitor and crop to `bounds` (points — the image is
-/// in physical pixels, so multiply by the scale factor).
+/// Capture the monitor that fully contains `bounds` and crop to it. Bounds
+/// and monitor origins share CGWindowList's global point space; the image
+/// is in physical pixels, so the crop is scaled per monitor. Regions that
+/// straddle displays or sit off every display fail closed — a clipped
+/// image would not cover `bounds` and skew the OCR mapping.
 fn crop_monitor_to(bounds: &dexter_core::Rect, path: &Path) -> Result<(), DriverError> {
-    let monitor = xcap::Monitor::all()
-        .map_err(|e| DriverError::Platform(format!("monitor enumeration: {e}")))?
-        .into_iter()
-        .find(|m| m.is_primary().unwrap_or(false))
-        .or_else(|| xcap::Monitor::all().ok()?.into_iter().next())
-        .ok_or_else(|| DriverError::Platform("no monitor".into()))?;
+    let monitors = xcap::Monitor::all()
+        .map_err(|e| DriverError::Platform(format!("monitor enumeration: {e}")))?;
+    let geometry: Vec<MonitorGeometry> = monitors.iter().map(monitor_geometry).collect();
+    let index = capture_monitor(&geometry, bounds).ok_or_else(|| {
+        DriverError::NotFound("window bounds not contained in a single monitor".into())
+    })?;
 
-    let img = monitor
+    let img = monitors[index]
         .capture_image()
         .map_err(|e| DriverError::Platform(format!("capture: {e}")))?;
-    let scale = monitor.scale_factor().unwrap_or(1.0) as f64;
-
-    let x = (bounds.x * scale).max(0.0) as u32;
-    let y = (bounds.y * scale).max(0.0) as u32;
-    let w = (bounds.w * scale) as u32;
-    let h = (bounds.h * scale) as u32;
-    let w = w.min(img.width().saturating_sub(x));
-    let h = h.min(img.height().saturating_sub(y));
-    if w == 0 || h == 0 {
-        return Err(DriverError::NotFound(
-            "window bounds outside captured monitor".into(),
-        ));
-    }
-    image::imageops::crop_imm(&img, x, y, w, h)
+    let crop = monitor_pixel_crop(&geometry[index], bounds, img.width(), img.height())
+        .ok_or_else(|| DriverError::NotFound("window bounds outside captured monitor".into()))?;
+    image::imageops::crop_imm(&img, crop.x, crop.y, crop.w, crop.h)
         .to_image()
         .save(path)
         .map_err(|e| DriverError::Platform(format!("save {}: {e}", path.display())))
 }
 
-/// Fallback: capture the primary monitor and crop to the app's main
+/// Unreadable geometry maps to a zero-size monitor, which never contains a
+/// region — enumeration glitches fail closed instead of guessing.
+fn monitor_geometry(m: &xcap::Monitor) -> MonitorGeometry {
+    let read = || -> Option<MonitorGeometry> {
+        Some(MonitorGeometry {
+            bounds: dexter_core::Rect {
+                x: f64::from(m.x().ok()?),
+                y: f64::from(m.y().ok()?),
+                w: f64::from(m.width().ok()?),
+                h: f64::from(m.height().ok()?),
+            },
+            scale: f64::from(m.scale_factor().ok()?),
+        })
+    };
+    read().unwrap_or(MonitorGeometry {
+        bounds: dexter_core::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        },
+        scale: 0.0,
+    })
+}
+
+/// Fallback: capture the containing monitor and crop to the app's main
 /// layer-0 window (bounds come from CGWindowList, in points — the image is
 /// in physical pixels, so multiply by the scale factor). On-screen flags
 /// can be absent for windows in other Spaces, so we prefer but don't

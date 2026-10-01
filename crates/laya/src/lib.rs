@@ -280,18 +280,21 @@ impl LayaEngine {
     /// Kill the current child (if still running) and spawn a fresh one.
     /// Bounded by `respawns_left`.
     fn respawn(&self) -> Result<(), DecisionError> {
-        let left = self
-            .respawns_left
-            .fetch_update(
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-                |n| n.checked_sub(1),
-            )
-            .map_err(|_| DecisionError::Engine {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mut left = self.respawns_left.load(SeqCst);
+        loop {
+            let next = left.checked_sub(1).ok_or_else(|| DecisionError::Engine {
                 engine: self.name().into(),
                 message: "worker respawn budget exhausted — not retrying".into(),
             })?;
-        let _ = left; // consumed
+            match self
+                .respawns_left
+                .compare_exchange_weak(left, next, SeqCst, SeqCst)
+            {
+                Ok(_) => break,
+                Err(current) => left = current,
+            }
+        }
         let mut w = self.worker.lock().unwrap();
         let _ = w.child.kill(); // already-dead is fine
         let _ = w.child.wait(); // reap
