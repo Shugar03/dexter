@@ -76,8 +76,11 @@ tarea real en una app macOS nativa, con aprobación humana en acciones sensibles
 - ✅ Observación DOM normalizada al mismo `Element` (walker in-page:
   rol ARIA/tag, accessible name, bounds, acciones)
 - ✅ DOM actions como `Mechanism::Dom` — background-safe real
-- Pendiente: multi-tab/iframe flatten, `/actions` endpoint para casos
-  que DOM-dispatch no cubre, sesiones protegidas (cookies/credenciales)
+- ✅ multi-tab (cada tab es un `Window` Dexter) + iframe flatten
+  same-origin en el walker
+- ✅ `/actions` endpoint — input real (pointer/key/wheel) donde la
+  síntesis DOM no alcanza; gated por `--coords` como el tier físico
+- Pendiente: sesiones protegidas (cookies/credenciales)
 
 **Criterio de salida:** una tarea web completa sin usar coordenadas salvo fallback.
 

@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
 use walker::WALKER_JS;
-use webdriver::WebDriverClient;
+use webdriver::{WebDriverClient, ELEMENT_KEY};
 
 pub struct BrowserDriver {
     client: Mutex<WebDriverClient>,
@@ -130,6 +130,86 @@ impl BrowserDriver {
     fn walk(&self) -> Result<(Vec<Element>, u32), DriverError> {
         let raw = self.client.lock().unwrap().execute(WALKER_JS, vec![])?;
         Ok(walker::parse_elements(raw))
+    }
+
+    /// Fetch the WebDriver element reference for `id` — the node from
+    /// the live walk, through the same stale/disabled guard as
+    /// `exec_on`. `Ok(None)` = disabled: the caller must report a
+    /// `Failed` act instead of letting a pointer click land on a
+    /// control that can't take it. The returned JSON object is itself
+    /// a pointer `origin` (`{element-6066-…: ref}` or legacy `ELEMENT`).
+    fn element_origin(&self, id: ElementId) -> Result<Option<serde_json::Value>, DriverError> {
+        let resp = self.client.lock().unwrap().execute(
+            &format!(
+                "return (() => {{ const el = window.__dexterNodes?.[{}]; \
+                 if (!el) return {{__dexter_err: 'stale node'}}; \
+                 if (el.disabled === true || el.getAttribute('aria-disabled') === 'true') \
+                     return {{__dexter_err: 'disabled'}}; \
+                 return el; }})()",
+                id.0
+            ),
+            vec![],
+        )?;
+        match resp["__dexter_err"].as_str() {
+            Some("stale node") => Err(DriverError::StaleReference("stale node".into())),
+            Some("disabled") => Ok(None),
+            Some(other) => Err(DriverError::Platform(format!("element error: {other}"))),
+            None => {
+                if resp.get(ELEMENT_KEY).is_some() || resp.get("ELEMENT").is_some() {
+                    Ok(Some(resp))
+                } else {
+                    Err(DriverError::Platform(
+                        "execute returned no element reference".into(),
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Post an input-source sequence to `POST /actions` and report the
+    /// real-input mechanism. On error, release any held input state
+    /// (keys/buttons persist across calls per spec) before surfacing.
+    fn perform(
+        &self,
+        sources: Vec<serde_json::Value>,
+        detail: String,
+    ) -> Result<ActionResult, DriverError> {
+        let mut c = self.client.lock().unwrap();
+        match c.perform_actions(sources) {
+            Ok(()) => Ok(ActionResult::success(Mechanism::Coordinates, Some(detail))),
+            Err(e) => {
+                let _ = c.release_actions();
+                Err(e)
+            }
+        }
+    }
+
+    /// `KeyChord` → W3C key-source sequence: modifiers down in order,
+    /// key down/up, modifiers up in reverse — same shape as a human
+    /// chord. Unknown names are `Unsupported`, never guessed.
+    fn key_chord(&self, chord: &dexter_core::KeyChord) -> Result<ActionResult, DriverError> {
+        let mut mods = Vec::new();
+        for m in &chord.modifiers {
+            mods.push(
+                webdriver_key(m)
+                    .ok_or_else(|| DriverError::Unsupported(format!("unknown modifier '{m}'")))?,
+            );
+        }
+        let key = webdriver_key(&chord.key)
+            .ok_or_else(|| DriverError::Unsupported(format!("unknown key '{}'", chord.key)))?;
+        let mut seq: Vec<serde_json::Value> = Vec::new();
+        for v in &mods {
+            seq.push(json!({"type":"keyDown","value":v}));
+        }
+        seq.push(json!({"type":"keyDown","value":key}));
+        seq.push(json!({"type":"keyUp","value":key}));
+        for v in mods.iter().rev() {
+            seq.push(json!({"type":"keyUp","value":v}));
+        }
+        self.perform(
+            vec![json!({"type":"key","id":"dexter-keys","actions":seq})],
+            format!("posted chord {}", describe_chord(chord)),
+        )
     }
 
     /// Run `script` with the live DOM node for `id` as `arguments[0]`.
@@ -349,7 +429,7 @@ impl ComputerDriver for BrowserDriver {
         Ok(obs)
     }
 
-    fn act(&self, action: &Action, _ctx: &ActContext) -> Result<ActionResult, DriverError> {
+    fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
         match action {
             Action::Wait { millis } => {
                 std::thread::sleep(std::time::Duration::from_millis(*millis));
@@ -377,6 +457,43 @@ impl ComputerDriver for BrowserDriver {
                     ));
                 }
                 let id = self.resolve(target)?;
+                if ctx.allow_coordinates {
+                    // Real input tier: a pointer sequence anchored at the
+                    // element's in-viewport center (element origin — no
+                    // raw coordinates) for pages that require trusted
+                    // events. The element-ref probe carries the
+                    // stale/disabled guard before anything clicks.
+                    match self.element_origin(id)? {
+                        None => {
+                            return Ok(ActionResult::failure(
+                                ActionStatus::Failed,
+                                Mechanism::Coordinates,
+                                "element is disabled",
+                            ));
+                        }
+                        Some(origin) => {
+                            let btn = match button {
+                                dexter_core::MouseButton::Middle => 1,
+                                dexter_core::MouseButton::Right => 2,
+                                _ => 0,
+                            };
+                            return self.perform(
+                                vec![json!({
+                                    "type":"pointer",
+                                    "id":"dexter-pointer",
+                                    "parameters":{"pointerType":"mouse"},
+                                    "actions":[
+                                        {"type":"pointerMove","duration":0,
+                                         "origin":origin,"x":0,"y":0},
+                                        {"type":"pointerDown","button":btn},
+                                        {"type":"pointerUp","button":btn}
+                                    ]
+                                })],
+                                format!("clicked element {id}"),
+                            );
+                        }
+                    }
+                }
                 let js = match button {
                     dexter_core::MouseButton::Right => {
                         "el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true})); 'right-clicked'"
@@ -442,6 +559,32 @@ impl ComputerDriver for BrowserDriver {
                 ))
             }
             Action::TypeText { text, target } => {
+                if ctx.allow_coordinates {
+                    // Real key input: covers what a `.value` assignment
+                    // never inserts into — contenteditable, rich-text
+                    // editors, isTrusted-gated fields. An explicit
+                    // target is focused via DOM first; untargeted keys
+                    // land on whatever the page has focused.
+                    if let Some(t) = target {
+                        if !matches!(t, Target::Focused) {
+                            let id = self.resolve(t)?;
+                            let resp = self.exec_on(id, "el.focus(); 'focused'")?;
+                            if let Some(res) = Self::el_err(&resp)? {
+                                return Ok(res);
+                            }
+                        }
+                    }
+                    let mut seq: Vec<serde_json::Value> = Vec::new();
+                    for ch in text.chars() {
+                        let v = ch.to_string();
+                        seq.push(json!({"type":"keyDown","value":v}));
+                        seq.push(json!({"type":"keyUp","value":v}));
+                    }
+                    return self.perform(
+                        vec![json!({"type":"key","id":"dexter-keys","actions":seq})],
+                        format!("typed {} chars via /actions", text.chars().count()),
+                    );
+                }
                 let t = target.clone().unwrap_or(Target::Focused);
                 let id = self.resolve(&t)?;
                 let resp = self.client.lock().unwrap().execute(
@@ -466,10 +609,13 @@ impl ComputerDriver for BrowserDriver {
                 ))
             }
             Action::Key { chord } => {
+                if ctx.allow_coordinates {
+                    // Real input tier — trusted key events to the
+                    // focused element, like CGEvent on macOS.
+                    return self.key_chord(chord);
+                }
                 // DOM key dispatch to the focused element — no physical
-                // keyboard, no focus stealing. Deliberately not the
-                // WebDriver /actions endpoint (that's a *different*
-                // mechanism ladder for later).
+                // keyboard, no focus stealing.
                 self.client.lock().unwrap().execute(
                     "return (() => { const el = document.activeElement || document.body; \
                      const init = {key: arguments[0], bubbles:true, \
@@ -502,6 +648,33 @@ impl ComputerDriver for BrowserDriver {
                         Some(format!("scrolled element {id} into view")),
                     ));
                 }
+                if ctx.allow_coordinates {
+                    // Wheel source at the viewport center — real wheel
+                    // events (wheel handlers, scroll-driven effects)
+                    // that a silent scrollBy skips.
+                    let dims = self
+                        .client
+                        .lock()
+                        .unwrap()
+                        .execute("return [window.innerWidth, window.innerHeight];", vec![])?;
+                    let (w, h) = (
+                        dims[0].as_f64().unwrap_or(0.0) / 2.0,
+                        dims[1].as_f64().unwrap_or(0.0) / 2.0,
+                    );
+                    return self.perform(
+                        vec![json!({
+                            "type":"wheel",
+                            "id":"dexter-wheel",
+                            "actions":[{
+                                "type":"scroll",
+                                "x": w as i64, "y": h as i64,
+                                "deltaX": delta.dx, "deltaY": delta.dy,
+                                "origin":"viewport","duration":0
+                            }]
+                        })],
+                        format!("scrolled wheel ({},{})", delta.dx, delta.dy),
+                    );
+                }
                 self.client.lock().unwrap().execute(
                     "window.scrollBy(arguments[0], arguments[1]); return 'scrolled';",
                     vec![json!(delta.dx), json!(delta.dy)],
@@ -513,4 +686,62 @@ impl ComputerDriver for BrowserDriver {
             }
         }
     }
+}
+
+/// Canonical key name → W3C Actions key value. Single characters pass
+/// through verbatim; named keys use the spec's private-use codepoints.
+/// Unknown names are an explicit error — never guessed.
+fn webdriver_key(name: &str) -> Option<String> {
+    let v = match name {
+        "shift" => "\u{e008}",
+        "ctrl" | "control" => "\u{e009}",
+        "alt" | "option" | "opt" => "\u{e00a}",
+        "cmd" | "command" | "meta" => "\u{e03d}",
+        "return" | "enter" => "\u{e006}",
+        "tab" => "\u{e004}",
+        "escape" | "esc" => "\u{e00c}",
+        "backspace" | "delete" => "\u{e003}",
+        "forward_delete" | "del" => "\u{e017}",
+        "insert" => "\u{e016}",
+        "home" => "\u{e011}",
+        "end" => "\u{e010}",
+        "page_up" | "pageup" => "\u{e00e}",
+        "page_down" | "pagedown" => "\u{e00f}",
+        "left" => "\u{e012}",
+        "up" => "\u{e013}",
+        "right" => "\u{e014}",
+        "down" => "\u{e015}",
+        "space" => " ",
+        "f1" => "\u{e031}",
+        "f2" => "\u{e032}",
+        "f3" => "\u{e033}",
+        "f4" => "\u{e034}",
+        "f5" => "\u{e035}",
+        "f6" => "\u{e036}",
+        "f7" => "\u{e037}",
+        "f8" => "\u{e038}",
+        "f9" => "\u{e039}",
+        "f10" => "\u{e03a}",
+        "f11" => "\u{e03b}",
+        "f12" => "\u{e03c}",
+        // Punctuation aliases — the Actions value is the literal char.
+        "equal" => "=",
+        "minus" => "-",
+        "quote" => "'",
+        "backslash" => "\\",
+        "comma" => ",",
+        "slash" => "/",
+        "semicolon" => ";",
+        "period" => ".",
+        "backtick" => "`",
+        _ if name.chars().count() == 1 => name,
+        _ => return None,
+    };
+    Some(v.to_string())
+}
+
+fn describe_chord(chord: &dexter_core::KeyChord) -> String {
+    let mut parts = chord.modifiers.clone();
+    parts.push(chord.key.clone());
+    parts.join("+")
 }

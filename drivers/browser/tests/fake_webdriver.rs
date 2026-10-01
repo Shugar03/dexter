@@ -7,8 +7,8 @@
 
 use dexter_browser::BrowserDriver;
 use dexter_core::{
-    Action, ActionStatus, ElementSource, Mechanism, MouseButton, ObservationScope, SemanticTarget,
-    Target,
+    Action, ActionStatus, ElementSource, KeyChord, Mechanism, MouseButton, ObservationScope,
+    ScrollDelta, SemanticTarget, Target,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverError};
 use serde_json::{json, Value};
@@ -54,6 +54,8 @@ struct FakeServer {
     url: String,
     /// Scripts received at /execute/sync, in order.
     scripts: Arc<Mutex<Vec<String>>>,
+    /// JSON bodies posted to /session/:id/actions, in order.
+    action_bodies: Arc<Mutex<Vec<Value>>>,
     /// Toggle: make the walker return a *different* tree to simulate a
     /// mutated DOM (stale detection test).
     mutated: Arc<Mutex<bool>>,
@@ -67,16 +69,18 @@ fn fake_webdriver() -> FakeServer {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let scripts = Arc::new(Mutex::new(Vec::new()));
+    let action_bodies = Arc::new(Mutex::new(Vec::new()));
     let mutated = Arc::new(Mutex::new(false));
     let handles = Arc::new(Mutex::new(vec!["h1".to_string()]));
     let current = Arc::new(Mutex::new("h1".to_string()));
     let iframe_errors = Arc::new(Mutex::new(0u32));
-    let (s2, m2, h2, c2, e2) = (
+    let (s2, m2, h2, c2, e2, a2) = (
         scripts.clone(),
         mutated.clone(),
         handles.clone(),
         current.clone(),
         iframe_errors.clone(),
+        action_bodies.clone(),
     );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -172,6 +176,13 @@ fn fake_webdriver() -> FakeServer {
                     // 1x1 transparent PNG.
                     json!({"value":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="})
                 }
+                ("POST", p) if p.ends_with("/actions") => {
+                    a2.lock()
+                        .unwrap()
+                        .push(serde_json::from_str::<Value>(body).unwrap_or(json!({})));
+                    json!({"value":null})
+                }
+                ("DELETE", p) if p.ends_with("/actions") => json!({"value":null}),
                 ("POST", p) if p.ends_with("/execute/sync") => {
                     let script = serde_json::from_str::<Value>(body)
                         .ok()
@@ -183,6 +194,12 @@ fn fake_webdriver() -> FakeServer {
                         // a real DOM node's el.disabled is true, so the
                         // in-page guard reports 'disabled' — emulate it.
                         json!({"value":{"__dexter_err":"disabled"}})
+                    } else if script.contains("return el;") {
+                        // Element-reference probe (`return el`): the
+                        // driver hands this to pointer actions' origin.
+                        json!({"value":{"element-6066-11e4-a52e-4f735466cecf":"fake-el-ref"}})
+                    } else if script.contains("innerWidth") {
+                        json!({"value":[1280,800]})
                     } else if script.contains("__dexterNodes = nodes") {
                         let errs = *e2.lock().unwrap();
                         if *m2.lock().unwrap() {
@@ -217,6 +234,7 @@ fn fake_webdriver() -> FakeServer {
     FakeServer {
         url: format!("http://127.0.0.1:{port}"),
         scripts,
+        action_bodies,
         mutated,
         iframe_errors,
     }
@@ -600,4 +618,267 @@ fn disabled_element_act_reports_failed_not_success() {
     assert_eq!(result.mechanism, Mechanism::Dom);
     let scripts = server.scripts.lock().unwrap();
     assert!(scripts.iter().any(|s| s.contains("__dexterNodes?.[5]")));
+}
+
+// ---- W3C /actions endpoint (real input tier, `allow_coordinates`) ----
+
+fn coords() -> ActContext {
+    ActContext {
+        allow_coordinates: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn click_with_coords_posts_pointer_action_on_element() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let result = driver
+        .act(
+            &Action::Click {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("button".into()),
+                    name: Some("Pay now".into()),
+                    ..Default::default()
+                }),
+                button: MouseButton::Left,
+            },
+            &coords(),
+        )
+        .expect("click");
+
+    assert_eq!(result.mechanism, Mechanism::Coordinates);
+    // The element-ref probe ran on node 3; no DOM click ran.
+    let scripts = server.scripts.lock().unwrap();
+    assert!(scripts
+        .iter()
+        .any(|s| s.contains("return el;") && s.contains("__dexterNodes?.[3]")));
+    assert!(!scripts.iter().any(|s| s.contains("el.click()")));
+
+    let bodies = server.action_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 1);
+    let pointer = &bodies[0]["actions"][0];
+    assert_eq!(pointer["type"], "pointer");
+    assert_eq!(pointer["parameters"]["pointerType"], "mouse");
+    let mv = &pointer["actions"][0];
+    assert_eq!(mv["type"], "pointerMove");
+    assert_eq!(
+        mv["origin"]["element-6066-11e4-a52e-4f735466cecf"],
+        "fake-el-ref"
+    );
+    assert_eq!(pointer["actions"][1]["type"], "pointerDown");
+    assert_eq!(pointer["actions"][1]["button"], 0);
+    assert_eq!(pointer["actions"][2]["type"], "pointerUp");
+}
+
+#[test]
+fn right_click_with_coords_uses_pointer_button_2() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    driver
+        .act(
+            &Action::Click {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("button".into()),
+                    name: Some("Pay now".into()),
+                    ..Default::default()
+                }),
+                button: MouseButton::Right,
+            },
+            &coords(),
+        )
+        .expect("right click");
+
+    let bodies = server.action_bodies.lock().unwrap();
+    assert_eq!(bodies[0]["actions"][0]["actions"][1]["button"], 2);
+}
+
+#[test]
+fn key_chord_with_coords_uses_key_source() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let result = driver
+        .act(
+            &Action::Key {
+                chord: KeyChord::parse("ctrl+shift+p").unwrap(),
+            },
+            &coords(),
+        )
+        .expect("key");
+
+    assert_eq!(result.mechanism, Mechanism::Coordinates);
+    let bodies = server.action_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 1);
+    let keys = &bodies[0]["actions"][0];
+    assert_eq!(keys["type"], "key");
+    let seq = &keys["actions"];
+    // Modifiers down in order, key down/up, modifiers up in reverse.
+    assert_eq!(seq[0], json!({"type":"keyDown","value":"\u{e009}"}));
+    assert_eq!(seq[1], json!({"type":"keyDown","value":"\u{e008}"}));
+    assert_eq!(seq[2], json!({"type":"keyDown","value":"p"}));
+    assert_eq!(seq[3], json!({"type":"keyUp","value":"p"}));
+    assert_eq!(seq[4], json!({"type":"keyUp","value":"\u{e008}"}));
+    assert_eq!(seq[5], json!({"type":"keyUp","value":"\u{e009}"}));
+}
+
+#[test]
+fn type_text_with_coords_types_real_keys() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let result = driver
+        .act(
+            &Action::TypeText {
+                text: "42".into(),
+                target: Some(Target::Semantic(SemanticTarget {
+                    role: Some("text_field".into()),
+                    name: Some("Card number".into()),
+                    ..Default::default()
+                })),
+            },
+            &coords(),
+        )
+        .expect("type");
+
+    assert_eq!(result.mechanism, Mechanism::Coordinates);
+    // The resolved element got a DOM focus before real key input.
+    let scripts = server.scripts.lock().unwrap();
+    assert!(scripts
+        .iter()
+        .any(|s| s.contains("el.focus()") && s.contains("__dexterNodes?.[2]")));
+
+    let bodies = server.action_bodies.lock().unwrap();
+    let keys = &bodies[0]["actions"][0];
+    assert_eq!(keys["type"], "key");
+    let seq = &keys["actions"];
+    assert_eq!(seq[0], json!({"type":"keyDown","value":"4"}));
+    assert_eq!(seq[1], json!({"type":"keyUp","value":"4"}));
+    assert_eq!(seq[2], json!({"type":"keyDown","value":"2"}));
+    assert_eq!(seq[3], json!({"type":"keyUp","value":"2"}));
+}
+
+#[test]
+fn untargeted_type_with_coords_sends_keys_without_focus_probe() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    driver
+        .act(
+            &Action::TypeText {
+                text: "x".into(),
+                target: None,
+            },
+            &coords(),
+        )
+        .expect("type");
+
+    // No element to focus — keys land on whatever is focused.
+    let scripts = server.scripts.lock().unwrap();
+    assert!(!scripts.iter().any(|s| s.contains("el.focus()")));
+    let bodies = server.action_bodies.lock().unwrap();
+    assert_eq!(
+        bodies[0]["actions"][0]["actions"][0],
+        json!({"type":"keyDown","value":"x"})
+    );
+}
+
+#[test]
+fn untargeted_scroll_with_coords_posts_wheel() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let result = driver
+        .act(
+            &Action::Scroll {
+                delta: ScrollDelta {
+                    dx: 0.0,
+                    dy: -240.0,
+                },
+                target: None,
+            },
+            &coords(),
+        )
+        .expect("scroll");
+
+    assert_eq!(result.mechanism, Mechanism::Coordinates);
+    let bodies = server.action_bodies.lock().unwrap();
+    let wheel = &bodies[0]["actions"][0];
+    assert_eq!(wheel["type"], "wheel");
+    let scroll = &wheel["actions"][0];
+    assert_eq!(scroll["type"], "scroll");
+    assert_eq!(scroll["origin"], "viewport");
+    assert_eq!(scroll["x"], 640);
+    assert_eq!(scroll["y"], 400);
+    assert_eq!(scroll["deltaY"], -240.0);
+    // No DOM scrollBy ran.
+    let scripts = server.scripts.lock().unwrap();
+    assert!(!scripts.iter().any(|s| s.contains("window.scrollBy")));
+}
+
+#[test]
+fn disabled_element_coords_click_reports_failed_without_actions_post() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let result = driver
+        .act(
+            &Action::Click {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("button".into()),
+                    name: Some("Apply coupon".into()),
+                    ..Default::default()
+                }),
+                button: MouseButton::Left,
+            },
+            &coords(),
+        )
+        .expect("honest result");
+
+    assert_eq!(result.status, ActionStatus::Failed);
+    // The ref probe ran — and no pointer action was ever posted.
+    assert!(server.action_bodies.lock().unwrap().is_empty());
+}
+
+#[test]
+fn point_click_remains_unsupported_with_coords() {
+    // Deliberate stance: browser always offers semantic targets;
+    // pointer actions anchor to elements, never raw coordinates.
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let result = driver
+        .act(
+            &Action::Click {
+                target: Target::Point { x: 10.0, y: 20.0 },
+                button: MouseButton::Left,
+            },
+            &coords(),
+        )
+        .expect("result");
+
+    assert_eq!(result.status, ActionStatus::Unsupported);
+    assert!(server.action_bodies.lock().unwrap().is_empty());
+}
+
+#[test]
+fn key_chord_without_coords_keeps_dom_dispatch() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "safari").unwrap();
+
+    let result = driver
+        .act(
+            &Action::Key {
+                chord: KeyChord::parse("ctrl+s").unwrap(),
+            },
+            &ActContext::default(),
+        )
+        .expect("key");
+
+    assert_eq!(result.mechanism, Mechanism::Dom);
+    let scripts = server.scripts.lock().unwrap();
+    assert!(scripts.iter().any(|s| s.contains("KeyboardEvent")));
+    assert!(server.action_bodies.lock().unwrap().is_empty());
 }
