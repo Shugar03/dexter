@@ -63,6 +63,35 @@ pub fn activate_pid(pid: i32) -> bool {
     }
 }
 
+/// Bundle identifier of the running application `pid`, if it has one
+/// (helpers and CLI processes often don't).
+pub fn bundle_for_pid(pid: i32) -> Option<String> {
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let app: id = msg_send![
+            class!(NSRunningApplication),
+            runningApplicationWithProcessIdentifier: pid
+        ];
+        let bundle = if app == nil {
+            None
+        } else {
+            let ns: id = msg_send![app, bundleIdentifier];
+            if ns == nil {
+                None
+            } else {
+                let utf8 = ns.UTF8String();
+                (!utf8.is_null()).then(|| {
+                    std::ffi::CStr::from_ptr(utf8)
+                        .to_string_lossy()
+                        .into_owned()
+                })
+            }
+        };
+        pool.drain();
+        bundle
+    }
+}
+
 /// Pid of the frontmost application, if the workspace reports one.
 pub fn frontmost_pid() -> Option<i32> {
     unsafe {

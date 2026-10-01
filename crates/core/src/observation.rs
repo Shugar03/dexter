@@ -31,6 +31,22 @@ impl AppSelector {
             Self::Name(s.to_string())
         }
     }
+
+    /// Whether `w` belongs to the selected app. Pid is exact; a name is a
+    /// case-insensitive substring of the owner name; a bundle id must
+    /// equal the driver-reported `Window::bundle_id` (case-insensitive) —
+    /// a window without one never matches, rather than falling back to
+    /// the owner name.
+    pub fn matches_window(&self, w: &Window) -> bool {
+        match self {
+            Self::Pid(pid) => w.pid == *pid,
+            Self::BundleId(bundle) => w
+                .bundle_id
+                .as_deref()
+                .is_some_and(|b| b.eq_ignore_ascii_case(bundle)),
+            Self::Name(name) => w.app.to_lowercase().contains(&name.to_lowercase()),
+        }
+    }
 }
 
 /// `com.foo.Bar`: non-empty dot-separated segments of alphanumerics and
@@ -104,6 +120,10 @@ pub struct Window {
     pub pid: i32,
     /// Owning application name (`kCGWindowOwnerName`).
     pub app: String,
+    /// Owning application's bundle identifier, when the driver can
+    /// resolve one (macOS: `NSRunningApplication.bundleIdentifier`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
     /// Window title; may be `None` without screen-recording permission.
     pub title: Option<String>,
     pub bounds: crate::Rect,

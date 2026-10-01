@@ -1,6 +1,6 @@
 # SDD: polish — native window observe, engine health, client SDK
 
-Second hardening round. Three items left over from `hardening.md`'s
+Second hardening round. Items left over from `hardening.md`'s
 gap list plus the agent-integration roadmap, all under one contract set.
 
 ## N1. Driver-native window scoping (real incremental observe)
@@ -86,6 +86,30 @@ makes it one `import` away.
 call round-trip, error results, notification skipping, timeout. An
 integration test against the real binary runs only when `DEXTER_BIN`
 is set.
+
+## N4. `windows --app bundle:` matches the bundle id
+
+`dexter windows --app com.x.Y` used to substring-match the bundle id
+against `kCGWindowOwnerName` — a display name, never a bundle id — so
+bundle filters either matched nothing or matched the wrong app.
+
+**Contract**
+
+- `Window.bundle_id: Option<String>` — the owning app's bundle id when
+  the driver can resolve one (macOS: `NSRunningApplication
+  .bundleIdentifier`, resolved once per pid per `list_windows`).
+  Serde: `default` + omitted when `None`, so existing payloads parse
+  and serialize unchanged.
+- `AppSelector::matches_window(&Window)` is the single filter: `Pid`
+  exact; `Name` case-insensitive substring of `app` (unchanged);
+  `BundleId` case-insensitive *equality* with `bundle_id`. A window
+  without a bundle id never matches a bundle selector — fail closed,
+  no fallback to the owner name.
+- sim/browser drivers report `None` (no bundle ids to report).
+
+**Tests**: core contract — bundle selector matches `bundle_id` not
+owner name, no substring matches, `None` never matches, pid/name
+semantics preserved, `bundle_id` optional on the wire.
 
 ## Non-goals
 

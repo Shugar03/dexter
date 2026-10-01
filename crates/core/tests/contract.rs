@@ -206,3 +206,64 @@ fn app_selector_parse_distinguishes_names_from_bundle_ids() {
         AppSelector::Name("My App.v2".into())
     );
 }
+
+fn window(pid: i32, app: &str, bundle_id: Option<&str>) -> Window {
+    Window {
+        id: 1,
+        pid,
+        app: app.into(),
+        bundle_id: bundle_id.map(Into::into),
+        title: None,
+        bounds: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        },
+        on_screen: true,
+        layer: 0,
+    }
+}
+
+#[test]
+fn bundle_selector_matches_window_bundle_id_not_owner_name() {
+    let sel = AppSelector::BundleId("com.apple.TextEdit".into());
+    assert!(sel.matches_window(&window(7, "TextEdit", Some("com.apple.TextEdit"))));
+    assert!(sel.matches_window(&window(7, "TextEdit", Some("COM.APPLE.TEXTEDIT"))));
+    // An owner name that happens to contain the bundle string is not a match.
+    assert!(!sel.matches_window(&window(
+        8,
+        "com.apple.TextEdit helper",
+        Some("com.x.Helper")
+    )));
+    // A different app whose bundle id merely contains the needle.
+    assert!(!sel.matches_window(&window(9, "Other", Some("com.apple.TextEdit.Helper"))));
+}
+
+#[test]
+fn bundle_selector_fails_closed_without_driver_bundle_id() {
+    let sel = AppSelector::BundleId("com.apple.TextEdit".into());
+    assert!(!sel.matches_window(&window(7, "com.apple.TextEdit", None)));
+}
+
+#[test]
+fn pid_and_name_selectors_match_windows() {
+    let w = window(7, "TextEdit", Some("com.apple.TextEdit"));
+    assert!(AppSelector::Pid(7).matches_window(&w));
+    assert!(!AppSelector::Pid(8).matches_window(&w));
+    assert!(AppSelector::Name("textedit".into()).matches_window(&w));
+    assert!(AppSelector::Name("Text".into()).matches_window(&w));
+    assert!(!AppSelector::Name("Safari".into()).matches_window(&w));
+}
+
+#[test]
+fn window_bundle_id_is_optional_on_the_wire() {
+    let json = r#"{"id":1,"pid":7,"app":"TextEdit","title":null,
+        "bounds":{"x":0.0,"y":0.0,"w":10.0,"h":10.0},"on_screen":true,"layer":0}"#;
+    let w: Window = serde_json::from_str(json).unwrap();
+    assert_eq!(w.bundle_id, None);
+    let v = serde_json::to_value(&w).unwrap();
+    assert!(v.get("bundle_id").is_none(), "absent bundle id is omitted");
+    let v = serde_json::to_value(window(7, "TextEdit", Some("com.apple.TextEdit"))).unwrap();
+    assert_eq!(v["bundle_id"], "com.apple.TextEdit");
+}
