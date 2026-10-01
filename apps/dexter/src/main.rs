@@ -1268,21 +1268,12 @@ fn observe(driver: &dyn ComputerDriver, scope: &ObservationScope, digest: bool) 
         Some(id) => dexter_world_model::scope_to_window(obs, id).map_err(anyhow::Error::msg)?,
         None => obs,
     };
+    for warning in obs.perception_warnings() {
+        eprintln!("dexter: {warning}");
+    }
     if digest {
         println!("{}", obs.digest);
     } else {
-        if obs.elements_truncated {
-            eprintln!(
-                "dexter: element list truncated at scope limits — \
-                 `not found` results are not definitive"
-            );
-        }
-        if obs.ax_limited {
-            eprintln!(
-                "dexter: AX tree degraded (ax_limited) — the accessibility \
-                 grant likely applies to your terminal, not this binary"
-            );
-        }
         println!("{}", serde_json::to_string_pretty(&obs)?);
     }
     Ok(())
