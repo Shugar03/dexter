@@ -162,9 +162,29 @@ pub fn utf16_chunks(text: &str, max_units: usize) -> Vec<Vec<u16>> {
     chunks
 }
 
+/// The one pid behind an app selector. `pids` are the running
+/// processes the platform matched for `what` (e.g. "bundle id 'com.a'");
+/// non-positive pids are not running. Several distinct instances fail
+/// closed as [`DriverError::Ambiguous`] — acting on an arbitrary one
+/// would target a window the caller never chose.
+pub fn unique_app_pid(pids: &[i32], what: &str) -> Result<i32, DriverError> {
+    let mut found: Option<i32> = None;
+    for &pid in pids.iter().filter(|&&p| p > 0) {
+        match found {
+            Some(prev) if prev != pid => {
+                return Err(DriverError::Ambiguous(format!(
+                    "more than one running application with {what} — use --pid"
+                )));
+            }
+            _ => found = Some(pid),
+        }
+    }
+    found.ok_or_else(|| DriverError::AppNotFound(format!("no running application with {what}")))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::utf16_chunks;
+    use super::{unique_app_pid, utf16_chunks, DriverError};
 
     fn roundtrip(chunks: &[Vec<u16>]) -> Vec<String> {
         chunks
@@ -200,5 +220,38 @@ mod tests {
     #[test]
     fn utf16_chunks_empty_text_is_empty() {
         assert!(utf16_chunks("", 20).is_empty());
+    }
+
+    #[test]
+    fn unique_app_pid_single_instance_resolves() {
+        assert_eq!(unique_app_pid(&[412], "bundle id 'com.a'").unwrap(), 412);
+    }
+
+    #[test]
+    fn unique_app_pid_none_is_app_not_found() {
+        let err = unique_app_pid(&[], "bundle id 'com.a'").unwrap_err();
+        assert!(matches!(err, DriverError::AppNotFound(m) if m.contains("com.a")));
+    }
+
+    #[test]
+    fn unique_app_pid_non_positive_pids_are_not_running() {
+        let err = unique_app_pid(&[-1, 0], "bundle id 'com.a'").unwrap_err();
+        assert!(matches!(err, DriverError::AppNotFound(_)));
+    }
+
+    #[test]
+    fn unique_app_pid_multiple_instances_fail_closed() {
+        let err = unique_app_pid(&[412, 913], "bundle id 'com.a'").unwrap_err();
+        assert!(
+            matches!(err, DriverError::Ambiguous(m) if m.contains("com.a") && m.contains("--pid"))
+        );
+    }
+
+    #[test]
+    fn unique_app_pid_duplicate_reports_of_one_pid_resolve() {
+        assert_eq!(
+            unique_app_pid(&[412, 412], "bundle id 'com.a'").unwrap(),
+            412
+        );
     }
 }

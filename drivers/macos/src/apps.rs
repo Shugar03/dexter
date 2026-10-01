@@ -15,7 +15,7 @@ pub fn resolve_pid(selector: &AppSelector) -> Result<i32, DriverError> {
 }
 
 fn pid_for_bundle(bundle: &str) -> Result<i32, DriverError> {
-    unsafe {
+    let pids = unsafe {
         let pool = NSAutoreleasePool::new(nil);
         let bundle_ns = NSString::alloc(nil).init_str(bundle);
         let apps: id = msg_send![
@@ -23,22 +23,16 @@ fn pid_for_bundle(bundle: &str) -> Result<i32, DriverError> {
             runningApplicationsWithBundleIdentifier: bundle_ns
         ];
         let count: usize = msg_send![apps, count];
-        let pid = if count > 0 {
-            let app: id = msg_send![apps, objectAtIndex: 0usize];
+        let mut pids = Vec::with_capacity(count);
+        for i in 0..count {
+            let app: id = msg_send![apps, objectAtIndex: i];
             let pid: i32 = msg_send![app, processIdentifier];
-            pid
-        } else {
-            -1
-        };
-        pool.drain();
-        if pid > 0 {
-            Ok(pid)
-        } else {
-            Err(DriverError::AppNotFound(format!(
-                "no running application with bundle id '{bundle}'"
-            )))
+            pids.push(pid);
         }
-    }
+        pool.drain();
+        pids
+    };
+    dexter_driver::unique_app_pid(&pids, &format!("bundle id '{bundle}'"))
 }
 
 /// Raise `pid`'s windows and make it key — the one activation a lazy
