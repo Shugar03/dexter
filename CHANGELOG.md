@@ -123,6 +123,10 @@
 
 ### Fixed
 
+- **`dexter mcp` built the driver twice.** The CLI engine's driver
+  was dropped and `run_mcp` called `build_driver` again — a second
+  `safaridriver` session under `--driver browser`. MCP now takes the
+  CLI engine's driver via `Engine::into_driver` (PR #36).
 - **`dexter windows --app <bundle id>` matched the owner name.** The
   bundle id was substring-matched against `kCGWindowOwnerName`, so it
   matched nothing or the wrong app. `Window` now carries an optional

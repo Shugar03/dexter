@@ -106,5 +106,7 @@ perception degrades to UNCERTAIN, policy outside the model, single
   `Window.bundle_id` (macOS: `NSRunningApplication.bundleIdentifier`)
   via `AppSelector::matches_window`, never the owner name; windows
   without a bundle id fail closed.
-- Remaining: `dexter mcp` builds the driver twice;
-  primary-monitor-only bounds; `pid_for_bundle` no ambiguity check.
+- Done in PR #36 (2026-10-01): `dexter mcp` builds the driver twice
+  — MCP takes the CLI engine's driver via `Engine::into_driver`.
+- Remaining: primary-monitor-only bounds; `pid_for_bundle` no
+  ambiguity check.
