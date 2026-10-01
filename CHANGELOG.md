@@ -123,6 +123,12 @@
 
 ### Fixed
 
+- **`--app <bundle id>` picked an arbitrary instance.** `pid_for_bundle`
+  took the first `NSRunningApplication` for the bundle id, so with two
+  instances running (or a helper sharing the id) actions could land in
+  a window the caller never chose. Resolution now goes through
+  `dexter_driver::unique_app_pid`: several distinct pids fail closed as
+  `Ambiguous` (use `--pid`), same as `--app <name>`.
 - **Monitor-crop screenshots and OCR captured only the primary
   display.** Windows on a secondary monitor were cropped out of the
   primary's image (wrong pixels or `NotFound`), and windows hanging off
