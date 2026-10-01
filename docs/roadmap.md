@@ -108,5 +108,9 @@ perception degrades to UNCERTAIN, policy outside the model, single
   without a bundle id fail closed.
 - Done in PR #36 (2026-10-01): `dexter mcp` builds the driver twice
   — MCP takes the CLI engine's driver via `Engine::into_driver`.
-- Remaining: primary-monitor-only bounds; `pid_for_bundle` no
-  ambiguity check.
+- Done in PR #38 (2026-10-01): primary-monitor-only bounds —
+  monitor-crop captures (OCR + screenshot fallback) use the display
+  that fully contains the window (`dexter_vision::capture_monitor`),
+  cropped relative to that display's origin and scale; spanning or
+  off-screen windows fail closed.
+- Remaining: `pid_for_bundle` no ambiguity check.

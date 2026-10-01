@@ -129,7 +129,7 @@
   an edge were silently clipped. The crop now uses the display that
   fully contains the window (`dexter_vision::capture_monitor`), offset
   from that display's origin at its own scale; spanning or off-screen
-  windows fail closed.
+  windows fail closed (PR #38).
 - **`dexter mcp` built the driver twice.** The CLI engine's driver
   was dropped and `run_mcp` called `build_driver` again — a second
   `safaridriver` session under `--driver browser`. MCP now takes the
