@@ -104,6 +104,75 @@ pub fn token_rect(token: &NormRect, img_w_px: u32, img_h_px: u32, window: &Rect)
     })
 }
 
+/// One display in global screen points (the CGWindowList space) and its
+/// pixels-per-point scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MonitorGeometry {
+    pub bounds: Rect,
+    pub scale: f64,
+}
+
+/// A crop rectangle in a monitor capture's physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PixelCrop {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Sub-point slack for float noise in display/window bounds.
+const CONTAIN_EPS_PT: f64 = 0.5;
+
+fn contains(outer: &Rect, inner: &Rect) -> bool {
+    inner.x >= outer.x - CONTAIN_EPS_PT
+        && inner.y >= outer.y - CONTAIN_EPS_PT
+        && inner.x + inner.w <= outer.x + outer.w + CONTAIN_EPS_PT
+        && inner.y + inner.h <= outer.y + outer.h + CONTAIN_EPS_PT
+}
+
+/// Index of the monitor whose capture fully covers `region`.
+///
+/// `None` when the region is degenerate, off every display, or straddles
+/// displays — no single image covers it, and a clipped crop would skew
+/// the token→point mapping.
+pub fn capture_monitor(monitors: &[MonitorGeometry], region: &Rect) -> Option<usize> {
+    if region.w <= 0.0 || region.h <= 0.0 {
+        return None;
+    }
+    monitors
+        .iter()
+        .position(|m| m.scale > 0.0 && contains(&m.bounds, region))
+}
+
+/// Pixel crop of `region` inside a `img_w_px`×`img_h_px` capture of
+/// `monitor`, offset from the monitor's own origin. `None` unless the
+/// image covers the whole region (≤1px rounding slack is clamped).
+pub fn monitor_pixel_crop(
+    monitor: &MonitorGeometry,
+    region: &Rect,
+    img_w_px: u32,
+    img_h_px: u32,
+) -> Option<PixelCrop> {
+    if region.w <= 0.0 || region.h <= 0.0 || !contains(&monitor.bounds, region) {
+        return None;
+    }
+    let edge = |pt: f64, origin: f64, limit: u32| -> Option<u32> {
+        let px = ((pt - origin) * monitor.scale).round().max(0.0);
+        (px <= f64::from(limit) + 1.0).then(|| (px as u32).min(limit))
+    };
+    let left = edge(region.x, monitor.bounds.x, img_w_px)?;
+    let top = edge(region.y, monitor.bounds.y, img_h_px)?;
+    let right = edge(region.x + region.w, monitor.bounds.x, img_w_px)?;
+    let bottom = edge(region.y + region.h, monitor.bounds.y, img_h_px)?;
+    (right > left && bottom > top).then_some(PixelCrop {
+        x: left,
+        y: top,
+        w: right - left,
+        h: bottom - top,
+    })
+}
+
 /// Turn OCR tokens into Dexter elements scoped to `window`.
 ///
 /// The elements are deliberately inert: `text` role, recognized text as the
@@ -209,6 +278,96 @@ mod tests {
             h: 1.0,
         };
         assert_eq!(token_rect(&norm, 800, 600, &zero), None);
+    }
+
+    const PRIMARY: MonitorGeometry = MonitorGeometry {
+        bounds: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1440.0,
+            h: 900.0,
+        },
+        scale: 2.0,
+    };
+    // External display to the right of the primary, at 1x.
+    const RIGHT: MonitorGeometry = MonitorGeometry {
+        bounds: Rect {
+            x: 1440.0,
+            y: -180.0,
+            w: 1920.0,
+            h: 1080.0,
+        },
+        scale: 1.0,
+    };
+
+    #[test]
+    fn capture_monitor_picks_the_display_containing_the_region() {
+        let mons = [PRIMARY, RIGHT];
+        assert_eq!(capture_monitor(&mons, &WIN), Some(0));
+        let on_right = Rect {
+            x: 1600.0,
+            y: -100.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        assert_eq!(capture_monitor(&mons, &on_right), Some(1));
+    }
+
+    #[test]
+    fn capture_monitor_fails_closed_on_spanning_offscreen_or_degenerate_regions() {
+        let mons = [PRIMARY, RIGHT];
+        // Straddles both displays: no single image covers it.
+        let spanning = Rect {
+            x: 1200.0,
+            y: 100.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        assert_eq!(capture_monitor(&mons, &spanning), None);
+        let offscreen = Rect { x: -900.0, ..WIN };
+        assert_eq!(capture_monitor(&mons, &offscreen), None);
+        assert_eq!(capture_monitor(&mons, &Rect { w: 0.0, ..WIN }), None);
+        assert_eq!(capture_monitor(&[], &WIN), None);
+    }
+
+    #[test]
+    fn monitor_pixel_crop_is_relative_to_the_monitor_origin() {
+        // Primary at 2x: points double, origin is (0,0).
+        assert_eq!(
+            monitor_pixel_crop(&PRIMARY, &WIN, 2880, 1800),
+            Some(PixelCrop {
+                x: 200,
+                y: 400,
+                w: 1600,
+                h: 1200,
+            })
+        );
+        // Secondary at 1x with a negative-y origin: offsets subtract the
+        // monitor origin instead of indexing the primary's image.
+        let on_right = Rect {
+            x: 1600.0,
+            y: -100.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        assert_eq!(
+            monitor_pixel_crop(&RIGHT, &on_right, 1920, 1080),
+            Some(PixelCrop {
+                x: 160,
+                y: 80,
+                w: 800,
+                h: 600,
+            })
+        );
+    }
+
+    #[test]
+    fn monitor_pixel_crop_rejects_a_region_the_image_does_not_cover() {
+        // Image smaller than the geometry promised (mode change mid-capture):
+        // a clipped crop would silently skew the token mapping.
+        assert_eq!(monitor_pixel_crop(&PRIMARY, &WIN, 1440, 900), None);
+        let outside = Rect { x: 1600.0, ..WIN };
+        assert_eq!(monitor_pixel_crop(&PRIMARY, &outside, 2880, 1800), None);
     }
 
     #[test]

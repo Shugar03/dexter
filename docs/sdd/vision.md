@@ -53,6 +53,15 @@ chosen window is `scope.window` when set, else
 `pick_capture_window` (largest layer-0, preferring on-screen — the same
 selection the screenshot path always used).
 
+Monitor choice is multi-display aware (`capture_monitor` /
+`monitor_pixel_crop` in `dexter-vision`, pure and Linux-testable):
+the capture comes from the display whose CGDisplayBounds — the same
+global point space as CGWindowList — fully contains the window, and the
+pixel crop is offset from that display's origin at its own scale. A
+window that straddles displays, sits off every display, or isn't fully
+covered by the captured image fails closed (`NotFound`) instead of
+returning a clipped crop that would skew the token→point mapping.
+
 Tokens become elements appended after AX elements (ids continue the AX
 sequence so `id == index + 1` still holds):
 
@@ -87,6 +96,8 @@ OCR elements have no semantic actions and no live handle:
 - `crates/vision` unit: bottom-left→top-left mapping, exact 2x Retina
   scale invariance, full-image box = window, PNG IHDR, inert element
   shape (no actions, `source: ocr`).
+- `crates/vision` unit: monitor selection (secondary display, spanning /
+  off-screen / degenerate → `None`) and monitor-relative pixel crops.
 - `crates/vision/tests/ocr.rs` (macOS): real Vision run over a checked-in
   rendered fixture — recognizes "Save document", confidence > 0.5,
   normalized bounds, end-to-end mapping inside the window rect.
