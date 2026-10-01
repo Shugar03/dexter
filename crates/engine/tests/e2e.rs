@@ -808,3 +808,28 @@ fn run_step_with_live_sink_journals_target_bounds() {
     assert!(streamed.contains("\"target_bounds\":{"), "{streamed}");
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn into_driver_hands_back_the_same_driver() {
+    // `dexter mcp` reuses the CLI engine's driver instead of building a
+    // second one (a second `safaridriver` session, a second AX setup).
+    let sim = SimDriver::new(vec![el(1, "button", "Guardar")]);
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let step = Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                role: Some("button".into()),
+                name: Some("Guardar".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+        },
+        expect: None,
+        max_attempts: None,
+        app: None,
+    };
+    let _ = engine.run_step(&step, &cfg());
+    let sim = engine.into_driver();
+    assert_eq!(sim.pressed(), vec![ElementId(1)]);
+}
