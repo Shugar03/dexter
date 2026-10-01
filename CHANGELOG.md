@@ -123,6 +123,11 @@
 
 ### Fixed
 
+- **`dexter observe --digest` dropped perception warnings.** The
+  `elements_truncated` / `ax_limited` stderr warnings were printed only
+  on the JSON path, so the digest — the decision-engine input — gave no
+  sign that `not found` was non-definitive. Both formats now emit
+  `Observation::perception_warnings()` to stderr (PR #32).
 - **macOS AX messaging timeout only covered the app root.**
   `set_messaging_timeout(1.5)` was applied to the `AXApplication`
   element alone; every window, child and action ref copied out of it
