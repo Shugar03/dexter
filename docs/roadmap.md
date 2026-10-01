@@ -113,4 +113,7 @@ perception degrades to UNCERTAIN, policy outside the model, single
   that fully contains the window (`dexter_vision::capture_monitor`),
   cropped relative to that display's origin and scale; spanning or
   off-screen windows fail closed.
-- Remaining: `pid_for_bundle` no ambiguity check.
+- Done in PR #40 (2026-10-01): `pid_for_bundle` no ambiguity check
+  — `--app <bundle id>` resolves via `dexter_driver::unique_app_pid`;
+  several running instances fail closed as `Ambiguous` (use `--pid`).
+- Remaining: none.
