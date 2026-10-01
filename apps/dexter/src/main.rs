@@ -695,6 +695,7 @@ fn run() -> Result<()> {
             overlay,
         } => run_mcp(
             &cli,
+            engine.into_driver(),
             eng,
             engine_path.clone(),
             min_confidence,
@@ -709,15 +710,16 @@ fn run() -> Result<()> {
 
 fn run_mcp(
     cli: &Cli,
+    driver: Box<dyn ComputerDriver>,
     engine_name: &str,
     engine_path: Option<String>,
     min_confidence: f32,
     config: dexter_mcp::ServerConfig,
 ) -> Result<()> {
-    // MCP owns its own engine (persistent session) — the CLI's engine is
-    // dropped. Policy and driver come from the global flags.
+    // MCP owns its own engine (persistent session) around the CLI
+    // engine's driver — one driver per process. Policy is re-read from
+    // the global flag so the MCP engine starts with untouched consent.
     let policy = load_policy(&cli.policy)?;
-    let driver = build_driver(cli)?;
     // The task decider is spawned once at server start — a laya worker
     // loads its model here rather than per dexter_task call.
     let decider: Option<Box<dyn dexter_decision::DecisionEngine>> = match engine_name {

@@ -178,6 +178,13 @@ impl<D: ComputerDriver> Engine<D> {
         &self.driver
     }
 
+    /// Consume the engine, keeping only its driver — for callers that
+    /// hand the driver to another runtime (e.g. `dexter mcp`) rather than
+    /// building a second one.
+    pub fn into_driver(self) -> D {
+        self.driver
+    }
+
     /// Snapshot of the journal (cloned — the live store may keep
     /// appending from a running task).
     pub fn events(&self) -> Vec<Event> {
