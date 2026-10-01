@@ -187,6 +187,7 @@ fn within_window_scopes_to_intersecting_elements() {
             id: 7,
             pid: 100,
             app: "TextEdit".into(),
+            bundle_id: None,
             title: None,
             bounds: Rect {
                 x: 0.0,
@@ -201,6 +202,7 @@ fn within_window_scopes_to_intersecting_elements() {
             id: 8,
             pid: 100,
             app: "TextEdit".into(),
+            bundle_id: None,
             title: None,
             bounds: Rect {
                 x: 400.0,
@@ -238,6 +240,7 @@ fn scope_to_window_skips_refilter_when_driver_scoped() {
         id: 7,
         pid: 100,
         app: "TextEdit".into(),
+        bundle_id: None,
         title: None,
         bounds: Rect {
             x: 0.0,
@@ -275,6 +278,7 @@ fn scope_to_window_filters_when_driver_didnt() {
             id: 7,
             pid: 100,
             app: "A".into(),
+            bundle_id: None,
             title: None,
             bounds: Rect {
                 x: 0.0,
@@ -289,6 +293,7 @@ fn scope_to_window_filters_when_driver_didnt() {
             id: 8,
             pid: 100,
             app: "A".into(),
+            bundle_id: None,
             title: None,
             bounds: Rect {
                 x: 900.0,

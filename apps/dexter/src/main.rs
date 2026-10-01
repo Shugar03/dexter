@@ -1247,16 +1247,7 @@ fn windows(driver: &dyn ComputerDriver, app: Option<String>) -> Result<()> {
     let mut windows = driver.windows().context("listing windows")?;
     if let Some(filter) = app {
         let sel = AppSelector::parse(&filter);
-        match sel {
-            AppSelector::Pid(pid) => windows.retain(|w| w.pid == pid),
-            AppSelector::BundleId(b) => {
-                windows.retain(|w| w.app.to_lowercase().contains(&b.to_lowercase()))
-            }
-            AppSelector::Name(n) => {
-                let needle = n.to_lowercase();
-                windows.retain(|w| w.app.to_lowercase().contains(&needle))
-            }
-        }
+        windows.retain(|w| sel.matches_window(w));
     }
     println!("{}", serde_json::to_string_pretty(&windows)?);
     Ok(())

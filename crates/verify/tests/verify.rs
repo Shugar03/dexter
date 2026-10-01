@@ -137,6 +137,7 @@ fn window_title_uncertain_when_all_titles_hidden() {
         id: 1,
         pid: 1,
         app: "Finder".into(),
+        bundle_id: None,
         title: None, // screen recording off
         bounds: Rect {
             x: 0.0,

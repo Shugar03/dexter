@@ -80,6 +80,7 @@ impl SimDriver {
                     id: 1,
                     pid: 1,
                     app: "sim".into(),
+                    bundle_id: None,
                     title: Some("Sim Window".into()),
                     bounds: dexter_core::Rect {
                         x: 0.0,

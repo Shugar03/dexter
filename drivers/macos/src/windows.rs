@@ -16,6 +16,7 @@ use core_graphics::window::{
 };
 use dexter_core::{Rect, Window};
 use dexter_driver::DriverError;
+use std::collections::HashMap;
 
 type Dict = CFDictionary<CFString, CFType>;
 
@@ -71,6 +72,7 @@ pub fn list_windows() -> Result<Vec<Window>, DriverError> {
     }
     let list: CFArray<Dict> = unsafe { CFArray::wrap_under_create_rule(raw) };
     let mut out = Vec::with_capacity(list.len() as usize);
+    let mut bundles: HashMap<i32, Option<String>> = HashMap::new();
     for dict in list.iter() {
         let dict: &Dict = &dict;
         let (Some(id), Some(pid), Some(app), Some(rect)) = (
@@ -81,10 +83,16 @@ pub fn list_windows() -> Result<Vec<Window>, DriverError> {
         ) else {
             continue;
         };
+        let pid = pid as i32;
+        let bundle_id = bundles
+            .entry(pid)
+            .or_insert_with(|| crate::apps::bundle_for_pid(pid))
+            .clone();
         out.push(Window {
             id: id as u32,
-            pid: pid as i32,
+            pid,
             app,
+            bundle_id,
             title: string(dict, "kCGWindowName"),
             bounds: rect,
             on_screen: boolean(dict, "kCGWindowIsOnscreen").unwrap_or(false),

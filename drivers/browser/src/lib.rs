@@ -359,6 +359,7 @@ impl ComputerDriver for BrowserDriver {
                 id: self.id_for_handle(h),
                 pid: 0,
                 app: self.label.clone(),
+                bundle_id: None,
                 title: (*h == current).then(|| format!("{title} — {url}")),
                 bounds: Rect {
                     x: 0.0,

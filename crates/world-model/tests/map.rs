@@ -91,6 +91,7 @@ fn cg_window_without_ax_window_marks_limited() {
         id: 1,
         pid: 1,
         app: "Test".into(),
+        bundle_id: None,
         title: Some("W".into()),
         bounds: Rect {
             x: 0.0,
