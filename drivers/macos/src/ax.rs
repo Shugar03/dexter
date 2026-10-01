@@ -11,8 +11,37 @@ use core_foundation::string::CFString;
 use dexter_core::{Element, ElementId, ElementSource, Rect};
 use dexter_world_model::normalize_ax_role;
 use std::ffi::c_void;
+use std::sync::OnceLock;
 
 use crate::ffi;
+
+/// Per-message AX timeout (seconds) so a hung app can't freeze the runtime.
+pub const MESSAGING_TIMEOUT_SECS: f32 = 1.5;
+
+static GLOBAL_TIMEOUT_ARMED: OnceLock<bool> = OnceLock::new();
+
+/// Arm the process-wide AX messaging timeout (once). A per-element
+/// timeout covers only that ref: windows, children and every other ref
+/// copied out of it fall back to the global default (~6 s per message),
+/// so a hung app could stall a tree walk for minutes. Setting it on the
+/// system-wide element changes that default.
+fn arm_global_timeout() -> bool {
+    *GLOBAL_TIMEOUT_ARMED.get_or_init(|| {
+        AXUIElement::system_wide()
+            .set_messaging_timeout(MESSAGING_TIMEOUT_SECS)
+            .is_ok()
+    })
+}
+
+/// The application element for `pid`, with the messaging timeout armed
+/// both on the root and process-wide — the only way the driver should
+/// obtain an AX root.
+pub fn app_element(pid: i32) -> AXUIElement {
+    arm_global_timeout();
+    let app = AXUIElement::application(pid);
+    let _ = app.set_messaging_timeout(MESSAGING_TIMEOUT_SECS);
+    app
+}
 
 pub struct AxTree {
     pub elements: Vec<Element>,
@@ -326,5 +355,16 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx) 
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_element_arms_process_wide_timeout() {
+        let _app = app_element(std::process::id() as i32);
+        assert_eq!(GLOBAL_TIMEOUT_ARMED.get(), Some(&true));
     }
 }

@@ -20,7 +20,6 @@ mod windows;
 
 pub mod permissions;
 
-use accessibility::AXUIElement;
 use dexter_core::{
     Action, ActionResult, Observation, ObservationId, ObservationScope, Rect, Window,
 };
@@ -111,9 +110,7 @@ impl ComputerDriver for MacOsDriver {
             obs.pid = Some(pid);
             obs.windows.retain(|w| w.pid == pid);
 
-            let app = AXUIElement::application(pid);
-            // Per-call AX timeout so a hung app can't freeze the runtime.
-            let _ = app.set_messaging_timeout(1.5);
+            let app = ax::app_element(pid);
             let tree = match scope.window {
                 Some(win_id) => {
                     let cg_bounds = obs

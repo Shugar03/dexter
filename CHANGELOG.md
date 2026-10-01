@@ -107,6 +107,13 @@
 
 ### Fixed
 
+- **macOS AX messaging timeout only covered the app root.**
+  `set_messaging_timeout(1.5)` was applied to the `AXApplication`
+  element alone; every window, child and action ref copied out of it
+  ran on the global default (~6 s per message), so a hung app could
+  stall a tree walk for minutes. AX roots now come from
+  `ax::app_element`, which also arms the timeout process-wide on the
+  system-wide element (once).
 - **macOS `type_text` could split a surrogate pair across events.**
   Text was posted in fixed 20-unit UTF-16 slices, so an emoji or other
   astral char straddling a boundary went out as two lone surrogates
