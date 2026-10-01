@@ -170,4 +170,46 @@ impl Observation {
     pub fn element(&self, id: ElementId) -> Option<&Element> {
         self.elements.iter().find(|e| e.id == id)
     }
+
+    /// Operator-facing warnings for incomplete perception, independent of
+    /// how the observation is rendered (JSON or digest).
+    pub fn perception_warnings(&self) -> Vec<&'static str> {
+        let mut warnings = Vec::new();
+        if self.elements_truncated {
+            warnings.push(
+                "element list truncated at scope limits — \
+                 `not found` results are not definitive",
+            );
+        }
+        if self.ax_limited {
+            warnings.push(
+                "AX tree degraded (ax_limited) — the accessibility \
+                 grant likely applies to your terminal, not this binary",
+            );
+        }
+        warnings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_perception_has_no_warnings() {
+        assert!(Observation::default().perception_warnings().is_empty());
+    }
+
+    #[test]
+    fn truncated_and_ax_limited_each_warn() {
+        let obs = Observation {
+            elements_truncated: true,
+            ax_limited: true,
+            ..Observation::default()
+        };
+        let w = obs.perception_warnings();
+        assert_eq!(w.len(), 2);
+        assert!(w[0].contains("truncated"));
+        assert!(w[1].contains("ax_limited"));
+    }
 }
