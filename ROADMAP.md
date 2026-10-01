@@ -99,8 +99,10 @@ tarea real en una app macOS nativa, con aprobación humana en acciones sensibles
 - Pendiente: dataset sobre árboles AX macOS reales (mismo harness,
   `eval harvest` ya es driver-agnóstico)
 - Calibración de umbrales sobre datos reales; cascada reglas → Laya → LLM
-- Usos concretos: detección de modal bloqueante, "¿la acción tuvo efecto?",
-  resolución de targets ambiguos, detección de completitud
+- Usos concretos: ✅ detección de modal bloqueante (`Element.modal`
+  positivo de la plataforma → candidatos acotados al subárbol),
+  "¿la acción tuvo efecto?", resolución de targets ambiguos,
+  detección de completitud
 - Si los números lo justifican: fine-tune propio sobre el dataset
 
 **Criterio de salida:** reducción medida de llamadas al LLM grande y latencia

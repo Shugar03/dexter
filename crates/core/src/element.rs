@@ -66,6 +66,12 @@ pub struct Element {
     pub bounds: Option<Rect>,
     pub enabled: Option<bool>,
     pub focused: bool,
+    /// The platform reports this element as modal — a dialog or window
+    /// that blocks interaction outside its subtree (AXModal, AXSheet,
+    /// aria-modal, `:modal`). `None` = the driver could not tell; it
+    /// never restricts the candidate scope.
+    #[serde(default)]
+    pub modal: Option<bool>,
     /// Semantic actions the element advertises (`AXPress` -> `press`, ...).
     pub actions: Vec<String>,
     /// Stable-ish platform identifier (AXIdentifier, DOM id) when present.
@@ -88,6 +94,7 @@ impl Default for Element {
             bounds: None,
             enabled: None,
             focused: false,
+            modal: None,
             actions: Vec::new(),
             identifier: None,
             source: ElementSource::Accessibility,

@@ -263,6 +263,19 @@ fn bool_attr(r: Result<CFBoolean, accessibility::Error>) -> Option<bool> {
     r.ok().map(|b| b == CFBoolean::true_value())
 }
 
+/// Read a boolean attribute by name — the accessibility crate only
+/// generates accessors for a fixed list, and `AXAttribute::new`
+/// exists solely for `CFType`, so decode the raw value.
+fn bool_attr_named(el: &AXUIElement, name: &str) -> Option<bool> {
+    let attr = AXAttribute::<CFType>::new(&CFString::new(name));
+    let v: CFType = el.attribute(&attr).ok()?;
+    if !v.instance_of::<CFBoolean>() {
+        return None;
+    }
+    let b = unsafe { CFBoolean::wrap_under_get_rule(v.as_CFTypeRef() as _) };
+    Some(b == CFBoolean::true_value())
+}
+
 /// Semantic actions, normalized: "AXPress" -> "press".
 fn action_names(el: &AXUIElement) -> Vec<String> {
     el.action_names()
@@ -314,6 +327,14 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx) 
     };
     let enabled = bool_attr(el.enabled());
     let focused = bool_attr(el.focused()).unwrap_or(false);
+    // Positive modality evidence: sheets and system dialogs are modal
+    // by definition; other window-ish roles report AXModal. Unreadable
+    // → `None` (unknown never restricts the candidate scope).
+    let modal = match role.as_deref() {
+        Some("sheet" | "system_dialog") => Some(true),
+        Some("window" | "dialog" | "drawer" | "floating_window") => bool_attr_named(el, "AXModal"),
+        _ => None,
+    };
     let bounds = element_bounds(el);
     let actions = action_names(el);
 
@@ -339,6 +360,7 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx) 
         bounds,
         enabled,
         focused,
+        modal,
         actions,
         identifier,
         source: ElementSource::Accessibility,
