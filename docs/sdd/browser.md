@@ -76,6 +76,19 @@
   `background_input = true` — el browser no roba cursor ni foco.
 - **Navigate**: `Action::Navigate { url }` → `POST /session/:id/url`.
   Policy-gated como toda mutación (`action = "navigate"`).
+- **Sesiones protegidas** (`export_session`/`import_session` en el
+  trait, default `Unsupported`): `GET /session/:id/cookie` exporta el
+  jar completo dentro de un envelope versionado
+  (`{"format":"dexter-web-session/1","driver","cookies"}`);
+  `POST /session/:id/cookie` restaura cookie a cookie. El blob *son*
+  credenciales vivas: el CLI lo escribe owner-only (0600) y los
+  valores nunca se imprimen ni journalan — los reportes nombran
+  cookies/domains, nunca `value`. WebDriver solo acepta cookies cuyo
+  dominio matchea el documento actual (spec: "invalid cookie domain")
+  → las rechazadas se reportan por nombre en `SessionImport::rejected`,
+  nunca en silencio; un jar multi-dominio se restaura navegando a cada
+  dominio (`session import --url`). `import_session` valida el tag
+  `format` — un archivo ajeno/truncado falla cerrado.
 
 ## Lifecycle
 
@@ -133,7 +146,10 @@ Sin eso, `POST /session` devuelve http 500 con el mensaje exacto.
   `enabled:false` → `Failed`, nunca éxito simulado). Con
   `allow_coordinates`: click/key/type/scroll via `POST /actions`
   (payloads assertados en el fake) y el probe de element-ref guarda
-  disabled antes del pointer act. Hermético, sin
+  disabled antes del pointer act. Sesiones: `export_session` envuelve
+  el jar en el envelope versionado, `import_session` postea cada
+  cookie y reporta rechazos por dominio (`SessionImport`), y un
+  archivo sin el tag `format` falla cerrado. Hermético, sin
   browser.
 - `tests/safari_e2e.rs` — Safari real, gated `DEXTER_E2E_BROWSER=1`.
   data: URL → observe → click → verifica efecto DOM.
@@ -146,6 +162,10 @@ Sin eso, `POST /session` devuelve http 500 con el mensaje exacto.
   browser siempre ofrece targeting semántico; un agente que insista con
   puntos está mal dirigido (pointer actions existen pero se anclan a
   elementos, nunca a coordenadas crudas).
+- `localStorage`/`IndexedDB` fuera del export de sesión — la cookie
+  API es la superficie W3C; tokens en storage JS quedan fuera del jar
+  (un usuario los re-loguea en vivo; el adjunto a sesión real los
+  conserva).
 
 ## Failure modes
 
@@ -157,3 +177,7 @@ Sin eso, `POST /session` devuelve http 500 con el mensaje exacto.
 - Elemento deshabilitado (`disabled`/`aria-disabled`) →
   `ActionResult::failure(Failed)` — el motor rutea Retry/Abstain
   en vez de creer un click que no ocurrió.
+- Cookie de otro dominio al importar → `SessionImport::rejected`
+  (reportado por nombre) — el usuario navega a ese dominio y re-importa.
+- Archivo de sesión ajeno/truncado → `Platform` en `import_session`
+  (fail-closed, no se postea nada al endpoint).

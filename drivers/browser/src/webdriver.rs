@@ -300,6 +300,25 @@ impl WebDriverClient {
         self.delete(&format!("/session/{sid}/actions")).map(|_| ())
     }
 
+    /// All cookies in the session (W3C `GET /session/:id/cookie`).
+    /// Opaque `Value`s — these are live credentials and must never be
+    /// logged, journaled, or printed.
+    pub fn cookies(&mut self) -> Result<Vec<Value>, DriverError> {
+        let sid = self.ensure_session()?.to_string();
+        let resp = self.get(&format!("/session/{sid}/cookie"))?;
+        Ok(resp["value"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// Set one cookie (W3C `POST /session/:id/cookie`). The endpoint
+    /// rejects a cookie whose domain doesn't match the current
+    /// document — importing a multi-domain jar means navigating to
+    /// each domain first.
+    pub fn add_cookie(&mut self, cookie: &Value) -> Result<(), DriverError> {
+        let sid = self.ensure_session()?.to_string();
+        self.post(&format!("/session/{sid}/cookie"), json!({"cookie": cookie}))
+            .map(|_| ())
+    }
+
     /// Execute a synchronous script; returns the JSON-serialized result.
     /// `args` are passed to the script as `arguments`.
     pub fn execute(&mut self, script: &str, args: Vec<Value>) -> Result<Value, DriverError> {

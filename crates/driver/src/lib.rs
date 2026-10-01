@@ -90,6 +90,19 @@ impl WakeHandle {
     }
 }
 
+/// Result of `import_session`: cookies the endpoint accepted and the
+/// ones it rejected. Rejections usually mean "invalid cookie domain" —
+/// WebDriver only accepts cookies for the current document's domain,
+/// so a multi-domain jar is imported per navigation.
+#[derive(Debug)]
+pub struct SessionImport {
+    /// Cookies the endpoint accepted.
+    pub imported: usize,
+    /// `(cookie name, error)` per-cookie rejections — a partial import
+    /// is reported by name, never silent.
+    pub rejected: Vec<(String, String)>,
+}
+
 /// The physical interface to a computer. Synchronous: platform APIs are
 /// blocking; async wrappers belong at the daemon boundary, not here.
 pub trait ComputerDriver: Send + Sync {
@@ -117,6 +130,23 @@ pub trait ComputerDriver: Send + Sync {
 
     /// Return focus captured by `wake`. No-op unless `handle.activated`.
     fn restore(&self, _handle: &WakeHandle) {}
+
+    /// Export the session's credential store (browser cookies) as an
+    /// opaque driver-defined blob. Contents *are* credentials: callers
+    /// store them owner-only (0600) and never log, journal, or display
+    /// values. Default: `Unsupported` — drivers without a web session
+    /// say so honestly.
+    fn export_session(&self) -> Result<serde_json::Value, DriverError> {
+        Err(DriverError::Unsupported("session export".into()))
+    }
+
+    /// Restore credentials previously written by `export_session`.
+    /// Per-cookie rejections are reported in `SessionImport::rejected` —
+    /// a partial import is named, never silent. Default: `Unsupported`.
+    fn import_session(&self, session: &serde_json::Value) -> Result<SessionImport, DriverError> {
+        let _ = session;
+        Err(DriverError::Unsupported("session import".into()))
+    }
 }
 
 impl ComputerDriver for Box<dyn ComputerDriver> {
@@ -137,6 +167,12 @@ impl ComputerDriver for Box<dyn ComputerDriver> {
     }
     fn restore(&self, handle: &WakeHandle) {
         (**self).restore(handle)
+    }
+    fn export_session(&self) -> Result<serde_json::Value, DriverError> {
+        (**self).export_session()
+    }
+    fn import_session(&self, session: &serde_json::Value) -> Result<SessionImport, DriverError> {
+        (**self).import_session(session)
     }
 }
 

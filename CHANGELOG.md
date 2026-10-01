@@ -29,6 +29,18 @@
 
 ### Added
 
+- **Protected browser sessions — `dexter session export|import`**
+  persists authenticated state across runs via the W3C cookie
+  endpoints (`export_session`/`import_session` on `ComputerDriver`,
+  default `Unsupported` for drivers without a web session). Export
+  writes a versioned envelope (`dexter-web-session/1`); the file is
+  live credentials — written owner-only (0600), and cookie values are
+  never printed, logged, or journaled (reports name cookies/domains
+  only). Import validates the `format` tag (foreign/truncated files
+  fail closed) and posts each cookie; WebDriver's "invalid cookie
+  domain" rejections surface by name in `SessionImport::rejected` —
+  a multi-domain jar is restored per domain with `session import
+  --url`. Docs: `docs/sdd/browser.md`.
 - **Browser driver: W3C `/actions` endpoint — real input for what DOM
   synthesis can't cover.** `allow_coordinates` (the same `--coords`
   consent that unlocks CGEvent on macOS) upgrades `Click`/`Key`/

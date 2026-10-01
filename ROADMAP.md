@@ -80,7 +80,9 @@ tarea real en una app macOS nativa, con aprobación humana en acciones sensibles
   same-origin en el walker
 - ✅ `/actions` endpoint — input real (pointer/key/wheel) donde la
   síntesis DOM no alcanza; gated por `--coords` como el tier físico
-- Pendiente: sesiones protegidas (cookies/credenciales)
+- ✅ sesiones protegidas — `dexter session export|import` persiste el
+  estado autenticado (cookies W3C, envelope versionado, archivo 0600,
+  valores nunca impresos); rechazos por dominio reportados por nombre
 
 **Criterio de salida:** una tarea web completa sin usar coordenadas salvo fallback.
 
