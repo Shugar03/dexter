@@ -96,7 +96,10 @@ perception degrades to UNCERTAIN, policy outside the model, single
 - Done in PR #24 (2026-09-30): UTF-16 surrogate split in
   `cg_type_text` — chunking via `dexter_driver::utf16_chunks`, which
   breaks only on char boundaries.
-- Remaining: AX messaging timeout root-only; `--digest` skips
+- Done in PR #26 (2026-10-01): AX messaging timeout root-only —
+  AX roots come from `ax::app_element`, which also arms the timeout
+  process-wide on the system-wide element.
+- Remaining: `--digest` skips
   truncation warnings; `windows --app bundle:` matches window owner
   name not bundle id; `dexter mcp` builds the driver twice;
   primary-monitor-only bounds; `pid_for_bundle` no ambiguity check.
