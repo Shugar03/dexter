@@ -123,6 +123,11 @@
 
 ### Fixed
 
+- **`dexter windows --app <bundle id>` matched the owner name.** The
+  bundle id was substring-matched against `kCGWindowOwnerName`, so it
+  matched nothing or the wrong app. `Window` now carries an optional
+  `bundle_id` and `AppSelector::matches_window` compares it exactly;
+  windows without one never match a bundle selector (PR #34).
 - **`dexter observe --digest` dropped perception warnings.** The
   `elements_truncated` / `ax_limited` stderr warnings were printed only
   on the JSON path, so the digest — the decision-engine input — gave no
