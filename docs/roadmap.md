@@ -102,6 +102,9 @@ perception degrades to UNCERTAIN, policy outside the model, single
 - Done in PR #32 (2026-10-01): `--digest` skips truncation warnings
   — both output formats emit `Observation::perception_warnings()` on
   stderr.
-- Remaining: `windows --app bundle:` matches window owner
-  name not bundle id; `dexter mcp` builds the driver twice;
+- Done in PR #34 (2026-10-01): `windows --app bundle:` matches
+  `Window.bundle_id` (macOS: `NSRunningApplication.bundleIdentifier`)
+  via `AppSelector::matches_window`, never the owner name; windows
+  without a bundle id fail closed.
+- Remaining: `dexter mcp` builds the driver twice;
   primary-monitor-only bounds; `pid_for_bundle` no ambiguity check.
