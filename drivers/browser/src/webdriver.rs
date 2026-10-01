@@ -8,6 +8,11 @@ use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+/// WebDriver's W3C element-reference key — the shape `execute/sync`
+/// uses to return a node and `actions` uses as a pointer origin.
+/// Pre-W3C drivers answer `ELEMENT` instead; callers accept both.
+pub const ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
+
 pub struct WebDriverClient {
     base: String,
     agent: ureq::Agent,
@@ -273,6 +278,26 @@ impl WebDriverClient {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    /// Perform a W3C Actions sequence (`POST /session/:id/actions`) —
+    /// the driver's real input pipeline: pointer/key/wheel sources
+    /// produce trusted events, not DOM synthesis.
+    pub fn perform_actions(&mut self, actions: Vec<Value>) -> Result<(), DriverError> {
+        let sid = self.ensure_session()?.to_string();
+        self.post(
+            &format!("/session/{sid}/actions"),
+            json!({"actions": actions}),
+        )
+        .map(|_| ())
+    }
+
+    /// Release all input-source state (`DELETE /session/:id/actions`).
+    /// Held modifiers/buttons persist across calls, so a failed
+    /// sequence releases before surfacing its error.
+    pub fn release_actions(&mut self) -> Result<(), DriverError> {
+        let sid = self.ensure_session()?.to_string();
+        self.delete(&format!("/session/{sid}/actions")).map(|_| ())
     }
 
     /// Execute a synchronous script; returns the JSON-serialized result.

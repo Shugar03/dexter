@@ -20,6 +20,26 @@
   `scrollIntoView`, `KeyboardEvent` dispatch) → `Mechanism::Dom`.
   Nunca coordenadas: las acciones DOM se despachan dentro de la página
   aunque la ventana esté oculta o en otro Space (background-safe real).
+- **Actions tier** (input real): cuando `ctx.allow_coordinates` está
+  set — el mismo flag `--coords` que habilita CGEvent en macOS —
+  `Click`/`Key`/`TypeText`/`Scroll` sin target escalan de la síntesis
+  DOM al endpoint W3C `POST /session/:id/actions`: pointer actions para
+  clicks (con `origin` = referencia de elemento — el driver mueve al
+  centro in-viewport del elemento, sin coordenadas crudas), key-source
+  sequences para chords y typing por carácter, wheel source para
+  scroll sin target (wheel en el centro del viewport). Es el tier que
+  cubre lo que la síntesis DOM no puede: páginas que exigen
+  `isTrusted`, `contenteditable`/editores ricos donde `el.value` no
+  existe ni inserta texto, listeners de keydown reales, y scrolls que
+  dependen de wheel events. Todo act vía `/actions` reporta
+  `Mechanism::Coordinates` honestamente — es el tier de input real,
+  aunque no mueva el cursor del SO (`background_input` sigue true).
+  La referencia de elemento se obtiene con un probe `return el` que
+  corre el mismo stale/disabled guard que `exec_on` — ningún pointer
+  act pasa sobre un control deshabilitado (`Failed`, nunca éxito
+  simulado). En error, `DELETE /session/:id/actions` suelta cualquier
+  estado de input retenido. Sin el flag, el comportamiento DOM actual
+  no cambia.
 - **Targets**: `Target::Semantic` re-observa fresco + `resolve_element`
   del world-model (misma semántica fail-closed que macOS: ambiguo →
   error, cero matches → not-found). `Target::Element` valida que la
@@ -110,19 +130,22 @@ Sin eso, `POST /session` devuelve http 500 con el mensaje exacto.
   switch via `Focus{Window}` y `observe{window}`, refs stale cross-tab,
   `new_tab`/`close_tab` (incl. último tab → vacío), e `errors` de iframe
   → `collection_errors`, y el disabled guard (act sobre elemento
-  `enabled:false` → `Failed`, nunca éxito simulado). Hermético, sin
+  `enabled:false` → `Failed`, nunca éxito simulado). Con
+  `allow_coordinates`: click/key/type/scroll via `POST /actions`
+  (payloads assertados en el fake) y el probe de element-ref guarda
+  disabled antes del pointer act. Hermético, sin
   browser.
 - `tests/safari_e2e.rs` — Safari real, gated `DEXTER_E2E_BROWSER=1`.
   data: URL → observe → click → verifica efecto DOM.
 
 ## No-goals del slice
 
-- Endpoint WebDriver `/actions` (pointer/teclado físico del driver) —
-  las acciones DOM cubren el caso real sin coordenadas.
 - Leer title/url de tabs en background (exigiría switches observables;
   reportan `None` honesto).
-- `Target::Point` → `Unsupported` honesto (el browser no necesita
-  coordenadas; un agente que insista con puntos está mal dirigido).
+- `Target::Point` → `Unsupported` honesto incluso con el flag — el
+  browser siempre ofrece targeting semántico; un agente que insista con
+  puntos está mal dirigido (pointer actions existen pero se anclan a
+  elementos, nunca a coordenadas crudas).
 
 ## Failure modes
 

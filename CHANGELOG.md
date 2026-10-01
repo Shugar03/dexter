@@ -29,6 +29,22 @@
 
 ### Added
 
+- **Browser driver: W3C `/actions` endpoint — real input for what DOM
+  synthesis can't cover.** `allow_coordinates` (the same `--coords`
+  consent that unlocks CGEvent on macOS) upgrades `Click`/`Key`/
+  `TypeText`/untargeted `Scroll` to the browser's real input pipeline:
+  pointer actions anchored at the element origin (its in-viewport
+  center — still no raw coordinates), key-source sequences for chords
+  and per-char typing, and a wheel source for untargeted scrolls. This
+  reaches what DOM dispatch cannot: `isTrusted`-gated pages,
+  `contenteditable`/rich-text editors where `el.value` inserts
+  nothing, real `keydown` semantics, and wheel-driven scroll effects.
+  Every `/actions` act reports `Mechanism::Coordinates` honestly
+  (`background_input` stays true — it never moves the OS cursor); the
+  element-reference probe runs the same stale/disabled guard as
+  `exec_on` before any pointer act, and held input state is released
+  on error. `Target::Point` stays `Unsupported` — semantic targets are
+  always available in a page. Docs: `docs/sdd/browser.md`.
 - **`OpenAiProvider` — model-backed decision engine over any
   OpenAI-compatible endpoint** (`--engine openai`). The model may only
   pick an index from the generated candidate list or take a route —
