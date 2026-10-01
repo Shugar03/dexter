@@ -106,6 +106,20 @@ return (() => {
     return style.display !== 'none' && style.visibility !== 'hidden';
   }
 
+  function modalOf(el, tag) {
+    // Positive modality only: `aria-modal` on a dialog role, or a
+    // <dialog> actually opened modally (`:modal` matches showModal()
+    // and fullscreen). Attribute absent or unrecognized pseudo-class →
+    // null (unknown never restricts the candidate scope).
+    const aria = el.getAttribute('aria-modal');
+    if (aria === 'true') return true;
+    if (aria === 'false') return false;
+    if (tag === 'dialog') {
+      try { if (el.matches(':modal')) return true; } catch (e) {}
+    }
+    return null;
+  }
+
   function push(el, parentIdx, depth, ox, oy) {
     const i = els.length;
     const r = el.getBoundingClientRect();
@@ -138,6 +152,7 @@ return (() => {
       bounds: { x: r.x + ox, y: r.y + oy, w: r.width, h: r.height },
       enabled: !el.disabled && el.getAttribute('aria-disabled') !== 'true',
       focused: document.activeElement === el,
+      modal: modalOf(el, tag),
       actions: actionsOf(el, role),
       identifier: el.id || null,
     });
@@ -209,6 +224,8 @@ struct RawElement {
     bounds: Option<RawRect>,
     enabled: Option<bool>,
     focused: bool,
+    #[serde(default)]
+    modal: Option<bool>,
     actions: Vec<String>,
     identifier: Option<String>,
 }
@@ -255,6 +272,7 @@ pub fn parse_elements(raw: serde_json::Value) -> (Vec<Element>, u32) {
             }),
             enabled: r.enabled,
             focused: r.focused,
+            modal: r.modal,
             actions: r.actions,
             identifier: r.identifier,
             source: ElementSource::Dom,
@@ -285,6 +303,20 @@ mod tests {
         assert!(
             WALKER_JS.contains("? null"),
             "password inputs must emit a null value"
+        );
+    }
+
+    #[test]
+    fn walker_reports_positive_modality() {
+        // Candidate scoping needs positive evidence, not guesses:
+        // aria-modal (dialog roles) or a natively-modal <dialog>.
+        assert!(
+            WALKER_JS.contains("getAttribute('aria-modal')"),
+            "walker must read aria-modal"
+        );
+        assert!(
+            WALKER_JS.contains("matches(':modal')"),
+            "walker must detect dialogs opened via showModal()"
         );
     }
 

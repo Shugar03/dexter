@@ -314,6 +314,16 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx) 
     };
     let enabled = bool_attr(el.enabled());
     let focused = bool_attr(el.focused()).unwrap_or(false);
+    // Positive modality evidence: sheets and system dialogs are modal
+    // by definition; other window-ish roles report AXModal. Unreadable
+    // → `None` (unknown never restricts the candidate scope).
+    let modal = match role.as_deref() {
+        Some("sheet" | "system_dialog") => Some(true),
+        Some("window" | "dialog" | "drawer" | "floating_window") => {
+            bool_attr(el.attribute(&AXAttribute::<CFBoolean>::new(&CFString::new("AXModal"))))
+        }
+        _ => None,
+    };
     let bounds = element_bounds(el);
     let actions = action_names(el);
 
@@ -339,6 +349,7 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx) 
         bounds,
         enabled,
         focused,
+        modal,
         actions,
         identifier,
         source: ElementSource::Accessibility,

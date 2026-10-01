@@ -29,6 +29,15 @@
 
 ### Added
 
+- **Blocking-modal detection scopes candidate generation.** New
+  `Element.modal: Option<bool>` carries positive platform modality —
+  `AXModal` on window-ish roles (sheets/system dialogs are modal by
+  definition) on macOS, `aria-modal`/`:modal` in the browser walker.
+  When a modal root is live, `HeuristicGenerator` offers only its
+  descendants: input outside a modal's subtree can't land, so offering
+  it would simulate reach. Unknown modality (`None`) never restricts —
+  `role=dialog` popovers are too common to guess on. Journal-visible
+  via `inside blocking modal` in candidate rationales.
 - **Browser driver: W3C `/actions` endpoint — real input for what DOM
   synthesis can't cover.** `allow_coordinates` (the same `--coords`
   consent that unlocks CGEvent on macOS) upgrades `Click`/`Key`/

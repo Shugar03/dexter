@@ -24,9 +24,9 @@
 //!   engines (Laya) express themselves through; the engine-internal
 //!   `decide()` call stays opaque.
 
-use dexter_world_model::find_elements_in;
+use dexter_world_model::{find_elements_in, normalize_ax_role};
 
-use dexter_core::{Action, Element, MouseButton, Observation, SemanticTarget, Target};
+use dexter_core::{Action, Element, ElementId, MouseButton, Observation, SemanticTarget, Target};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -650,6 +650,64 @@ fn expr_step_matches(step: &ExprStep, label: &str) -> bool {
     }
 }
 
+/// Roles a `modal` flag can gate on. `aria-modal` on a random div must
+/// not block the page — only window-ish containers scope candidates.
+fn is_modal_root(el: &Element) -> bool {
+    let role = el.role.as_deref().or(el.raw_role.as_deref()).unwrap_or("");
+    let r: String = normalize_ax_role(role)
+        .chars()
+        .filter(|c| *c != '_' && *c != '-')
+        .collect();
+    matches!(
+        r.as_str(),
+        "dialog"
+            | "alertdialog"
+            | "sheet"
+            | "systemdialog"
+            | "window"
+            | "drawer"
+            | "floatingwindow"
+    )
+}
+
+/// Descendants (and roots) of live blocking modals. A modal eats input
+/// outside its subtree — offering a control behind it would simulate
+/// reach that isn't there. Only `modal == Some(true)` restricts
+/// (positive platform evidence: AXModal, sheet/system-dialog,
+/// aria-modal, `:modal`); `None` means the driver couldn't tell and
+/// never vetoes.
+fn modal_scope(elements: &[Element]) -> Option<std::collections::HashSet<ElementId>> {
+    let roots: Vec<ElementId> = elements
+        .iter()
+        .filter(|e| e.modal == Some(true) && is_modal_root(e))
+        .map(|e| e.id)
+        .collect();
+    if roots.is_empty() {
+        return None;
+    }
+    let by_id: std::collections::HashMap<ElementId, &Element> =
+        elements.iter().map(|e| (e.id, e)).collect();
+    let under_modal = |el: &Element| {
+        let mut cur = el.parent;
+        // Parent chains are trees in practice; the hop cap keeps a
+        // corrupt link from looping forever.
+        for _ in 0..elements.len() {
+            let Some(p) = cur else { return false };
+            if roots.contains(&p) {
+                return true;
+            }
+            cur = by_id.get(&p).and_then(|e| e.parent);
+        }
+        false
+    };
+    let scope: std::collections::HashSet<ElementId> = elements
+        .iter()
+        .filter(|e| roots.contains(&e.id) || under_modal(e))
+        .map(|e| e.id)
+        .collect();
+    Some(scope)
+}
+
 /// The next keypad press for an arithmetic goal. Progress is tracked
 /// through `hist.attempts` (which labels were already pressed); a failed
 /// last attempt doesn't consume a plan step.
@@ -657,6 +715,7 @@ fn expr_next_candidate(
     obs: &Observation,
     tokens: &[String],
     hist: &GenHistory,
+    scope: Option<&std::collections::HashSet<ElementId>>,
 ) -> Option<CandidateAction> {
     // Flatten tokens to a press plan.
     let mut plan: Vec<ExprStep> = Vec::new();
@@ -703,6 +762,7 @@ fn expr_next_candidate(
     let el = obs.elements.iter().find(|e| {
         is_pressable(e)
             && e.enabled != Some(false)
+            && scope.is_none_or(|s| s.contains(&e.id))
             && e.name
                 .as_deref()
                 .is_some_and(|n| expr_step_matches(step, n))
@@ -974,8 +1034,14 @@ impl CandidateGenerator for HeuristicGenerator {
             }
         }
 
+        // A live modal blocks every control outside its subtree —
+        // elements behind it aren't offered at all.
+        let scope = modal_scope(&obs.elements);
         let mut out: Vec<CandidateAction> = Vec::new();
         for el in &obs.elements {
+            if scope.as_ref().is_some_and(|s| !s.contains(&el.id)) {
+                continue;
+            }
             if el.enabled == Some(false) {
                 continue;
             }
@@ -1089,8 +1155,13 @@ impl CandidateGenerator for HeuristicGenerator {
             let role = el.role.as_deref().unwrap_or("?");
             let name = el.label().unwrap_or("?");
             let base = format!(
-                "{role} \"{name}\" matches {matched}/{} goal terms (prior {prior:.2})",
-                terms.len()
+                "{role} \"{name}\" matches {matched}/{} goal terms (prior {prior:.2}){}",
+                terms.len(),
+                if scope.is_some() {
+                    "; inside blocking modal"
+                } else {
+                    ""
+                }
             );
             if editable && want_edit {
                 if let Some(text) = &gp.quoted {
@@ -1139,7 +1210,7 @@ impl CandidateGenerator for HeuristicGenerator {
         // Arithmetic goals on a keypad world: the next press comes from
         // the expression, not from label-goal matching.
         if let Some(tokens) = expr_tokens(goal) {
-            if let Some(c) = expr_next_candidate(obs, &tokens, hist) {
+            if let Some(c) = expr_next_candidate(obs, &tokens, hist, scope.as_ref()) {
                 out.push(c);
             }
         }

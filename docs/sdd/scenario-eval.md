@@ -377,3 +377,24 @@ same bounded-borrow: scoped observe → no `window` elements →
 teardown scripts therefore self-heal — a `dexter click` inside a prep
 wakes the app itself instead of failing `target not found` against a
 windowless menubar tree.
+
+## Blocking modals scope the candidate set
+
+`Element.modal: Option<bool>` carries *positive* platform modality:
+macOS reports `AXModal` on window-ish roles (sheets and system dialogs
+are modal by definition); the browser walker reads `aria-modal` and the
+`:modal` pseudo-class (`showModal()` / fullscreen). `None` = the driver
+could not tell.
+
+When a modal root is present, `HeuristicGenerator` offers **only
+descendants of its subtree** — the modal eats input outside it, so a
+matching control behind it is reach that isn't there; offering it would
+simulate a capability. The scope is journal-visible in each candidate's
+rationale (`inside blocking modal`), and `element_target` still indexes
+against the full tree so disambiguation resolves as the driver sees it.
+
+Unknown modality never restricts: `role="dialog"` popovers are endemic
+on the web, and guessing modal-ness would veto the whole page behind a
+persistent panel. A stray flag on a non-container role (a random `div`
+with `aria-modal`) is ignored for the same reason. A modal with no
+matching controls yields an empty candidate set — the honest abstain.
