@@ -17,6 +17,12 @@ Providers shipped:
   Gemini (`v1beta/openai`), OpenAI proper, local `llama.cpp`, etc.
   Config: `base_url`, `model`, `api_key_env` (the *name* of the env var
   holding the key — read per request, never logged).
+- `Cascade` — escalating composition of tiers in order
+  (`--engine cascade` = `RuleBased → LayaEngine → OpenAiProvider`):
+  a tier's `Abstain`/`EscalateLlm` route or an engine error hands the
+  step to the next tier; every other decision is final. The last
+  tier's verdict always stands — a final abstain or escalation
+  surfaces to the runtime as usual.
 
 ## Invariants
 
@@ -32,6 +38,11 @@ Providers shipped:
 - **Spend is bounded by construction:** ≤8 candidates, ≤1500-char
   digest, `max_tokens` 150, `temperature` 0. `health()` does not make
   live calls (env-var presence check only — probes would burn tokens).
+- **Cascade escalation is never silent.** The returned rationale
+  carries the chain (`rule-based: Abstain — … | laya: error — … →
+  openai …`), so the journal shows why a heavier tier answered and
+  what a broken middle tier did. `health()` aggregates: `Down` only
+  when every tier is down; a single impaired tier degrades the report.
 
 ## Tests (crates/decision/tests/openai.rs)
 
@@ -47,7 +58,21 @@ Hermetic — a local `TcpListener` serves canned replies:
 - `missing_key_is_engine_error_and_down_health` — no env key → `Down`
   health + `Engine` error.
 
+`crates/decision/tests/cascade.rs` covers the composition with stub
+engines: first-tier `Act` is final (later tiers uncalled), `Abstain`
+and `EscalateLlm` escalate with the chain appended to the rationale,
+`Wait`/`EscalateHuman` are final, mid-tier errors escalate and
+last-tier errors surface with the trail, a fully-abstaining cascade
+returns the last tier's `Abstain`, and `health()` aggregates
+(all-down → `Down`, partial → `Degraded`).
+
 ## CLI
+
+`--engine cascade` wires `RuleBased → LayaEngine → OpenAiProvider`:
+`--engine-path`/`DEXTER_LAYA_WORKER` selects the laya worker command
+(the laya tier fails to build without it — the cascade is explicit,
+never a dropped tier), `--min-confidence` feeds the laya tier, and the
+openai tier reads the env config below.
 
 `--engine openai` in `task`/`eval`/`doctor --engine`/`mcp`:
 
