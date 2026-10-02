@@ -104,10 +104,14 @@ Seeded from ROADMAP.md (Etapas 2–5) now that Fases 1–4 closed.
   `ItemVerdict.tier`; invented acts decay to `Abstain`, tier errors
   propagate — PR #49, 2026-10-02 (ROADMAP.md Etapa 3 — cascada
   reglas → Laya → LLM)
-- [ ] Laya concrete uses — blocking-modal detection and
+- [x] Laya concrete uses — blocking-modal detection and
   ambiguous-target resolution as typed `Question`s through the
   decision layer, pinned by sim scenarios (a modal blocking the goal;
-  two identical labels). (ROADMAP.md Etapa 3 — usos concretos)
+  two identical labels). `dexter_decision::questions` (`blocking_modal`
+  Bool, `disambiguate` Choice); `RuleBased` abstains on both, Laya
+  escalates to a human / picks the twin; `modal-blocking` +
+  `ambiguous-twin` scenarios — PR #51, 2026-10-02 (ROADMAP.md Etapa 3
+  — usos concretos)
 - [ ] Threshold calibration — sweep `min_confidence` and rule-based
   priors over `datasets/` via `dexter eval matrix`; publish the
   before/after coverage/accuracy table to `docs/eval-numbers.md`.
