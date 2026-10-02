@@ -1203,29 +1203,32 @@ fn doctor(
             "\nnote: browser driver needs a WebDriver endpoint — `safaridriver`\
              requires Safari Settings > Developer > 'Allow Remote Automation'."
         );
+        if request {
+            println!("note: --request is macOS-only — the browser driver needs no TCC grants.");
+        }
         return Ok(());
     }
-    if request {
-        permissions::request_accessibility();
-        permissions::request_screen_capture();
+    let probe = permissions::System;
+    let mut statuses = permissions::check(&probe);
+    if request && statuses.iter().any(|s| !s.granted) {
+        println!("requesting missing permissions — watch for the system dialog…");
+        statuses = permissions::request_missing(&probe, &statuses);
+    } else if request {
+        println!("all permissions already granted — nothing to prompt.");
     }
-    let ax = permissions::accessibility_trusted();
-    let sc = permissions::screen_capture_allowed();
-    println!("accessibility permission: {}", onoff(ax));
-    println!("screen recording permission: {}", onoff(sc));
+    for line in permission_lines(&statuses) {
+        println!("{line}");
+    }
     println!("element tree: {}", onoff(caps.element_tree));
     println!("screenshots: {}", onoff(caps.screenshots));
     println!("background input: {}", onoff(caps.background_input));
-    if !ax {
+    let missing = statuses.iter().filter(|s| !s.granted).count();
+    if missing == 0 {
+        println!("\nall permissions granted — the driver is fully capable.");
+    } else {
         println!(
-            "\nto grant accessibility: System Settings > Privacy & Security > \
-             Accessibility, add this terminal/binary. Or run `dexter doctor --request`."
-        );
-    }
-    if !sc {
-        println!(
-            "to grant screen recording: System Settings > Privacy & Security > \
-             Screen Recording. Without it, window titles and screenshots are unavailable."
+            "\n{missing} permission(s) missing — run `dexter doctor --request` \
+             or grant them in System Settings."
         );
     }
     println!(
@@ -1235,6 +1238,24 @@ fn doctor(
          in System Settings to get full trees."
     );
     Ok(())
+}
+
+/// Render the macOS permission report: one line per permission, a
+/// `fix:` line under each missing one.
+fn permission_lines(statuses: &[permissions::Status]) -> Vec<String> {
+    let mut lines = vec!["permissions:".to_string()];
+    for s in statuses {
+        lines.push(format!(
+            "  {}: {} — {}",
+            s.permission.name(),
+            onoff(s.granted),
+            s.permission.enables()
+        ));
+        if !s.granted {
+            lines.push(format!("    fix: {}", s.permission.remediation()));
+        }
+    }
+    lines
 }
 
 fn onoff(v: bool) -> &'static str {
@@ -2013,5 +2034,28 @@ mod tests {
         assert!(!presence_wanted(false, true));
         // Default depends on whether stderr is a terminal — under the
         // test harness it isn't, so interactive default is off here.
+    }
+
+    #[test]
+    fn permission_lines_show_fix_only_under_missing() {
+        let statuses = vec![
+            permissions::Status {
+                permission: permissions::Permission::Accessibility,
+                granted: true,
+            },
+            permissions::Status {
+                permission: permissions::Permission::ScreenRecording,
+                granted: false,
+            },
+        ];
+        let lines = permission_lines(&statuses);
+        assert!(lines.iter().any(|l| l.contains("accessibility: granted")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("screen recording: missing")));
+        assert_eq!(lines.iter().filter(|l| l.contains("fix:")).count(), 1);
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("Privacy & Security > Screen Recording")));
     }
 }
