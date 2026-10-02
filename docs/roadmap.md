@@ -72,6 +72,53 @@ perception degrades to UNCERTAIN, policy outside the model, single
   single-sourced in `packaging/homebrew/` with a golden test against
   the live tap, `docs/assets/suite.gif` — PR #20, 2026-09-30
 
+## Fase 5 — decision depth + reach
+
+Seeded from ROADMAP.md (Etapas 2–5) now that Fases 1–4 closed.
+
+- [ ] Browser protected sessions — persistent profiles via WebDriver
+  capabilities: `--browser-profile <dir>` maps to
+  `goog:chromeOptions.args [--user-data-dir=…]` /
+  `moz:firefoxOptions.args [-profile …]` (safaridriver documents its
+  limitation), so cookies/logins survive across runs. Session
+  creation currently sends `alwaysMatch: {}` — add the capabilities
+  layer, the per-browser arg table in `docs/sdd/browser.md`, and
+  tests on the generated session payload. (ROADMAP.md Etapa 2 — last
+  open item)
+- [ ] Decision cascade — `--engine cascade` composite: `RuleBased`
+  first, escalate to `LayaSidecar` on `Abstain`, then to
+  `OpenAiProvider`; each hop journaled so eval can report which tier
+  answered. Hermetic tests over fake providers: abstain → escalate →
+  answer, and abstain at every tier → `Abstain` (never an invented
+  act). (ROADMAP.md Etapa 3 — cascada reglas → Laya → LLM)
+- [ ] Laya concrete uses — blocking-modal detection and
+  ambiguous-target resolution as typed `Question`s through the
+  decision layer, pinned by sim scenarios (a modal blocking the goal;
+  two identical labels). (ROADMAP.md Etapa 3 — usos concretos)
+- [ ] Threshold calibration — sweep `min_confidence` and rule-based
+  priors over `datasets/` via `dexter eval matrix`; publish the
+  before/after coverage/accuracy table to `docs/eval-numbers.md`.
+  (ROADMAP.md Etapa 3 — calibración de umbrales)
+- [ ] Linux driver skeleton — `dexter-linux` crate mirroring
+  `dexter-windows`: every operation honestly `Unsupported` (all
+  capability flags false) plus the AT-SPI role → normalized-role
+  table for the future backend. (ROADMAP.md Etapa 5)
+
+## Platform-gated — manual dispatch only (skip on Linux)
+
+Not `- [ ]` items so the builder never picks them: each needs a
+session on its own platform. Dispatch by hand and, when it lands,
+record it in the Cleanup backlog above with the PR link.
+
+- Windows UIA backend — real observe/act for `dexter-windows` on UI
+  Automation + MSAA fallback via windows-rs (ROADMAP.md Etapa 4);
+  needs a Windows session.
+- macOS AX eval dataset — an `eval harvest` manifest over real AX
+  trees producing `datasets/macos/` (ROADMAP.md Etapa 3); the harness
+  is already driver-agnostic, only the driver needs macOS.
+- Permission onboarding polish — `doctor` + system prompt flow
+  (ROADMAP.md Etapa 1); macOS-only surface.
+
 ## Cleanup backlog (low severity, pick when convenient)
 
 - Done in PR #16: `secure_text_field` editable, `parse_goal` real
