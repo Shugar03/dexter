@@ -688,8 +688,8 @@ impl<D: ComputerDriver> Engine<D> {
                     "context": &ctx,
                 }),
             );
-            let decision = match decider.decide(&ctx) {
-                Ok(d) => d,
+            let traced = match decider.decide_traced(&ctx) {
+                Ok(t) => t,
                 Err(e) => {
                     self.journal(
                         EventKind::TaskFailed,
@@ -704,10 +704,12 @@ impl<D: ComputerDriver> Engine<D> {
                 EventKind::DecisionMade,
                 serde_json::json!({
                     "engine": decider.name(),
-                    "decision": &decision,
+                    "decision": &traced.decision,
+                    "hops": &traced.hops,
                     "step": step,
                 }),
             );
+            let decision = traced.decision;
 
             match decision {
                 Decision::Act {

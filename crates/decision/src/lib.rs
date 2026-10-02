@@ -30,7 +30,9 @@ use dexter_core::{Action, Element, MouseButton, Observation, SemanticTarget, Tar
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod cascade;
 mod openai;
+pub use cascade::Cascade;
 pub use openai::OpenAiProvider;
 
 /// What the runtime should do next, beyond executing an action.
@@ -114,10 +116,43 @@ pub enum EngineHealth {
     Down(String),
 }
 
+/// One engine consulted on the way to a decision, with its verdict.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionHop {
+    pub engine: String,
+    pub decision: Decision,
+}
+
+/// A decision plus every engine consulted to reach it, in order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TracedDecision {
+    pub decision: Decision,
+    pub hops: Vec<DecisionHop>,
+}
+
+impl TracedDecision {
+    /// The engine whose verdict stands (the last one consulted).
+    pub fn answered_by(&self) -> Option<&str> {
+        self.hops.last().map(|h| h.engine.as_str())
+    }
+}
+
 /// The plug point for Laya, LLMs and rule engines.
 pub trait DecisionEngine: Send + Sync {
     fn name(&self) -> &str;
     fn decide(&self, ctx: &DecisionContext) -> Result<Decision, DecisionError>;
+    /// `decide` plus the engines consulted. Single engines are one hop;
+    /// composites (`Cascade`) report each tier.
+    fn decide_traced(&self, ctx: &DecisionContext) -> Result<TracedDecision, DecisionError> {
+        let decision = self.decide(ctx)?;
+        Ok(TracedDecision {
+            hops: vec![DecisionHop {
+                engine: self.name().to_string(),
+                decision: decision.clone(),
+            }],
+            decision,
+        })
+    }
     /// Liveness probe. Read-only — it must never mutate supervision
     /// state (no respawns). Default: embedded engines are always ready.
     fn health(&self) -> EngineHealth {

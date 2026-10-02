@@ -833,3 +833,73 @@ fn into_driver_hands_back_the_same_driver() {
     let sim = engine.into_driver();
     assert_eq!(sim.pressed(), vec![ElementId(1)]);
 }
+
+#[test]
+fn cascade_hops_are_journaled_on_decision_made() {
+    // `--engine cascade`: an abstaining first tier escalates to the
+    // next; DecisionMade must record every tier consulted.
+    use dexter_decision::{
+        Cascade, Decision, DecisionContext, DecisionEngine, DecisionError, HeuristicGenerator,
+        Route, RuleBased,
+    };
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    struct Abstains;
+    impl DecisionEngine for Abstains {
+        fn name(&self) -> &str {
+            "abstains"
+        }
+        fn decide(&self, _: &DecisionContext) -> Result<Decision, DecisionError> {
+            Ok(Decision::Route {
+                route: Route::Abstain,
+                rationale: "not my call".into(),
+            })
+        }
+    }
+
+    let sim = SimDriver::new(vec![el(1, "button", "Guardar")]);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "Guardado")),
+    );
+    let mut engine = Engine::new(sim, allow_all(), Duration::from_secs(60));
+    let cascade = Cascade::new(vec![Box::new(Abstains), Box::new(RuleBased::default())]);
+    let outcome = engine.run_task(
+        "click guardar",
+        &HeuristicGenerator::default(),
+        &cascade,
+        &TaskConfig {
+            run: cfg(),
+            max_steps: 5,
+            max_duration: None,
+            cancel: None,
+            done_when: ExpectedState::ElementExists {
+                target: SemanticTarget {
+                    name: Some("Guardado".into()),
+                    ..Default::default()
+                },
+            },
+        },
+    );
+    assert!(
+        matches!(outcome, TaskOutcome::Completed { steps: 1 }),
+        "{outcome:?}"
+    );
+    let events = engine.events();
+    let made = events
+        .iter()
+        .find(|e| e.kind == EventKind::DecisionMade)
+        .expect("DecisionMade journaled");
+    assert_eq!(made.data["engine"], "cascade");
+    let hops: Vec<&str> = made.data["hops"]
+        .as_array()
+        .expect("hops array")
+        .iter()
+        .map(|h| h["engine"].as_str().unwrap())
+        .collect();
+    assert_eq!(hops, ["abstains", "rule-based"]);
+    assert_eq!(made.data["hops"][1]["decision"]["type"], "act");
+}

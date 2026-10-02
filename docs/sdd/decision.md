@@ -17,6 +17,8 @@ Providers shipped:
   Gemini (`v1beta/openai`), OpenAI proper, local `llama.cpp`, etc.
   Config: `base_url`, `model`, `api_key_env` (the *name* of the env var
   holding the key — read per request, never logged).
+- `Cascade` — composite over the others, escalating on abstain
+  (`docs/sdd/cascade.md`).
 
 ## Invariants
 
