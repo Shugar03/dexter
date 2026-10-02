@@ -112,9 +112,14 @@ Seeded from ROADMAP.md (Etapas 2–5) now that Fases 1–4 closed.
   escalates to a human / picks the twin; `modal-blocking` +
   `ambiguous-twin` scenarios — PR #51, 2026-10-02 (ROADMAP.md Etapa 3
   — usos concretos)
-- [ ] Threshold calibration — sweep `min_confidence` and rule-based
+- [x] Threshold calibration — sweep `min_confidence` and rule-based
   priors over `datasets/` via `dexter eval matrix`; publish the
   before/after coverage/accuracy table to `docs/eval-numbers.md`.
+  `dexter_eval::calibrate` (`sweep`, `pick` = max utility with false
+  acts at 2× cost → fewest false acts → most conservative),
+  `eval matrix --act-threshold a,b,c` / `--min-confidence a,b,c`;
+  pick = 0.65 = shipped default (no move). Laya τ wired but
+  unmeasured (no checkpoint on the builder) — PR #53, 2026-10-02
   (ROADMAP.md Etapa 3 — calibración de umbrales)
 - [ ] Linux driver skeleton — `dexter-linux` crate mirroring
   `dexter-windows`: every operation honestly `Unsupported` (all
