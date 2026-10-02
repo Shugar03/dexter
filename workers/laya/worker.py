@@ -32,7 +32,9 @@ import sys
 
 # Die on SIGPIPE like a normal Unix filter instead of raising
 # BrokenPipeError at interpreter shutdown when dexter exits first.
-signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+# POSIX-only signal — absent on Windows, where pipes are not signaled.
+if hasattr(signal, "SIGPIPE"):
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 # Protocol revision this worker speaks — bumped when request/response
 # shapes change incompatibly. The engine checks it on `hello`.

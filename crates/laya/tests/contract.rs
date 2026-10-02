@@ -10,8 +10,10 @@ use std::time::Duration;
 
 fn worker_cmd() -> String {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/laya/worker.py");
-    let root = root.canonicalize().expect("worker.py exists");
-    format!("python3 {}", root.display())
+    assert!(root.exists(), "worker.py at {}", root.display());
+    // No canonicalize: on Windows it returns \\?\ verbatim paths whose
+    // doubled backslashes collapse inside the command string's quotes.
+    format!("python3 \"{}\"", root.display())
 }
 
 fn candidate(name: &str) -> CandidateAction {
@@ -79,7 +81,7 @@ fn laya_route_when_no_candidates() {
 fn low_confidence_pick_abstains() {
     let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stub_worker.py");
     let engine = LayaEngine::spawn(
-        &format!("python3 {} 0.05", stub.display()),
+        &format!("python3 \"{}\" 0.05", stub.display()),
         Duration::from_secs(10),
     )
     .expect("stub spawns")
@@ -104,7 +106,7 @@ fn low_confidence_pick_abstains() {
 fn confident_pick_acts() {
     let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stub_worker.py");
     let engine = LayaEngine::spawn(
-        &format!("python3 {} 0.9", stub.display()),
+        &format!("python3 \"{}\" 0.9", stub.display()),
         Duration::from_secs(10),
     )
     .expect("stub spawns")
@@ -180,7 +182,7 @@ for line in sys.stdin:
     )
     .unwrap();
     let engine = LayaEngine::spawn(
-        &format!("python3 {}", stub.display()),
+        &format!("python3 \"{}\"", stub.display()),
         Duration::from_secs(10),
     )
     .expect("garbage-on-predict worker spawns");
@@ -204,7 +206,7 @@ fn crashed_worker_is_respawned_and_call_retried() {
     // #2 hits a dead worker → respawn + retry must still answer.
     let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/die_once.py");
     let engine = LayaEngine::spawn(
-        &format!("python3 {} 0", stub.display()),
+        &format!("python3 \"{}\" 0", stub.display()),
         Duration::from_secs(10),
     )
     .expect("stub spawns");
@@ -236,7 +238,7 @@ fn stale_response_is_dropped_not_consumed_positionally() {
     // answer would surface as "ok but no answers" on a healthy worker.
     let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/delayed_once.py");
     let engine = LayaEngine::spawn(
-        &format!("python3 {} 300", stub.display()),
+        &format!("python3 \"{}\" 300", stub.display()),
         Duration::from_millis(100),
     )
     .expect("stub spawns");
@@ -290,7 +292,7 @@ fn health_reports_ready_for_live_worker_and_down_for_dead() {
     use dexter_decision::EngineHealth;
     let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stub_worker.py");
     let engine = LayaEngine::spawn(
-        &format!("python3 {}", stub.display()),
+        &format!("python3 \"{}\"", stub.display()),
         Duration::from_secs(10),
     )
     .expect("stub spawns");
@@ -301,7 +303,7 @@ fn health_reports_ready_for_live_worker_and_down_for_dead() {
     // (health is read-only, it must not respawn).
     let die = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/die_once.py");
     let dead = LayaEngine::spawn(
-        &format!("python3 {}", die.display()),
+        &format!("python3 \"{}\"", die.display()),
         Duration::from_secs(10),
     )
     .expect("stub spawns");
@@ -326,7 +328,7 @@ fn spawn_rejects_worker_without_protocol_version() {
     // field — spawning against it must fail, not proceed silently.
     let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy_worker.py");
     let err = LayaEngine::spawn(
-        &format!("python3 {}", stub.display()),
+        &format!("python3 \"{}\"", stub.display()),
         Duration::from_secs(10),
     )
     .err()
@@ -360,7 +362,7 @@ for line in sys.stdin:
     )
     .unwrap();
     let err = LayaEngine::spawn(
-        &format!("python3 {}", stub.display()),
+        &format!("python3 \"{}\"", stub.display()),
         Duration::from_secs(10),
     )
     .err()
