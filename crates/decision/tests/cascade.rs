@@ -30,11 +30,13 @@ fn ctx() -> DecisionContext {
                 action: click("Guardar"),
                 rationale: "label match".into(),
                 prior: 0.4,
+                behind_modal: None,
             },
             CandidateAction {
                 action: click("Cancelar"),
                 rationale: "weak".into(),
                 prior: 0.1,
+                behind_modal: None,
             },
         ],
         last_error: None,

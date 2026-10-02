@@ -114,6 +114,7 @@ fn ctx() -> DecisionContext {
             },
             rationale: "label match".into(),
             prior: 0.9,
+            behind_modal: None,
         }],
         last_error: None,
         step: 1,

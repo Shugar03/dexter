@@ -1,0 +1,60 @@
+# ambiguous-twin — two rows, each with an identical "Eliminar" button.
+# Only the row context says which one the goal means. Rule-based must
+# not guess between identical labels (abstains); Laya answers the typed
+# `disambiguate` question from the row context and deletes the right
+# invoice in one step.
+[scenario]
+id = "ambiguous-twin"
+goal = "eliminar la factura de abril"
+optimal_steps = 1
+app = "Facturas"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "abril eliminada" } }
+expected = "abstained"
+max_steps = 4
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Facturas"
+
+[[world.element]]
+id = 2
+parent = 1
+depth = 1
+role = "row"
+name = "Factura marzo"
+
+[[world.element]]
+id = 3
+parent = 2
+depth = 2
+role = "button"
+name = "Eliminar"
+identifier = "del-marzo"
+actions = ["press"]
+
+[[world.element]]
+id = 4
+parent = 1
+depth = 1
+role = "row"
+name = "Factura abril"
+
+[[world.element]]
+id = 5
+parent = 4
+depth = 2
+role = "button"
+name = "Eliminar"
+identifier = "del-abril"
+actions = ["press"]
+
+[[world.rule]]
+when = { identifier = "del-marzo" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Factura marzo eliminada" } }
+
+[[world.rule]]
+when = { identifier = "del-abril" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Factura abril eliminada" } }
