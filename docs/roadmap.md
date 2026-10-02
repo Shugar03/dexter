@@ -16,6 +16,18 @@ first (coords opt-in), ambiguous/stale targets fail closed, incomplete
 perception degrades to UNCERTAIN, policy outside the model, single
 `Engine::run_step` path.
 
+Item tags: `[windows]` / `[macos]` / `[linux]` at the start of an item
+mean the work needs that platform — on the builder's Linux box do not
+attempt a `[windows]`/`[macos]` item locally: dispatch a child Devin
+session on that platform (the org has macOS and Windows machines) with
+the same process and hard rules, and have it check the item off here
+when it lands. Untagged items run anywhere.
+
+Never let this file run dry: when fewer than 2 unchecked items remain,
+seed the next Fase from the still-pending Etapas in ROADMAP.md and any
+slices recent PRs flagged as remaining — same `- [ ]` format, platform
+tags where needed — in the same run's docs PR.
+
 ## Fase 1 — close the trust moat (review findings)
 
 - [x] CI gate red — live scenarios pinned to es-ES per app
@@ -104,19 +116,48 @@ Seeded from ROADMAP.md (Etapas 2–5) now that Fases 1–4 closed.
   capability flags false) plus the AT-SPI role → normalized-role
   table for the future backend. (ROADMAP.md Etapa 5)
 
-## Platform-gated — manual dispatch only (skip on Linux)
+## Fase 6 — platform backends + depth
 
-Not `- [ ]` items so the builder never picks them: each needs a
-session on its own platform. Dispatch by hand and, when it lands,
-record it in the Cleanup backlog above with the PR link.
+Seeded from the slices the last PRs flagged as remaining plus
+ROADMAP.md Etapas 1, 3, 4, 5 and 6. `[windows]`/`[macos]` items are
+dispatched to child sessions (see Item tags above).
 
-- Windows UIA backend — real observe/act for `dexter-windows` on UI
-  Automation + MSAA fallback via windows-rs (ROADMAP.md Etapa 4);
-  needs a Windows session.
-- ~~macOS AX eval dataset — an `eval harvest` manifest over real AX
-  trees producing `datasets/macos/`~~ — Done in PR #44 (2026-10-02):
-  20 items over TextEdit, Finder, Calculator, Clock, System Settings,
-  es-ES pinned per app; numbers in `docs/eval-numbers.md`.
+- [ ] `[windows]` `act()` slice — UIA patterns first:
+  `Invoke`/`Toggle`/`ScrollItem`/`SelectionItem` →
+  `press`/`toggle`/`scroll`, writable `Value` → `set_value`,
+  focusable → `focus`; Win32 `SendInput` only where no pattern
+  reaches. Reuse the Element ids observe binds. (Etapa 4; observe
+  landed in PR #45)
+- [ ] `[windows]` screenshot/vision perception — capture + OCR
+  mirroring `dexter_vision::capture_monitor` semantics (per-display
+  crop, spanning windows fail closed). (Etapa 4)
+- [ ] `[windows]` dedicated MSAA fallback — real MSAA walk for
+  controls UIA misses (legacy Win32), beyond UIA's built-in
+  LegacyIAccessible bridge. (Etapa 4)
+- [ ] `[linux]` `dexter-linux` real observe — AT-SPI2 tree walk on
+  X11 mirroring the Windows observe slice: window enumeration,
+  app/window-scoped walk → normalized `Element`s, same
+  `ax_limited`/`collection_errors`/`elements_truncated` flags.
+  Depends on the Fase 5 skeleton. (Etapa 5)
+- [ ] Recovery ladder rung 3 — alternative semantic target: when the
+  chosen candidate keeps failing, try the next-best generated
+  candidate before escalating (the engine currently replays the last
+  act on `Route::Retry`). Pin with a sim scenario whose first-ranked
+  target is a dead end. (Etapa 1 — recovery ladder pasos 1–3)
+- [ ] Browser dataset expansion — `eval harvest --driver browser`
+  over more pages into `datasets/browser/` (install chromedriver if
+  missing); append honest numbers to `docs/eval-numbers.md`.
+  (Etapa 3)
+- [ ] `[macos]` live-scenario expansion — more apps into
+  `datasets/scenarios/` live specs pinned es-ES per the
+  `AppleLanguages` contract (e.g. Safari, Notes flows). (Etapa 3)
+- [ ] `[macos]` Laya fine-tune — `dexter eval export` rows →
+  fine-tune `laya-mlx` (MLX needs Apple silicon); eval before/after
+  on the matrix and report honestly — only worth keeping if the
+  numbers justify it. (Etapa 3)
+- [ ] Desktop app scaffold — Tauri 2 shell (`apps/dexter-desktop`)
+  rendering journal tail + policy state read-only; no control
+  surface yet. (Etapa 6 — first slice)
 
 ## Cleanup backlog (low severity, pick when convenient)
 
