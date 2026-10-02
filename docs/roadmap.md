@@ -121,10 +121,13 @@ Seeded from ROADMAP.md (Etapas 2–5) now that Fases 1–4 closed.
   pick = 0.65 = shipped default (no move). Laya τ wired but
   unmeasured (no checkpoint on the builder) — PR #53, 2026-10-02
   (ROADMAP.md Etapa 3 — calibración de umbrales)
-- [ ] Linux driver skeleton — `dexter-linux` crate mirroring
+- [x] Linux driver skeleton — `dexter-linux` crate mirroring
   `dexter-windows`: every operation honestly `Unsupported` (all
   capability flags false) plus the AT-SPI role → normalized-role
-  table for the future backend. (ROADMAP.md Etapa 5)
+  table for the future backend. `atspi_role_name` (`AtspiRole`
+  protocol id → canonical name, generated from `atspi-constants.h`)
+  + `atspi_role` (name → normalized role); SDD `docs/sdd/linux.md` —
+  PR #55, 2026-10-02 (ROADMAP.md Etapa 5)
 
 ## Fase 6 — platform backends + depth
 
