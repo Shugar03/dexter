@@ -12,27 +12,32 @@ Regenerate with:
 cargo run -p dexter-eval --example suite_report 5
 ```
 
-Measured on Linux @ `main` (2026-09-30):
+Measured on Linux @ `main` (2026-10-02):
 
 | scenario | outcome | steps | over-opt | decide p50/p95 ms | recoveries | phys |
 |---|---|---|---|---|---|---|
 | admin-absent | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
+| ambiguous-twin | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
 | cancel-polarity | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
 | download-wait | completed | 1.0 | 0.0 | 0/0 | 0 | 0 |
 | field-disabled | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
 | files-open-dialog | completed | 2.0 | 0.0 | 0/0 | 0 | 0 |
 | form-fill | completed | 2.0 | 0.0 | 0/0 | 0 | 0 |
+| modal-blocking | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
 | modal-confirm | completed | 2.0 | 0.0 | 0/0 | 0 | 0 |
+| negate-discard | completed | 1.0 | 0.0 | 0/0 | 0 | 0 |
 | ocr-canvas | completed | 1.0 | 0.0 | 0/0 | 0 | 0 |
 | ocr-label-only | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
 | tab-reveal | completed | 2.0 | 0.0 | 0/0 | 0 | 0 |
 | wizard-install | completed | 2.0 | 0.0 | 0/0 | 0 | 0 |
 
-**55/55 runs — success rate 100%, worst decide p95 0ms, physical acts
+**70/70 runs — success rate 100%, worst decide p95 0ms, physical acts
 0.** `steps` is the rep mean; `over-opt` is mean steps over the
 declared optimum on successful reps (only where `optimal_steps` is
 set). `cancel-polarity` abstains by design since the polarity veto —
-see its spec header.
+see its spec header. `ambiguous-twin` and `modal-blocking` abstain
+under rule-based by design; under `Cascade[rule-based, laya]` the
+typed questions resolve them (docs/sdd/laya-questions.md).
 
 ## Live suite (macOS gate)
 

@@ -27,6 +27,7 @@ fn candidate(name: &str) -> CandidateAction {
         },
         rationale: format!("button \"{name}\" matches goal"),
         prior: 0.8,
+        behind_modal: None,
     }
 }
 
@@ -371,4 +372,157 @@ for line in sys.stdin:
         err.to_string().contains("protocol 1 not supported"),
         "error should carry the worker's reason: {err}"
     );
+}
+
+fn typed_engine(pick: usize, blocking: bool, disambig: usize, conf: f32) -> LayaEngine {
+    let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/typed_worker.py");
+    LayaEngine::spawn(
+        &format!(
+            "python3 \"{}\" {pick} {} {disambig} {conf}",
+            stub.display(),
+            if blocking { 1 } else { 0 }
+        ),
+        Duration::from_secs(10),
+    )
+    .expect("typed stub spawns")
+    .with_min_confidence(0.3)
+}
+
+fn twin(index: usize, row: &str) -> CandidateAction {
+    CandidateAction {
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                role: Some("button".into()),
+                name: Some("Eliminar".into()),
+                index: Some(index),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+        },
+        rationale: format!(
+            "button \"Eliminar\" matches 1/3 goal terms; occurrence {} of 2 in \"{row}\"",
+            index + 1
+        ),
+        prior: 0.75,
+        behind_modal: None,
+    }
+}
+
+fn twins_ctx() -> DecisionContext {
+    DecisionContext {
+        goal: "eliminar la factura de abril".into(),
+        state_digest: "row Factura marzo\nrow Factura abril".into(),
+        candidates: vec![twin(0, "Factura marzo"), twin(1, "Factura abril")],
+        last_error: None,
+        step: 1,
+    }
+}
+
+fn modal_ctx() -> DecisionContext {
+    let mut c = candidate("Guardar");
+    c.behind_modal = Some("Actualización disponible".into());
+    DecisionContext {
+        goal: "guardar el documento".into(),
+        state_digest: "dialog Actualización disponible".into(),
+        candidates: vec![c],
+        last_error: None,
+        step: 1,
+    }
+}
+
+#[test]
+fn blocking_modal_escalates_to_a_human() {
+    let engine = typed_engine(0, true, 0, 0.9);
+    match engine.decide(&modal_ctx()).expect("decision") {
+        Decision::Route { route, rationale } => {
+            assert_eq!(route, Route::EscalateHuman);
+            assert!(
+                rationale.contains("Actualización disponible"),
+                "{rationale}"
+            );
+        }
+        other => panic!("blocking modal must not act, got {other:?}"),
+    }
+}
+
+#[test]
+fn non_blocking_modal_lets_the_pick_act() {
+    let engine = typed_engine(0, false, 0, 0.9);
+    match engine.decide(&modal_ctx()).expect("decision") {
+        Decision::Act {
+            candidate_index, ..
+        } => assert_eq!(candidate_index, Some(0)),
+        other => panic!("expected Act, got {other:?}"),
+    }
+}
+
+#[test]
+fn dev_worker_treats_a_modal_as_blocking() {
+    let engine = LayaEngine::spawn(&worker_cmd(), Duration::from_secs(10)).expect("worker spawns");
+    assert!(matches!(
+        engine.decide(&modal_ctx()).expect("decision"),
+        Decision::Route {
+            route: Route::EscalateHuman,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn disambiguation_answer_chooses_the_twin() {
+    // The pick lands on twin 0; the typed disambiguation says twin 1.
+    let engine = typed_engine(0, false, 1, 0.9);
+    match engine.decide(&twins_ctx()).expect("decision") {
+        Decision::Act {
+            candidate_index,
+            rationale,
+            ..
+        } => {
+            assert_eq!(candidate_index, Some(1));
+            assert!(rationale.contains("disambiguat"), "{rationale}");
+        }
+        other => panic!("expected Act, got {other:?}"),
+    }
+}
+
+#[test]
+fn disambiguation_none_abstains() {
+    // Index 2 = the trailing `none` option after two twins.
+    let engine = typed_engine(0, false, 2, 0.9);
+    assert!(matches!(
+        engine.decide(&twins_ctx()).expect("decision"),
+        Decision::Route {
+            route: Route::Abstain,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn low_confidence_disambiguation_abstains() {
+    let engine = typed_engine(0, false, 1, 0.1);
+    assert!(matches!(
+        engine.decide(&twins_ctx()).expect("decision"),
+        Decision::Route {
+            route: Route::Abstain,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn out_of_range_disambiguation_is_an_error() {
+    let engine = typed_engine(0, false, 7, 0.9);
+    assert!(engine.decide(&twins_ctx()).is_err());
+}
+
+#[test]
+fn dev_worker_resolves_twins_by_row_context() {
+    let engine = LayaEngine::spawn(&worker_cmd(), Duration::from_secs(10)).expect("worker spawns");
+    match engine.decide(&twins_ctx()).expect("decision") {
+        Decision::Act {
+            candidate_index, ..
+        } => assert_eq!(candidate_index, Some(1)),
+        other => panic!("expected Act on the abril twin, got {other:?}"),
+    }
 }

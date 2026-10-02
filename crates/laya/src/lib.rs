@@ -16,6 +16,9 @@
 //! `DecisionError`, never a silent fallback.
 
 use dexter_core::Action;
+use dexter_decision::questions::{
+    ambiguous_group, typed_questions, BLOCKING_MODAL_ID, DISAMBIGUATE_ID,
+};
 use dexter_decision::{
     Answer, CandidateAction, Decision, DecisionContext, DecisionEngine, DecisionError,
     EngineHealth, Question, Route,
@@ -471,60 +474,69 @@ impl DecisionEngine for LayaEngine {
 
     fn decide(&self, ctx: &DecisionContext) -> Result<Decision, DecisionError> {
         let (state, question) = build_question(ctx);
-        let questions = [question];
+        let mut questions = vec![question];
+        questions.extend(typed_questions(ctx));
 
         let resp = self.rpc(&questions, &state)?;
         if let Some(p) = &resp.provider {
             *self.provider.lock().unwrap() = p.clone();
         }
         if !resp.ok {
-            return Err(DecisionError::Engine {
-                engine: self.name().into(),
-                message: resp.error.unwrap_or_else(|| "unknown".into()),
-            });
+            return Err(self.err(resp.error.unwrap_or_else(|| "unknown".into())));
         }
-        let answer = resp
+        let answers = resp
             .answers
-            .and_then(|a| a.into_iter().next())
-            .ok_or_else(|| DecisionError::Engine {
-                engine: self.name().into(),
-                message: "worker returned ok but no answers".into(),
-            })?;
-        let (idx, confidence) = match answer {
-            Answer::Choice {
-                index, confidence, ..
-            } => (index, confidence),
-            other => {
-                return Err(DecisionError::Engine {
-                    engine: self.name().into(),
-                    message: format!("expected choice answer, got {other:?}"),
-                })
-            }
-        };
+            .filter(|a| !a.is_empty())
+            .ok_or_else(|| self.err("worker returned ok but no answers".into()))?;
+        let (idx, confidence) = self.choice(&answers, "pick")?;
 
         // Calibrated abstention: when the model says its pick is unlikely
         // to be right, prefer the honest route over a shot in the dark.
-        if let Some(c) = confidence {
-            if c < self.min_confidence {
-                return Ok(Decision::Route {
-                    route: Route::Abstain,
-                    rationale: format!(
-                        "laya confidence {c:.2} < min {} — abstaining",
-                        self.min_confidence
-                    ),
-                });
-            }
+        if let Some(r) = self.below_confidence(confidence, "pick") {
+            return Ok(r);
         }
 
         if idx < ctx.candidates.len() {
-            let c = &ctx.candidates[idx];
+            let mut chosen = idx;
+            let mut how = "picked";
+            let twins = ambiguous_group(&ctx.candidates);
+            if twins.contains(&idx) {
+                let (k, conf) = self.choice(&answers, DISAMBIGUATE_ID)?;
+                if k == twins.len() {
+                    return Ok(Decision::Route {
+                        route: Route::Abstain,
+                        rationale: format!(
+                            "laya: none of the {} identical targets fits the goal",
+                            twins.len()
+                        ),
+                    });
+                }
+                chosen = *twins
+                    .get(k)
+                    .ok_or_else(|| self.err(format!("disambiguate index {k} out of range")))?;
+                if let Some(r) = self.below_confidence(conf, DISAMBIGUATE_ID) {
+                    return Ok(r);
+                }
+                how = "disambiguated to";
+            }
+            let c = &ctx.candidates[chosen];
+            if let Some(modal) = &c.behind_modal {
+                if self.boolean(&answers, BLOCKING_MODAL_ID)? {
+                    return Ok(Decision::Route {
+                        route: Route::EscalateHuman,
+                        rationale: format!(
+                            "laya: modal \"{modal}\" blocks the goal — escalating to a human"
+                        ),
+                    });
+                }
+            }
             let conf = confidence
                 .map(|c| format!(" (confidence {c:.2})"))
                 .unwrap_or_default();
             return Ok(Decision::Act {
                 action: c.action.clone(),
-                candidate_index: Some(idx),
-                rationale: format!("laya picked candidate {idx}{conf}: {}", c.rationale),
+                candidate_index: Some(chosen),
+                rationale: format!("laya {how} candidate {chosen}{conf}: {}", c.rationale),
             });
         }
         let route_idx = idx - ctx.candidates.len();
@@ -534,10 +546,55 @@ impl DecisionEngine for LayaEngine {
                 rationale: format!("laya picked route '{label}'"),
             });
         }
-        Err(DecisionError::Engine {
-            engine: self.name().into(),
-            message: format!("answer index {idx} out of range"),
+        Err(self.err(format!("answer index {idx} out of range")))
+    }
+}
+
+impl LayaEngine {
+    fn err(&self, message: String) -> DecisionError {
+        DecisionError::Engine {
+            engine: "laya".into(),
+            message,
+        }
+    }
+
+    /// The `Choice` answer to question `id` — missing or mistyped is a
+    /// protocol error, never a default.
+    fn choice(&self, answers: &[Answer], id: &str) -> Result<(usize, Option<f32>), DecisionError> {
+        match answers.iter().find(|a| answer_id(a) == id) {
+            Some(Answer::Choice {
+                index, confidence, ..
+            }) => Ok((*index, *confidence)),
+            Some(other) => {
+                Err(self.err(format!("expected choice answer for '{id}', got {other:?}")))
+            }
+            None => Err(self.err(format!("no answer for question '{id}'"))),
+        }
+    }
+
+    fn boolean(&self, answers: &[Answer], id: &str) -> Result<bool, DecisionError> {
+        match answers.iter().find(|a| answer_id(a) == id) {
+            Some(Answer::Bool { value, .. }) => Ok(*value),
+            Some(other) => Err(self.err(format!("expected bool answer for '{id}', got {other:?}"))),
+            None => Err(self.err(format!("no answer for question '{id}'"))),
+        }
+    }
+
+    fn below_confidence(&self, confidence: Option<f32>, id: &str) -> Option<Decision> {
+        let c = confidence?;
+        (c < self.min_confidence).then(|| Decision::Route {
+            route: Route::Abstain,
+            rationale: format!(
+                "laya {id} confidence {c:.2} < min {} — abstaining",
+                self.min_confidence
+            ),
         })
+    }
+}
+
+fn answer_id(a: &Answer) -> &str {
+    match a {
+        Answer::Choice { id, .. } | Answer::Score { id, .. } | Answer::Bool { id, .. } => id,
     }
 }
 

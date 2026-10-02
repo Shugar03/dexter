@@ -148,6 +148,10 @@ pub struct SpecElement {
     pub focused: bool,
     #[serde(default)]
     pub actions: Vec<String>,
+    /// Platform identifier (AXIdentifier, DOM id) — lets rules tell
+    /// apart elements that share a label.
+    #[serde(default)]
+    pub identifier: Option<String>,
     /// Perception layer that produced the element — `ocr`, `vision`,
     /// `dom`, or `accessibility` (default). Lets sim worlds model
     /// elements AX can't see (a canvas label found by OCR), which the
@@ -168,6 +172,7 @@ impl SpecElement {
             enabled: self.enabled,
             focused: self.focused,
             actions: self.actions.clone(),
+            identifier: self.identifier.clone(),
             source: self.source.unwrap_or(ElementSource::Accessibility),
             ..Default::default()
         }

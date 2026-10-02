@@ -32,6 +32,7 @@ use thiserror::Error;
 
 mod cascade;
 mod openai;
+pub mod questions;
 pub use cascade::Cascade;
 pub use openai::OpenAiProvider;
 
@@ -61,6 +62,10 @@ pub struct CandidateAction {
     pub rationale: String,
     /// Generator prior in [0,1] — *not* a confidence the policy trusts.
     pub prior: f32,
+    /// Label of the open modal (`dialog`/`sheet`) this candidate's
+    /// element sits behind, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behind_modal: Option<String>,
 }
 
 /// Everything a decision engine needs for one step.
@@ -771,6 +776,7 @@ fn expr_next_candidate(
             plan.len()
         ),
         prior: if stalled { 0.4 } else { 0.95 },
+        behind_modal: None,
     })
 }
 
@@ -1058,6 +1064,7 @@ impl CandidateGenerator for HeuristicGenerator {
                             el.role.as_deref().unwrap_or("?"),
                         ),
                         prior: 0.7,
+                        behind_modal: None,
                     });
                 }
                 continue;
@@ -1136,6 +1143,7 @@ impl CandidateGenerator for HeuristicGenerator {
                         },
                         rationale: format!("{base}; editable + literal text in goal"),
                         prior,
+                        behind_modal: None,
                     });
                     out.push(CandidateAction {
                         action: Action::TypeText {
@@ -1144,12 +1152,14 @@ impl CandidateGenerator for HeuristicGenerator {
                         },
                         rationale: format!("{base}; editable + literal text in goal"),
                         prior: prior * 0.92,
+                        behind_modal: None,
                     });
                 } else {
                     out.push(CandidateAction {
                         action: Action::Focus { target },
                         rationale: format!("{base}; editable field, focus to prepare input"),
                         prior,
+                        behind_modal: None,
                     });
                 }
             } else if pressable {
@@ -1160,6 +1170,7 @@ impl CandidateGenerator for HeuristicGenerator {
                     },
                     rationale: base,
                     prior,
+                    behind_modal: None,
                 });
             } else if editable {
                 // Editable element matching a press-y goal ("submit the
@@ -1168,6 +1179,7 @@ impl CandidateGenerator for HeuristicGenerator {
                     action: Action::Focus { target },
                     rationale: format!("{base}; editable fallback"),
                     prior: prior * 0.85,
+                    behind_modal: None,
                 });
             }
         }
@@ -1178,9 +1190,102 @@ impl CandidateGenerator for HeuristicGenerator {
                 out.push(c);
             }
         }
+        annotate_structure(&mut out, &obs.elements);
         out.sort_by(|a, b| b.prior.total_cmp(&a.prior));
         out.truncate(self.max_candidates);
         out
+    }
+}
+
+/// Element a generated candidate acts on (its semantic target is
+/// index-qualified, so this is a single hit).
+fn candidate_element<'a>(c: &CandidateAction, elements: &'a [Element]) -> Option<&'a Element> {
+    let target = match &c.action {
+        Action::Click { target, .. }
+        | Action::Focus { target }
+        | Action::SetValue { target, .. } => Some(target),
+        Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
+        _ => None,
+    }?;
+    match target {
+        Target::Semantic(st) => find_elements_in(elements, st)
+            .into_iter()
+            .nth(st.index.unwrap_or(0)),
+        _ => None,
+    }
+}
+
+/// Parent chain of `el`, nearest first (bounded against cyclic trees).
+fn ancestors<'a>(el: &Element, elements: &'a [Element]) -> Vec<&'a Element> {
+    let mut out = Vec::new();
+    let mut cur = el.parent;
+    while let Some(pid) = cur {
+        if out.len() > elements.len() {
+            break;
+        }
+        let Some(p) = elements.iter().find(|e| e.id == pid) else {
+            break;
+        };
+        out.push(p);
+        cur = p.parent;
+    }
+    out
+}
+
+fn is_modal(el: &Element) -> bool {
+    matches!(el.role.as_deref(), Some("dialog" | "sheet"))
+}
+
+/// Structural signals the label match can't see: candidates behind an
+/// open modal are marked and penalized; index-qualified twins get the
+/// row context that tells them apart.
+fn annotate_structure(out: &mut [CandidateAction], elements: &[Element]) {
+    let modal = elements
+        .iter()
+        .find(|e| is_modal(e))
+        .map(|m| m.label().unwrap_or("untitled dialog").to_string());
+    for c in out.iter_mut() {
+        let Some(el) = candidate_element(c, elements) else {
+            continue;
+        };
+        let chain = ancestors(el, elements);
+        if let Some(m) = &modal {
+            if !is_modal(el) && !chain.iter().any(|a| is_modal(a)) {
+                c.prior *= 0.5;
+                c.rationale = format!("{}; behind modal \"{m}\"", c.rationale);
+                c.behind_modal = Some(m.clone());
+            }
+        }
+        let twin = match &c.action {
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            }
+            | Action::Focus {
+                target: Target::Semantic(st),
+            }
+            | Action::SetValue {
+                target: Target::Semantic(st),
+                ..
+            } => st.index.map(|k| (k, st)),
+            _ => None,
+        };
+        if let Some((k, st)) = twin {
+            let n = find_elements_in(
+                elements,
+                &SemanticTarget {
+                    index: None,
+                    ..st.clone()
+                },
+            )
+            .len();
+            let ctx = chain
+                .iter()
+                .find_map(|a| a.label())
+                .map(|l| format!(" in \"{l}\""))
+                .unwrap_or_default();
+            c.rationale = format!("{}; occurrence {} of {n}{ctx}", c.rationale, k + 1);
+        }
     }
 }
 
@@ -1208,6 +1313,24 @@ impl DecisionEngine for RuleBased {
 
     fn decide(&self, ctx: &DecisionContext) -> Result<Decision, DecisionError> {
         if let Some(first) = ctx.candidates.first() {
+            let twins = questions::ambiguous_group(&ctx.candidates);
+            if !twins.is_empty() {
+                return Ok(Decision::Route {
+                    route: Route::Abstain,
+                    rationale: format!(
+                        "ambiguous target: {} candidates tie on the same label — not guessing",
+                        twins.len()
+                    ),
+                });
+            }
+            if let Some(m) = &first.behind_modal {
+                return Ok(Decision::Route {
+                    route: Route::Abstain,
+                    rationale: format!(
+                        "top candidate is behind modal \"{m}\" — not pressing through it"
+                    ),
+                });
+            }
             // Weak evidence is not a mandate: below the act threshold the
             // honest move is to abstain, not to click the best bad guess.
             if first.prior >= self.act_threshold {

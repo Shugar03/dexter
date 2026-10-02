@@ -440,3 +440,43 @@ name = "Normal"
         obs.digest
     );
 }
+
+fn laya_dev_cascade() -> dexter_decision::Cascade {
+    let worker =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/laya/worker.py");
+    let laya = dexter_laya::LayaEngine::spawn(
+        &format!("python3 \"{}\"", worker.display()),
+        std::time::Duration::from_secs(10),
+    )
+    .expect("dev worker spawns");
+    dexter_decision::Cascade::new(vec![Box::new(RuleBased::default()), Box::new(laya)])
+}
+
+fn dataset_spec(name: &str) -> ScenarioSpec {
+    let path = format!(
+        "{}/../../datasets/scenarios/{name}.toml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// Two identical "Eliminar" buttons: the cascade escalates rule-based's
+/// abstention to Laya, whose typed disambiguation picks the abril row —
+/// one press, no wrong deletion first.
+#[test]
+fn cascade_resolves_ambiguous_twin_via_laya() {
+    let spec = dataset_spec("ambiguous-twin");
+    let run = run_scenario(&spec, &HeuristicGenerator::default(), &laya_dev_cascade());
+    assert_eq!(run.outcome, "completed", "steps={}", run.steps);
+    assert_eq!(run.steps, 1);
+}
+
+/// An unrelated dialog over the goal's button: Laya's typed
+/// blocking-modal answer escalates to a human instead of pressing
+/// through it.
+#[test]
+fn cascade_escalates_on_blocking_modal_via_laya() {
+    let spec = dataset_spec("modal-blocking");
+    let run = run_scenario(&spec, &HeuristicGenerator::default(), &laya_dev_cascade());
+    assert_eq!(run.outcome, "escalated", "steps={}", run.steps);
+}
