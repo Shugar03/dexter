@@ -992,6 +992,8 @@ version = "0.1.0"
 dependencies = [
  "dexter-core",
  "dexter-driver",
+ "dexter-world-model",
+ "windows",
 ]
 
 [[package]]

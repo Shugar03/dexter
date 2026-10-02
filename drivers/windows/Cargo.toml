@@ -1,6 +1,6 @@
 [package]
 name = "dexter-windows"
-description = "Windows ComputerDriver skeleton — UIA role mapping + honest unsupported seam"
+description = "Windows ComputerDriver — UIA observe backend + honest unsupported seam"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,14 @@ license.workspace = true
 [dependencies]
 dexter-core.workspace = true
 dexter-driver.workspace = true
+dexter-world-model.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+] }
