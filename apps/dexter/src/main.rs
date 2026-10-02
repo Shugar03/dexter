@@ -271,8 +271,13 @@ enum EvalCommand {
         #[arg(long)]
         engine_path: Option<String>,
         /// Abstain below this calibrated confidence (laya). 0 = never.
-        #[arg(long, default_value = "0")]
-        min_confidence: f32,
+        /// Comma-separated values sweep it (`0,0.25,0.5`).
+        #[arg(long, value_delimiter = ',', default_value = "0")]
+        min_confidence: Vec<f32>,
+        /// Rule-based act threshold (minimum top-candidate prior).
+        /// Comma-separated values sweep it; default: the engine's own.
+        #[arg(long, value_delimiter = ',')]
+        act_threshold: Vec<f32>,
     },
     /// Harvest labeled items: observe each page/app in a TOML manifest,
     /// resolve the declared gold target, emit EvalItem JSONL.
@@ -442,14 +447,28 @@ fn build_decider(
     engine_path: &Option<String>,
     min_confidence: f32,
 ) -> Result<Box<dyn dexter_decision::DecisionEngine>> {
+    let act_threshold = dexter_decision::RuleBased::default().act_threshold;
+    build_decider_tuned(engine_name, engine_path, min_confidence, act_threshold)
+}
+
+/// `build_decider` with the rule-based act threshold explicit — the
+/// knob `eval matrix --act-threshold` sweeps (also the cascade's
+/// first tier).
+fn build_decider_tuned(
+    engine_name: &str,
+    engine_path: &Option<String>,
+    min_confidence: f32,
+    act_threshold: f32,
+) -> Result<Box<dyn dexter_decision::DecisionEngine>> {
+    let rule_based = dexter_decision::RuleBased { act_threshold };
     match engine_name {
-        "rule-based" => Ok(Box::new(dexter_decision::RuleBased::default())),
+        "rule-based" => Ok(Box::new(rule_based)),
         "laya" => Ok(Box::new(build_laya(engine_path, min_confidence)?)),
         "openai" => Ok(Box::new(build_openai(engine_path.clone()))),
         // `--engine-path` configures the laya tier; the OpenAI model
         // comes from DEXTER_OPENAI_MODEL.
         "cascade" => Ok(Box::new(dexter_decision::Cascade::new(vec![
-            Box::new(dexter_decision::RuleBased::default()),
+            Box::new(rule_based),
             Box::new(build_laya(engine_path, min_confidence)?),
             Box::new(build_openai(None)),
         ]))),
@@ -683,7 +702,14 @@ fn run() -> Result<()> {
                 engine,
                 engine_path,
                 min_confidence,
-            } => eval_matrix(&datasets, &engine, engine_path, min_confidence),
+                act_threshold,
+            } => eval_matrix(
+                &datasets,
+                &engine,
+                engine_path,
+                &min_confidence,
+                &act_threshold,
+            ),
             EvalCommand::Harvest { manifest, out } => {
                 eval_harvest(engine.driver(), &manifest, &out)
             }
@@ -1444,24 +1470,82 @@ fn eval_matrix(
     datasets: &[String],
     engine_name: &str,
     engine_path: Option<String>,
-    min_confidence: f32,
+    min_confidence: &[f32],
+    act_threshold: &[f32],
 ) -> Result<()> {
-    let decider = build_decider(engine_name, &engine_path, min_confidence)?;
+    let default_act = [dexter_decision::RuleBased::default().act_threshold];
+    let act_threshold = if act_threshold.is_empty() {
+        &default_act[..]
+    } else {
+        act_threshold
+    };
+    anyhow::ensure!(
+        !min_confidence.is_empty(),
+        "--min-confidence needs at least one value"
+    );
+    anyhow::ensure!(
+        min_confidence.len() == 1 || act_threshold.len() == 1,
+        "sweep one knob at a time: --min-confidence or --act-threshold, not both"
+    );
+    let sweep_act = act_threshold.len() > 1;
+    let (knob, values) = if sweep_act {
+        ("act_threshold", act_threshold)
+    } else {
+        ("min_confidence", min_confidence)
+    };
+    let make = |v: f32| {
+        let (mc, at) = if sweep_act {
+            (min_confidence[0], v)
+        } else {
+            (v, act_threshold[0])
+        };
+        build_decider_tuned(engine_name, &engine_path, mc, at)
+    };
     let generator = dexter_decision::HeuristicGenerator::default();
 
+    let mut loaded = Vec::new();
     for ds in datasets {
         let text =
             std::fs::read_to_string(ds).with_context(|| format!("reading dataset '{ds}'"))?;
         let items = dexter_eval::load_jsonl(&text).with_context(|| format!("parsing '{ds}'"))?;
-        println!("{ds}");
-        let groups = dexter_eval::split_by_app(&items);
-        for (app, group) in &groups {
-            let report = dexter_eval::run_eval(group, &generator, decider.as_ref());
-            matrix_row(&format!("  {app}"), &report);
+        loaded.push((ds, items));
+    }
+
+    let sweeping = values.len() > 1;
+    for &v in values {
+        if sweeping {
+            println!("== {knob} = {v:.2}");
         }
-        if groups.len() > 1 {
-            let report = dexter_eval::run_eval(&items, &generator, decider.as_ref());
-            matrix_row("  (all)", &report);
+        let decider = make(v)?;
+        for (ds, items) in &loaded {
+            println!("{ds}");
+            let groups = dexter_eval::split_by_app(items);
+            for (app, group) in &groups {
+                let report = dexter_eval::run_eval(group, &generator, decider.as_ref());
+                matrix_row(&format!("  {app}"), &report);
+            }
+            if groups.len() > 1 {
+                let report = dexter_eval::run_eval(items, &generator, decider.as_ref());
+                matrix_row("  (all)", &report);
+            }
+        }
+    }
+
+    if sweeping {
+        let all: Vec<dexter_eval::EvalItem> = loaded
+            .iter()
+            .flat_map(|(_, items)| items.iter().cloned())
+            .collect();
+        let points = dexter_eval::calibrate::sweep(&all, &generator, values, make)?;
+        println!("== sweep over all datasets ({} items)", all.len());
+        for p in &points {
+            matrix_row(
+                &format!("  {knob} = {:.2} (utility {})", p.value, p.utility()),
+                &p.report,
+            );
+        }
+        if let Some(v) = dexter_eval::calibrate::pick(&points) {
+            println!("pick: {knob} = {v:.2} (max utility → fewest false acts → most conservative)");
         }
     }
     Ok(())
@@ -2044,6 +2128,39 @@ fn spawn_overlay(events_path: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eval_matrix_parses_comma_separated_sweeps() {
+        let cli = Cli::try_parse_from([
+            "dexter",
+            "eval",
+            "matrix",
+            "a.jsonl",
+            "--act-threshold",
+            "0.5,0.65,0.8",
+        ])
+        .expect("parse");
+        let Command::Eval {
+            cmd:
+                EvalCommand::Matrix {
+                    min_confidence,
+                    act_threshold,
+                    ..
+                },
+        } = cli.cmd
+        else {
+            panic!("expected eval matrix");
+        };
+        assert_eq!(act_threshold, vec![0.5, 0.65, 0.8]);
+        assert_eq!(min_confidence, vec![0.0]);
+    }
+
+    #[test]
+    fn eval_matrix_rejects_sweeping_both_knobs() {
+        let err = eval_matrix(&[], "rule-based", None, &[0.0, 0.25], &[0.5, 0.65])
+            .expect_err("two swept knobs");
+        assert!(err.to_string().contains("one knob at a time"));
+    }
 
     #[test]
     fn overlay_journal_path_is_per_process_and_jsonl() {
