@@ -116,8 +116,6 @@ record it in the Cleanup backlog above with the PR link.
 - macOS AX eval dataset — an `eval harvest` manifest over real AX
   trees producing `datasets/macos/` (ROADMAP.md Etapa 3); the harness
   is already driver-agnostic, only the driver needs macOS.
-- Permission onboarding polish — `doctor` + system prompt flow
-  (ROADMAP.md Etapa 1); macOS-only surface.
 
 ## Cleanup backlog (low severity, pick when convenient)
 
@@ -163,4 +161,8 @@ record it in the Cleanup backlog above with the PR link.
 - Done in PR #40 (2026-10-01): `pid_for_bundle` no ambiguity check
   — `--app <bundle id>` resolves via `dexter_driver::unique_app_pid`;
   several running instances fail closed as `Ambiguous` (use `--pid`).
+- Done in PR #43 (2026-10-02): permission onboarding polish —
+  `doctor` reports per-permission status (`permissions::Probe` seam,
+  `Permission` metadata), `--request` prompts missing only, SDD note
+  at `docs/sdd/permissions.md`; prompt verified live on macOS.
 - Remaining: none.
