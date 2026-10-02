@@ -120,6 +120,16 @@
   and its antonym (when known) joins the wanted terms — "no guardar
   el borrador" offers "Descartar borrador", never "Guardar".
   `negate-discard.toml` pins the flow end-to-end.
+- **macOS AX eval dataset — 20 decision points over 5 real apps.**
+  `datasets/macos/` grew from TextEdit + Finder to include Calculator,
+  Clock and System Settings, all harvested from real accessibility
+  trees via `dexter eval harvest`. Every `prep` pins its app to es-ES
+  (`AppleLanguages` defaults + launch arg — the same contract the live
+  scenario specs use), so the manifest re-harvests deterministically
+  on any host locale; each app's last entry quits it and deletes the
+  override. Baseline (rule-based): coverage 100%, act 12/15 (80%),
+  routes 4/5 — the misses are generator weaknesses the dataset now
+  measures, reported per app in `docs/eval-numbers.md` (PR #44).
 
 ### Fixed
 

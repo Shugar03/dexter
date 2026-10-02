@@ -113,9 +113,10 @@ record it in the Cleanup backlog above with the PR link.
 - Windows UIA backend — real observe/act for `dexter-windows` on UI
   Automation + MSAA fallback via windows-rs (ROADMAP.md Etapa 4);
   needs a Windows session.
-- macOS AX eval dataset — an `eval harvest` manifest over real AX
-  trees producing `datasets/macos/` (ROADMAP.md Etapa 3); the harness
-  is already driver-agnostic, only the driver needs macOS.
+- ~~macOS AX eval dataset — an `eval harvest` manifest over real AX
+  trees producing `datasets/macos/`~~ — Done in PR #44 (2026-10-02):
+  20 items over TextEdit, Finder, Calculator, Clock, System Settings,
+  es-ES pinned per app; numbers in `docs/eval-numbers.md`.
 
 ## Cleanup backlog (low severity, pick when convenient)
 
@@ -165,4 +166,13 @@ record it in the Cleanup backlog above with the PR link.
   `doctor` reports per-permission status (`permissions::Probe` seam,
   `Permission` metadata), `--request` prompts missing only, SDD note
   at `docs/sdd/permissions.md`; prompt verified live on macOS.
+- Done in PR #44 (2026-10-02): macOS AX eval dataset —
+  `datasets/macos/` grew from 10 to 20 decision points harvested from
+  real AX trees (Calculator, Clock and System Settings added;
+  TextEdit/Finder re-harvested). Preps pin every app to es-ES via the
+  `AppleLanguages` defaults + launch-arg contract the live specs use,
+  so the manifest is deterministic on any host locale. Rule-based
+  baseline: cov 100%, act 12/15 (80%), routes 4/5, fa 1 — the four
+  misses are measured generator/engine weaknesses, reported in
+  `docs/eval-numbers.md`.
 - Remaining: none.

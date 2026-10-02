@@ -5,11 +5,20 @@
 # `teardown` restores it; the committed items.jsonl is the frozen truth
 # — regenerate only deliberately.
 #
-# Goals are in Spanish because this machine's UI is localized — the
-# generator's verb/stopword lexicon covers both languages.
+# Goals and AX names are in Spanish: every prep pins its app to es-ES
+# via `defaults write <bundle> AppleLanguages -array es` plus the
+# `-AppleLanguages '(es)'` launch arg (the same contract the live
+# specs in datasets/scenarios use), so the harvest is deterministic on
+# any host locale. Each app's LAST entry carries the teardown that
+# quits it and deletes the override.
+#
+# Prep scripts also call `dexter` (same contract as the live specs —
+# dexter must be on PATH) for idempotent state setup like selecting a
+# Calculator mode or a Clock tab.
 #
 # Harvest:
-#   dexter eval harvest datasets/macos/manifest.toml -o datasets/macos/items.jsonl
+#   dexter --driver macos eval harvest datasets/macos/manifest.toml \
+#     -o datasets/macos/items.jsonl
 
 # --- TextEdit (fresh untitled doc; "Guardar" stays disabled under
 #     macOS autosave — a real abstain case) ---
@@ -17,7 +26,8 @@
 [[page]]
 id = "textedit-new-doc"
 app = "com.apple.TextEdit"
-prep = "open -a TextEdit"
+prep = "pkill -x 'TextEdit' 2>/dev/null || true; sleep 0.5; defaults write com.apple.TextEdit AppleLanguages -array es; sleep 0.5; open -a TextEdit --args -AppleLanguages '(es)'; sleep 1; osascript -e 'tell application id \"com.apple.TextEdit\" to close every document saving no' -e 'tell application id \"com.apple.TextEdit\" to make new document' 2>/dev/null || true"
+settle_ms = 800
 goal = "crear un documento nuevo"
 [page.gold]
 type = "act"
@@ -74,6 +84,7 @@ name = "Cerrar todo"
 [[page]]
 id = "textedit-irrelevant"
 app = "com.apple.TextEdit"
+teardown = "osascript -e 'tell application id \"com.apple.TextEdit\" to close every document saving no' -e 'tell application id \"com.apple.TextEdit\" to quit' 2>/dev/null || true; defaults delete com.apple.TextEdit AppleLanguages 2>/dev/null || true"
 goal = "comprar un vuelo"
 [page.gold]
 type = "route"
@@ -81,11 +92,14 @@ type = "route"
 [page.gold.route]
 type = "abstain"
 
-# --- Finder (always running; menu bar is stable) ---
+# --- Finder (always running; menu bar is stable; no windows open so
+#     selection-dependent items are deterministic) ---
 
 [[page]]
 id = "finder-new-window"
 app = "com.apple.finder"
+prep = "defaults write com.apple.finder AppleLanguages -array es; killall Finder 2>/dev/null || true; sleep 1.5; osascript -e 'tell application id \"com.apple.finder\" to close every window' 2>/dev/null || true"
+settle_ms = 800
 goal = "abrir una nueva ventana del finder"
 [page.gold]
 type = "act"
@@ -116,11 +130,144 @@ name = "Nueva carpeta inteligente"
 [[page]]
 id = "finder-open-disabled"
 app = "com.apple.finder"
+teardown = "defaults delete com.apple.finder AppleLanguages 2>/dev/null || true; killall Finder 2>/dev/null || true"
 goal = "abrir el elemento seleccionado"
 [page.gold]
 type = "route"
 # Every "Abrir*" menu item is disabled (nothing selected). Weak partial
 # matches ("Elementos recientes", "Seleccionar disco de arranque") sit
 # below the act threshold — the engine must abstain.
+[page.gold.route]
+type = "abstain"
+
+# --- Calculator (Básica keypad, display cleared; the app persists its
+#     mode across quit so prep re-selects Básica) ---
+
+[[page]]
+id = "calc-add-start"
+app = "com.apple.calculator"
+prep = "pkill -x 'Calculator' 2>/dev/null || true; sleep 0.5; defaults write com.apple.calculator AppleLanguages -array es; sleep 0.5; open -a Calculator --args -AppleLanguages '(es)'; sleep 1; dexter click --app com.apple.calculator --target '{\"role\":\"menu_item\",\"name\":\"Básica\"}' --approve 2>/dev/null || true; dexter click --app com.apple.calculator --target '{\"role\":\"button\",\"name\":\"Borrar todo\"}' --approve 2>/dev/null || true"
+settle_ms = 800
+goal = "calcular 134 más 89"
+[page.gold]
+type = "act"
+# The expression path plans 1,3,4,Sumar,8,9,"Es igual a" — the first
+# honest move is the "1" key.
+[page.gold.target]
+role = "button"
+name = "1"
+
+[[page]]
+id = "calc-scientific"
+app = "com.apple.calculator"
+goal = "cambiar a la calculadora científica"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "menu_item"
+name = "Científica"
+
+[[page]]
+id = "calc-clear"
+app = "com.apple.calculator"
+goal = "borrar el resultado"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Borrar todo"
+
+[[page]]
+id = "calc-undo-disabled"
+app = "com.apple.calculator"
+teardown = "osascript -e 'tell application id \"com.apple.calculator\" to quit' 2>/dev/null || true; defaults delete com.apple.calculator AppleLanguages 2>/dev/null || true"
+goal = "deshacer la última operación"
+[page.gold]
+type = "route"
+# Calculator has no undo — Edición > "Deshacer" is disabled at every
+# step, not just on an empty display. The honest move is to abstain.
+# (A "copiar el resultado" version was dropped: "Borrar todo" leaves a
+# copyable "0", so Copiar being enabled is state-dependent.)
+[page.gold.route]
+type = "abstain"
+
+# --- Clock (tab state + a stopped timer persist across quit; prep
+#     pins the tab and stops any running stopwatch) ---
+
+[[page]]
+id = "clock-stopwatch-tab"
+app = "com.apple.clock"
+prep = "pkill -x 'Clock' 2>/dev/null || true; sleep 0.5; defaults write com.apple.clock AppleLanguages -array es; sleep 0.5; open -a Clock --args -AppleLanguages '(es)'; sleep 1; dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true; dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Reloj mundial\"}' --approve 2>/dev/null || true"
+settle_ms = 1500
+goal = "ir al cronómetro"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "radio_button"
+name = "Cronómetro"
+
+[[page]]
+id = "clock-start"
+app = "com.apple.clock"
+prep = "dexter click --app com.apple.clock --target '{\"role\":\"radio_button\",\"name\":\"Cronómetro\"}' --approve 2>/dev/null || true"
+settle_ms = 1000
+goal = "iniciar el cronómetro"
+[page.gold]
+type = "act"
+# On the Cronómetro tab the only enabled action button is "Iniciar"
+# ("Vuelta" is disabled while the timer is stopped).
+[page.gold.target]
+role = "button"
+name = "Iniciar"
+
+[[page]]
+id = "clock-lap-disabled"
+app = "com.apple.clock"
+prep = "dexter click --app com.apple.clock --target '{\"role\":\"button\",\"name\":\"Detener\"}' --approve 2>/dev/null || true"
+settle_ms = 800
+goal = "marcar una vuelta"
+[page.gold]
+type = "route"
+# "Vuelta" is disabled while the timer is stopped — a lap can only be
+# marked mid-run. The "Vuelta" column header is pressable but marks
+# nothing; abstaining is the honest answer.
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "clock-alarms"
+app = "com.apple.clock"
+teardown = "osascript -e 'tell application id \"com.apple.clock\" to quit' 2>/dev/null || true; defaults delete com.apple.clock AppleLanguages 2>/dev/null || true"
+goal = "abrir las alarmas"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "radio_button"
+name = "Alarmas"
+
+# --- System Settings (the Visualización menu's pane items live in the
+#     AX tree permanently — same surface as the settings-wifi live spec) ---
+
+[[page]]
+id = "settings-wifi"
+app = "com.apple.systempreferences"
+prep = "pkill -x 'System Settings' 2>/dev/null || true; sleep 0.5; defaults write com.apple.systempreferences AppleLanguages -array es; sleep 0.5; open -a 'System Settings' --args -AppleLanguages '(es)'"
+settle_ms = 1800
+goal = "abrir wi‑fi"
+[page.gold]
+type = "act"
+# U+2011 NON-BREAKING HYPHEN in "Wi‑Fi", like the live spec's done_when.
+[page.gold.target]
+role = "menu_item"
+name = "Wi‑Fi"
+
+[[page]]
+id = "settings-irrelevant"
+app = "com.apple.systempreferences"
+teardown = "osascript -e 'tell application id \"com.apple.systempreferences\" to quit' 2>/dev/null || true; defaults delete com.apple.systempreferences AppleLanguages 2>/dev/null || true"
+goal = "reproducir un video"
+[page.gold]
+type = "route"
+# Nothing in System Settings plays video.
 [page.gold.route]
 type = "abstain"
