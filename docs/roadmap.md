@@ -88,15 +88,13 @@ tags where needed — in the same run's docs PR.
 
 Seeded from ROADMAP.md (Etapas 2–5) now that Fases 1–4 closed.
 
-- [ ] Browser protected sessions — persistent profiles via WebDriver
+- [x] Browser protected sessions — persistent profiles via WebDriver
   capabilities: `--browser-profile <dir>` maps to
   `goog:chromeOptions.args [--user-data-dir=…]` /
-  `moz:firefoxOptions.args [-profile …]` (safaridriver documents its
-  limitation), so cookies/logins survive across runs. Session
-  creation currently sends `alwaysMatch: {}` — add the capabilities
-  layer, the per-browser arg table in `docs/sdd/browser.md`, and
-  tests on the generated session payload. (ROADMAP.md Etapa 2 — last
-  open item)
+  `moz:firefoxOptions.args [-profile …]` as `firstMatch` entries
+  (safaridriver matches none — limitation documented, CLI rejects it
+  up front); dir created + canonicalized, profile sessions never
+  adopted — PR #47, 2026-10-02 (ROADMAP.md Etapa 2 — last open item)
 - [ ] Decision cascade — `--engine cascade` composite: `RuleBased`
   first, escalate to `LayaSidecar` on `Abstain`, then to
   `OpenAiProvider`; each hop journaled so eval can report which tier
