@@ -89,6 +89,12 @@
   `crates/eval/examples/suite_report.rs` prints the reproducible
   sim-suite metrics table; current numbers live in
   `docs/eval-numbers.md`.
+- **`dexter-linux` driver skeleton.** The Linux side of the driver
+  seam before a backend exists: `LinuxDriver` declines every operation
+  with `Unsupported` (all capability flags false) plus the AT-SPI
+  tables the AT-SPI2 backend will plug into — `atspi_role_name()`
+  (`AtspiRole` protocol id → canonical name) and `atspi_role()`
+  (name → normalized role). Docs: `docs/sdd/linux.md`.
 - **`dexter-windows` driver skeleton.** The Windows side of the driver
   seam before a backend exists: `WindowsDriver` declines every
   operation with `Unsupported` (all capability flags false — no
