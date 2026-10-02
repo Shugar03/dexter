@@ -5,6 +5,7 @@ use dexter_driver::DriverError;
 use serde_json::{json, Value};
 use std::io::Read;
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -23,6 +24,46 @@ pub struct WebDriverClient {
     owns_session: bool,
     /// Owned driver process (safaridriver spawned by us) — killed on drop.
     proc: Option<Child>,
+    /// Persistent browser profile for sessions we create (absolute,
+    /// canonical). `None` = the driver's throwaway default.
+    profile: Option<PathBuf>,
+}
+
+/// New-session capabilities. Without a profile: `alwaysMatch: {}` —
+/// the driver picks its own browser. With one: a `firstMatch` entry
+/// per browser that takes a profile arg, so whichever driver answers
+/// (chromedriver or geckodriver) matches its own entry and launches on
+/// that profile; safaridriver matches none and refuses the session.
+pub fn session_capabilities(profile: Option<&Path>) -> Value {
+    match profile.and_then(Path::to_str) {
+        None => json!({"capabilities": {"alwaysMatch": {}}}),
+        Some(dir) => json!({"capabilities": {
+            "alwaysMatch": {},
+            "firstMatch": [
+                {"browserName": "chrome",
+                 "goog:chromeOptions": {"args": [format!("--user-data-dir={dir}")]}},
+                {"browserName": "firefox",
+                 "moz:firefoxOptions": {"args": ["-profile", dir]}}
+            ]
+        }}),
+    }
+}
+
+/// Create `dir` if missing and resolve it absolute + canonical — the
+/// browser resolves relative paths against the driver process's cwd,
+/// and Firefox's `-profile` requires an existing directory.
+fn profile_dir(dir: &Path) -> Result<PathBuf, DriverError> {
+    std::fs::create_dir_all(dir)
+        .and_then(|_| std::fs::canonicalize(dir))
+        .map_err(|e| DriverError::Platform(format!("browser profile {}: {e}", dir.display())))
+        .and_then(|abs| {
+            abs.to_str().map(|_| abs.clone()).ok_or_else(|| {
+                DriverError::Platform(format!(
+                    "browser profile {}: path is not valid UTF-8",
+                    abs.display()
+                ))
+            })
+        })
 }
 
 /// WebDriver reports errors as HTTP 4xx/5xx with a JSON body
@@ -57,6 +98,7 @@ impl WebDriverClient {
             session: None,
             owns_session: true,
             proc: Some(proc),
+            profile: None,
         };
         client.wait_ready()?;
         Ok(client)
@@ -75,6 +117,17 @@ impl WebDriverClient {
         Self::connect_mode(base, true)
     }
 
+    /// Attach and always create our own session on the persistent
+    /// profile at `dir` (created if missing). Never adopts a live
+    /// session — an adopted session runs on whatever profile its
+    /// creator chose, so the profile would be silently ignored.
+    pub fn connect_with_profile(base: &str, dir: &Path) -> Result<Self, DriverError> {
+        let profile = profile_dir(dir)?;
+        let mut client = Self::connect_mode(base, false)?;
+        client.profile = Some(profile);
+        Ok(client)
+    }
+
     fn connect_mode(base: &str, adopt: bool) -> Result<Self, DriverError> {
         let mut client = Self {
             base: base.trim_end_matches('/').to_string(),
@@ -82,6 +135,7 @@ impl WebDriverClient {
             session: None,
             owns_session: true,
             proc: None,
+            profile: None,
         };
         client.wait_ready()?;
         // Adopt a live session if the endpoint has one — `GET /sessions`
@@ -143,13 +197,12 @@ impl WebDriverClient {
     }
 
     /// Lazily create the browser session (skipped when a session was
-    /// adopted at connect). `alwaysMatch: {}` — the driver
-    /// picks its own browser (safaridriver→Safari, chromedriver→Chrome,
-    /// geckodriver→Firefox); naming a browser here would break
-    /// cross-driver attach.
+    /// adopted at connect) with `session_capabilities` — never a bare
+    /// browser name, which would break cross-driver attach.
     fn ensure_session(&mut self) -> Result<&str, DriverError> {
         if self.session.is_none() {
-            let resp = self.post("/session", json!({"capabilities": {"alwaysMatch": {}}}))?;
+            let caps = session_capabilities(self.profile.as_deref());
+            let resp = self.post("/session", caps)?;
             let sid = resp["value"]["sessionId"]
                 .as_str()
                 .ok_or_else(|| {

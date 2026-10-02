@@ -93,6 +93,38 @@ espera `/status` ready, y crea la sesión *lazy* en el primer observe/act.
 página que el usuario ya tiene abierta. Las sesiones adoptadas no se
 cierran en `Drop` (`owns_session=false`); las propias sí.
 
+### Perfiles persistentes (sesiones protegidas)
+
+`BrowserDriver::connect_with_profile(url, label, dir)` (CLI:
+`--browser-profile <dir>` junto a `--browser-url`) crea la sesión sobre
+un perfil de browser persistente — cookies y logins sobreviven entre
+runs. `dir` se crea si falta y se pasa absoluto + canónico (el browser
+resolvería un relativo contra el cwd del proceso driver; Firefox exige
+que el directorio exista). Ruta no UTF-8 o un archivo en vez de un
+directorio → `Platform` antes de tocar el endpoint.
+
+Payload de `POST /session`:
+
+- Sin perfil: `{"capabilities":{"alwaysMatch":{}}}` — el driver elige
+  su browser (sin cambios).
+- Con perfil: `alwaysMatch: {}` + un `firstMatch` por browser que
+  acepta perfil. Cada driver matchea solo su entrada (W3C
+  capability processing por `browserName`), así el mismo payload
+  sirve contra cualquier endpoint sin adivinar el browser por URL:
+
+| browser | driver | entrada `firstMatch` |
+|---|---|---|
+| Chrome/Chromium | chromedriver | `browserName: "chrome"`, `goog:chromeOptions.args: ["--user-data-dir=<dir>"]` |
+| Firefox | geckodriver | `browserName: "firefox"`, `moz:firefoxOptions.args: ["-profile", "<dir>"]` |
+| Safari | safaridriver | — sin capability de perfil: Safari siempre corre sobre el perfil del usuario en una ventana de automatización aislada. No matchea ninguna entrada → el endpoint rechaza la sesión (error real propagado). El CLI rechaza `--browser-profile` sin `--browser-url` antes de spawnear safaridriver. |
+
+Con perfil la sesión *nunca* se adopta (`GET /sessions` se salta): una
+sesión ajena corre sobre el perfil que eligió su creador, así que
+adoptarla ignoraría el perfil en silencio. La sesión es propia y se
+cierra en `Drop`; el perfil (en disco) persiste. Chrome bloquea un
+`user-data-dir` en uso por otra instancia — ese error de chromedriver
+llega íntegro.
+
 Errores HTTP 4xx/5xx: el cliente lee el body WebDriver
 (`{"value":{"error","message"}}`) y propaga el mensaje real — p.ej. el
 "Allow remote automation" de Safari llega íntegro al usuario.
