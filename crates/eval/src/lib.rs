@@ -24,6 +24,7 @@ use dexter_decision::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod calibrate;
 pub mod scenario;
 
 /// The labeled correct answer for one decision point.
