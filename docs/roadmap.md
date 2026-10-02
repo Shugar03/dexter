@@ -95,12 +95,15 @@ Seeded from ROADMAP.md (Etapas 2–5) now that Fases 1–4 closed.
   (safaridriver matches none — limitation documented, CLI rejects it
   up front); dir created + canonicalized, profile sessions never
   adopted — PR #47, 2026-10-02 (ROADMAP.md Etapa 2 — last open item)
-- [ ] Decision cascade — `--engine cascade` composite: `RuleBased`
+- [x] Decision cascade — `--engine cascade` composite: `RuleBased`
   first, escalate to `LayaSidecar` on `Abstain`, then to
   `OpenAiProvider`; each hop journaled so eval can report which tier
   answered. Hermetic tests over fake providers: abstain → escalate →
   answer, and abstain at every tier → `Abstain` (never an invented
-  act). (ROADMAP.md Etapa 3 — cascada reglas → Laya → LLM)
+  act). `DecisionEngine::decide_traced` → `DecisionMade.hops`, eval
+  `ItemVerdict.tier`; invented acts decay to `Abstain`, tier errors
+  propagate — PR #49, 2026-10-02 (ROADMAP.md Etapa 3 — cascada
+  reglas → Laya → LLM)
 - [ ] Laya concrete uses — blocking-modal detection and
   ambiguous-target resolution as typed `Question`s through the
   decision layer, pinned by sim scenarios (a modal blocking the goal;
