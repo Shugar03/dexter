@@ -175,4 +175,10 @@ record it in the Cleanup backlog above with the PR link.
   baseline: cov 100%, act 12/15 (80%), routes 4/5, fa 1 — the four
   misses are measured generator/engine weaknesses, reported in
   `docs/eval-numbers.md`.
+- Done in PR #45 (2026-10-02): Windows UIA observe — `dexter-windows`
+  enumerates top-level HWNDs and walks UIA ControlView trees into
+  normalized `Element`s (AppSelector via windowed pids +
+  `unique_app_pid`, `scope.window` native, `ax_limited` when a
+  windowed app yields no UIA elements). Remaining platform-gated:
+  `act()`, dedicated MSAA fallback, screenshot/vision.
 - Remaining: none.

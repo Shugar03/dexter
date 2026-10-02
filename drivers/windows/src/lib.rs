@@ -1,31 +1,40 @@
-//! `dexter-windows` — Windows driver skeleton.
+//! `dexter-windows` — Windows `ComputerDriver`.
 //!
-//! The seam, not the backend: this crate owns the Windows-side shape
-//! of the `ComputerDriver` contract — capabilities that admit what it
-//! can't do (everything, for now) and the UIA control-type →
-//! normalized-role table the real backend will plug into. Every
-//! operation returns `Unsupported` honestly rather than simulating
-//! anything. Adding the UI Automation backend later means filling in
-//! `observe`/`act` behind `#[cfg(target_os = "windows")]` and
-//! flipping capability flags — the crate shape and role mapping are
-//! already load-bearing.
+//! The UIA observe backend is real on `windows`: `windows()` lists
+//! top-level windows (Win32 `EnumWindows`) and `observe()` walks UI
+//! Automation ControlView trees anchored on those HWNDs into normalized
+//! `Element`s. Actions stay `Unsupported` — observe is the shipped
+//! slice. Off Windows the crate keeps the skeleton contract: no
+//! capability is claimed and every operation declines honestly.
+
+#[cfg(windows)]
+mod apps;
+#[cfg(windows)]
+mod uia;
+#[cfg(windows)]
+mod win;
 
 use dexter_core::{Action, ActionResult, Observation, ObservationScope, Window};
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 fn unsupported() -> DriverError {
-    DriverError::Unsupported("windows UIA backend not implemented — skeleton only".into())
+    DriverError::Unsupported("not implemented on dexter-windows yet".into())
 }
 
-/// Windows driver skeleton. See crate docs — the type exists so the
-/// engine/app code can hold a driver named `windows` whose every
-/// claim is honest.
+/// Windows driver. See crate docs — on Windows the element tree is
+/// real (UIA needs no permission grant); input and capture arrive in
+/// later slices.
 #[derive(Debug, Default)]
-pub struct WindowsDriver;
+pub struct WindowsDriver {
+    #[cfg(windows)]
+    next_observation: AtomicU64,
+}
 
 impl WindowsDriver {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 }
 
@@ -33,24 +42,94 @@ impl ComputerDriver for WindowsDriver {
     fn capabilities(&self) -> DriverCapabilities {
         DriverCapabilities {
             name: "windows",
-            element_tree: false,
+            // UIA is a read path with no grant — the flag is a fact on
+            // Windows, an honest zero anywhere else.
+            element_tree: cfg!(windows),
             screenshots: false,
             background_input: false,
         }
     }
 
     fn windows(&self) -> Result<Vec<Window>, DriverError> {
-        Err(unsupported())
+        #[cfg(windows)]
+        let result = win::list_windows();
+        #[cfg(not(windows))]
+        let result = Err(unsupported());
+        result
     }
 
     fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
-        let _ = scope;
-        Err(unsupported())
+        #[cfg(windows)]
+        let result = {
+            let id =
+                dexter_core::ObservationId(self.next_observation.fetch_add(1, Ordering::SeqCst));
+            self::uia::observe(id, scope)
+        };
+        #[cfg(not(windows))]
+        let result = {
+            let _ = scope;
+            Err(unsupported())
+        };
+        result
     }
 
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
         let _ = (action, ctx);
         Err(unsupported())
+    }
+}
+
+/// UIA ControlType id → programmatic name.
+///
+/// Ids are the stable `UIA_<Name>ControlTypeId` protocol constants
+/// (50000–50040). windows-rs reports the same values through
+/// `CurrentControlType`; taking a bare `i32` keeps the table decidable
+/// off Windows. Unknown ids return `None` — an element keeps its raw
+/// control type rather than wearing an invented name.
+pub fn control_type_name(id: i32) -> Option<&'static str> {
+    match id {
+        50000 => Some("Button"),
+        50001 => Some("Calendar"),
+        50002 => Some("CheckBox"),
+        50003 => Some("ComboBox"),
+        50004 => Some("Edit"),
+        50005 => Some("Hyperlink"),
+        50006 => Some("Image"),
+        50007 => Some("ListItem"),
+        50008 => Some("List"),
+        50009 => Some("Menu"),
+        50010 => Some("MenuBar"),
+        50011 => Some("MenuItem"),
+        50012 => Some("ProgressBar"),
+        50013 => Some("RadioButton"),
+        50014 => Some("ScrollBar"),
+        50015 => Some("Slider"),
+        50016 => Some("Spinner"),
+        50017 => Some("StatusBar"),
+        50018 => Some("Tab"),
+        50019 => Some("TabItem"),
+        50020 => Some("Text"),
+        50021 => Some("ToolBar"),
+        50022 => Some("ToolTip"),
+        50023 => Some("Tree"),
+        50024 => Some("TreeItem"),
+        50025 => Some("Custom"),
+        50026 => Some("Group"),
+        50027 => Some("Thumb"),
+        50028 => Some("DataGrid"),
+        50029 => Some("DataItem"),
+        50030 => Some("Document"),
+        50031 => Some("SplitButton"),
+        50032 => Some("Window"),
+        50033 => Some("Pane"),
+        50034 => Some("Header"),
+        50035 => Some("HeaderItem"),
+        50036 => Some("Table"),
+        50037 => Some("TitleBar"),
+        50038 => Some("Separator"),
+        50039 => Some("SemanticZoom"),
+        50040 => Some("AppBar"),
+        _ => None,
     }
 }
 
