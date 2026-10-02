@@ -29,6 +29,18 @@
 
 ### Added
 
+- **Browser protected sessions — persistent profiles.**
+  `--browser-profile <dir>` (with `--browser-url`) /
+  `BrowserDriver::connect_with_profile` creates the WebDriver session
+  on a persistent profile so cookies and logins survive across runs:
+  `goog:chromeOptions.args [--user-data-dir=<dir>]` for chromedriver,
+  `moz:firefoxOptions.args [-profile <dir>]` for geckodriver, offered
+  as `firstMatch` entries so either endpoint matches its own. The dir
+  is created if missing and passed canonical; profile sessions are
+  never adopted (an adopted session would ignore the profile).
+  safaridriver has no profile capability — documented in
+  `docs/sdd/browser.md`, rejected up front by the CLI.
+
 - **Browser driver: W3C `/actions` endpoint — real input for what DOM
   synthesis can't cover.** `allow_coordinates` (the same `--coords`
   consent that unlocks CGEvent on macOS) upgrades `Click`/`Key`/

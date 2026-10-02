@@ -61,6 +61,19 @@ impl BrowserDriver {
         Self::from_client(WebDriverClient::connect_attach(base_url)?, label)
     }
 
+    /// Attach to an endpoint and create a session on the persistent
+    /// browser profile at `dir` (created if missing) — cookies and
+    /// logins survive across runs. chromedriver/geckodriver only:
+    /// safaridriver has no profile capability and refuses the session.
+    /// Never adopts a live session (it would ignore the profile).
+    pub fn connect_with_profile(
+        base_url: &str,
+        label: &str,
+        dir: &std::path::Path,
+    ) -> Result<Self, DriverError> {
+        Self::from_client(WebDriverClient::connect_with_profile(base_url, dir)?, label)
+    }
+
     fn from_client(client: WebDriverClient, label: &str) -> Result<Self, DriverError> {
         Ok(Self {
             client: Mutex::new(client),

@@ -40,6 +40,13 @@ struct Cli {
     #[arg(long, global = true)]
     browser_url: Option<String>,
 
+    /// Persistent browser profile dir for --driver browser (created if
+    /// missing) — cookies/logins survive across runs. Needs
+    /// --browser-url at chromedriver or geckodriver; safaridriver has
+    /// no profile capability. Always opens a fresh session on it.
+    #[arg(long, global = true)]
+    browser_profile: Option<String>,
+
     #[command(subcommand)]
     cmd: Command,
 }
@@ -476,16 +483,29 @@ fn build_decider(
 }
 
 /// Build the selected driver. `browser` spawns `safaridriver` unless
-/// `--browser-url` points at an already-running endpoint.
+/// `--browser-url` points at an already-running endpoint; with
+/// `--browser-profile` it opens its own session on that profile.
 fn build_driver(cli: &Cli) -> Result<Box<dyn ComputerDriver>> {
     match cli.driver.as_str() {
         "macos" => Ok(Box::new(MacOsDriver::new())),
-        "browser" => match &cli.browser_url {
-            Some(url) => Ok(Box::new(
+        "browser" => match (&cli.browser_url, &cli.browser_profile) {
+            (Some(url), Some(dir)) => Ok(Box::new(
+                dexter_browser::BrowserDriver::connect_with_profile(
+                    url,
+                    browser_label(url),
+                    std::path::Path::new(dir),
+                )
+                .map_err(|e| anyhow::anyhow!("browser driver at {url}: {e}"))?,
+            )),
+            (None, Some(_)) => anyhow::bail!(
+                "--browser-profile needs --browser-url (chromedriver or geckodriver) — \
+                 safaridriver has no per-session profile capability"
+            ),
+            (Some(url), None) => Ok(Box::new(
                 dexter_browser::BrowserDriver::connect_attach(url, browser_label(url))
                     .map_err(|e| anyhow::anyhow!("browser driver at {url}: {e}"))?,
             )),
-            None => Ok(Box::new(
+            (None, None) => Ok(Box::new(
                 dexter_browser::BrowserDriver::safari()
                     .map_err(|e| anyhow::anyhow!("safaridriver: {e}"))?,
             )),

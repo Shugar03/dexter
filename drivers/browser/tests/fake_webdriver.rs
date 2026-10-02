@@ -56,6 +56,8 @@ struct FakeServer {
     scripts: Arc<Mutex<Vec<String>>>,
     /// JSON bodies posted to /session/:id/actions, in order.
     action_bodies: Arc<Mutex<Vec<Value>>>,
+    /// JSON bodies posted to /session (new-session payloads), in order.
+    session_bodies: Arc<Mutex<Vec<Value>>>,
     /// Toggle: make the walker return a *different* tree to simulate a
     /// mutated DOM (stale detection test).
     mutated: Arc<Mutex<bool>>,
@@ -74,13 +76,15 @@ fn fake_webdriver() -> FakeServer {
     let handles = Arc::new(Mutex::new(vec!["h1".to_string()]));
     let current = Arc::new(Mutex::new("h1".to_string()));
     let iframe_errors = Arc::new(Mutex::new(0u32));
-    let (s2, m2, h2, c2, e2, a2) = (
+    let session_bodies = Arc::new(Mutex::new(Vec::new()));
+    let (s2, m2, h2, c2, e2, a2, sb2) = (
         scripts.clone(),
         mutated.clone(),
         handles.clone(),
         current.clone(),
         iframe_errors.clone(),
         action_bodies.clone(),
+        session_bodies.clone(),
     );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -129,6 +133,9 @@ fn fake_webdriver() -> FakeServer {
             let resp_body: Value = match (method.as_str(), path.as_str()) {
                 ("GET", "/status") => json!({"value":{"ready":true,"message":""}}),
                 ("POST", "/session") => {
+                    sb2.lock()
+                        .unwrap()
+                        .push(serde_json::from_str::<Value>(body).unwrap_or(json!({})));
                     json!({"value":{"sessionId":"fake-sid-1","capabilities":{}}})
                 }
                 ("GET", p) if p.ends_with("/window/handles") => {
@@ -235,6 +242,7 @@ fn fake_webdriver() -> FakeServer {
         url: format!("http://127.0.0.1:{port}"),
         scripts,
         action_bodies,
+        session_bodies,
         mutated,
         iframe_errors,
     }
@@ -881,4 +889,87 @@ fn key_chord_without_coords_keeps_dom_dispatch() {
     let scripts = server.scripts.lock().unwrap();
     assert!(scripts.iter().any(|s| s.contains("KeyboardEvent")));
     assert!(server.action_bodies.lock().unwrap().is_empty());
+}
+
+/// Fresh scratch dir under the OS temp dir (removed by the test).
+fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("dexter-profile-{tag}-{}", std::process::id()))
+}
+
+#[test]
+fn default_session_payload_lets_the_driver_pick() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "chrome").unwrap();
+    driver
+        .observe(&ObservationScope::default())
+        .expect("observe");
+
+    let bodies = server.session_bodies.lock().unwrap().clone();
+    assert_eq!(bodies, vec![json!({"capabilities": {"alwaysMatch": {}}})]);
+}
+
+#[test]
+fn profile_session_payload_carries_per_browser_args() {
+    let dir = scratch_dir("payload");
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect_with_profile(&server.url, "chrome", &dir).unwrap();
+    driver
+        .observe(&ObservationScope::default())
+        .expect("observe");
+
+    // Missing profile dirs are created (Firefox's `-profile` requires
+    // an existing directory) and passed absolute + canonical.
+    let abs = std::fs::canonicalize(&dir).expect("profile dir created");
+    let abs = abs.to_str().unwrap();
+    let bodies = server.session_bodies.lock().unwrap().clone();
+    assert_eq!(
+        bodies,
+        vec![json!({"capabilities": {
+            "alwaysMatch": {},
+            "firstMatch": [
+                {"browserName": "chrome",
+                 "goog:chromeOptions": {"args": [format!("--user-data-dir={abs}")]}},
+                {"browserName": "firefox",
+                 "moz:firefoxOptions": {"args": ["-profile", abs]}}
+            ]
+        }})]
+    );
+    drop(driver);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn relative_profile_resolves_to_an_absolute_dir() {
+    let rel = std::path::PathBuf::from(format!(
+        "../../target/dexter-profile-rel-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&rel);
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect_with_profile(&server.url, "firefox", &rel).unwrap();
+    driver
+        .observe(&ObservationScope::default())
+        .expect("observe");
+
+    let bodies = server.session_bodies.lock().unwrap().clone();
+    let ff = &bodies[0]["capabilities"]["firstMatch"][1]["moz:firefoxOptions"]["args"];
+    let path = std::path::Path::new(ff[1].as_str().unwrap());
+    assert!(path.is_absolute(), "profile arg must be absolute: {path:?}");
+    assert_eq!(path, std::fs::canonicalize(&rel).unwrap());
+    drop(driver);
+    let _ = std::fs::remove_dir_all(&rel);
+}
+
+#[test]
+fn profile_that_is_a_file_fails_closed() {
+    let file = scratch_dir("file");
+    std::fs::write(&file, b"not a dir").unwrap();
+    let server = fake_webdriver();
+    let err = BrowserDriver::connect_with_profile(&server.url, "chrome", &file)
+        .err()
+        .expect("a file is not a profile dir");
+    assert!(matches!(err, DriverError::Platform(_)), "{err:?}");
+    assert!(server.session_bodies.lock().unwrap().is_empty());
+    let _ = std::fs::remove_file(&file);
 }
