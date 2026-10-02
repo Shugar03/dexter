@@ -235,3 +235,55 @@ fn route_golds_do_not_inflate_coverage() {
     assert_eq!(report.covered, 0, "route-golds must not count as covered");
     assert_eq!(report.coverage(), 0.0);
 }
+
+#[test]
+fn verdict_records_the_answering_tier() {
+    // A cascade whose first tier abstains: the verdict's tier is the
+    // engine that actually answered, not the composite.
+    use dexter_decision::{
+        Cascade, Decision, DecisionContext, DecisionEngine, DecisionError, Route,
+    };
+
+    struct Abstains;
+    impl DecisionEngine for Abstains {
+        fn name(&self) -> &str {
+            "abstains"
+        }
+        fn decide(&self, _: &DecisionContext) -> Result<Decision, DecisionError> {
+            Ok(Decision::Route {
+                route: Route::Abstain,
+                rationale: "not my call".into(),
+            })
+        }
+    }
+
+    let o = obs(vec![
+        el(1, "button", "Cancel", &["press"]),
+        el(2, "button", "Confirm order", &["press"]),
+    ]);
+    let items = vec![item(
+        "confirm-tier",
+        "confirm the order",
+        o,
+        Gold::Act {
+            target: SemanticTarget {
+                role: Some("button".into()),
+                name: Some("Confirm order".into()),
+                ..Default::default()
+            },
+            element: ElementId(2),
+        },
+    )];
+    let cascade = Cascade::new(vec![Box::new(Abstains), Box::new(RuleBased::default())]);
+    let report = run_eval(&items, &HeuristicGenerator::default(), &cascade);
+    assert_eq!(report.correct, 1);
+    assert_eq!(report.verdicts[0].tier.as_deref(), Some("rule-based"));
+    assert_eq!(report.tier_counts().get("rule-based"), Some(&1));
+
+    let solo = run_eval(
+        &items,
+        &HeuristicGenerator::default(),
+        &RuleBased::default(),
+    );
+    assert_eq!(solo.verdicts[0].tier.as_deref(), Some("rule-based"));
+}

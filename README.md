@@ -256,6 +256,11 @@ wait/reobserve/retry/abstain/escalate). Ships with:
     right for localized UIs), `typed-decisions`, or `--subfolder ''` for
     the English root. Model loads once at worker startup; ~160ms/predict
     on Apple-Silicon CPU.
+- `openai` — any OpenAI-compatible endpoint (Gemini by default,
+  `docs/sdd/decision.md`).
+- `cascade` — `rule-based` → `laya` → `openai`, escalating only on
+  abstain; every tier consulted is journaled on `DecisionMade.hops` and
+  `eval run` reports which tier answered (`docs/sdd/cascade.md`).
 
 Current measured baseline (same frozen items, `eval run`):
 

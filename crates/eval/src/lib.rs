@@ -131,6 +131,9 @@ pub struct ItemVerdict {
     pub decision: Decision,
     /// Why coverage failed / what the engine picked instead.
     pub note: String,
+    /// Engine whose verdict stood (a cascade's answering tier); `None`
+    /// when the engine errored.
+    pub tier: Option<String>,
 }
 
 /// Aggregate metrics for one (generator, engine) pair over a dataset.
@@ -176,6 +179,15 @@ impl EvalReport {
             return 0.0;
         }
         self.correct as f64 / self.covered as f64
+    }
+
+    /// Items answered per engine tier (cascades report several).
+    pub fn tier_counts(&self) -> std::collections::BTreeMap<String, usize> {
+        let mut counts = std::collections::BTreeMap::new();
+        for tier in self.verdicts.iter().filter_map(|v| v.tier.as_ref()) {
+            *counts.entry(tier.clone()).or_insert(0) += 1;
+        }
+        counts
     }
 
     /// Route-gold accuracy — correct routes over all route items.
@@ -282,7 +294,9 @@ pub fn replay_item(
     };
 
     let covered = gold_covered(&item.gold, &ctx, obs);
-    let decision = engine.decide(&ctx)?;
+    let traced = engine.decide_traced(&ctx)?;
+    let tier = traced.answered_by().map(str::to_string);
+    let decision = traced.decision;
 
     let (correct, note) = match (&item.gold, &decision) {
         (_, Decision::Act { action, .. }) => {
@@ -324,6 +338,7 @@ pub fn replay_item(
         correct,
         decision,
         note,
+        tier,
     })
 }
 
@@ -347,6 +362,7 @@ pub fn run_eval(
                     rationale: format!("engine error: {e}"),
                 },
                 note: format!("engine error: {e}"),
+                tier: None,
             },
         };
         let is_route_gold = matches!(item.gold, Gold::Route { .. });
