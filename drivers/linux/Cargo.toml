@@ -1,0 +1,11 @@
+[package]
+name = "dexter-linux"
+description = "Linux ComputerDriver skeleton — AT-SPI role mapping + honest unsupported seam"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+dexter-core.workspace = true
+dexter-driver.workspace = true

@@ -894,6 +894,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dexter-linux"
+version = "0.1.0"
+dependencies = [
+ "dexter-core",
+ "dexter-driver",
+]
+
+[[package]]
 name = "dexter-macos"
 version = "0.1.0"
 dependencies = [
