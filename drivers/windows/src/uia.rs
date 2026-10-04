@@ -26,9 +26,9 @@ use windows::Win32::UI::Accessibility::{
 /// multi-megabyte document doesn't pin the observation.
 const MAX_VALUE_CHARS: usize = 500;
 
-/// COM initialized for the duration of one observe call. UIA is a
+/// COM initialized for the duration of one observe/act call. UIA is a
 /// client-side COM API: init MTA, uninit only what we initialized.
-struct ComGuard(bool);
+pub struct ComGuard(bool);
 
 impl Drop for ComGuard {
     fn drop(&mut self) {
@@ -55,12 +55,13 @@ fn com_init() -> Result<ComGuard, DriverError> {
 
 /// One UIA call at a time: concurrent `CoCreateInstance` + walker
 /// setup races the UIA core's lazy init and fails with E_FAIL.
-/// Observations serialize anyway — a process-wide lock is honest.
-static OBSERVE_LOCK: Mutex<()> = Mutex::new(());
+/// Observations serialize anyway — a process-wide lock is honest, and
+/// `act()` re-walks under the same lock.
+pub static OBSERVE_LOCK: Mutex<()> = Mutex::new(());
 
 /// A live UIA session: the client object plus the ControlView walker
 /// every tree walk uses.
-struct Uia {
+pub struct Uia {
     automation: IUIAutomation,
     walker: IUIAutomationTreeWalker,
 }
@@ -70,17 +71,23 @@ impl Uia {
     /// its ControlView ancestor — the walker only sees ControlView. A
     /// failed normalize keeps the raw element: its reads will flag
     /// themselves as collection errors.
-    fn normalize(&self, el: IUIAutomationElement) -> IUIAutomationElement {
+    pub fn normalize(&self, el: IUIAutomationElement) -> IUIAutomationElement {
         unsafe { self.walker.NormalizeElement(&el) }.unwrap_or(el)
     }
 
-    fn element_from(&self, hwnd: HWND) -> Result<IUIAutomationElement, DriverError> {
+    pub fn element_from(&self, hwnd: HWND) -> Result<IUIAutomationElement, DriverError> {
         unsafe { self.automation.ElementFromHandle(hwnd) }
             .map_err(|e| DriverError::Platform(format!("ElementFromHandle: {e}")))
     }
+
+    /// The element holding keyboard focus right now.
+    pub fn focused(&self) -> Result<IUIAutomationElement, DriverError> {
+        unsafe { self.automation.GetFocusedElement() }
+            .map_err(|e| DriverError::Platform(format!("GetFocusedElement: {e}")))
+    }
 }
 
-fn connect() -> Result<(ComGuard, Uia), DriverError> {
+pub fn connect() -> Result<(ComGuard, Uia), DriverError> {
     let guard = com_init()?;
     let automation: IUIAutomation = unsafe {
         CoCreateInstance(
@@ -106,6 +113,9 @@ struct Ctx {
     max_depth: u32,
     max_elements: usize,
     elements: Vec<Element>,
+    /// Live handles aligned with `elements` — only collected for `act`,
+    /// which resolves an element then calls patterns on its handle.
+    nodes: Option<Vec<IUIAutomationElement>>,
     truncated: bool,
     errors: u32,
     next_id: u64,
@@ -167,6 +177,7 @@ pub fn observe(
                 max_depth: scope.max_depth,
                 max_elements: scope.max_elements,
                 elements: Vec::new(),
+                nodes: None,
                 truncated: false,
                 errors: 0,
                 next_id: 1,
@@ -210,6 +221,7 @@ fn collect(uia: &Uia, root: IUIAutomationElement, max_depth: u32, max_elements: 
         max_depth,
         max_elements,
         elements: Vec::new(),
+        nodes: None,
         truncated: false,
         errors: 0,
         next_id: 1,
@@ -243,11 +255,51 @@ fn rd_bstr(r: windows::core::Result<windows::core::BSTR>, failed: &mut bool) -> 
 
 /// A pattern is present when `GetCurrentPatternAs` returns its
 /// interface — the probe is the honest "can this element do X".
-fn has_pattern<T: Interface>(el: &IUIAutomationElement, id: UIA_PATTERN_ID) -> Option<T> {
+pub fn has_pattern<T: Interface>(el: &IUIAutomationElement, id: UIA_PATTERN_ID) -> Option<T> {
     unsafe { el.GetCurrentPatternAs::<T>(id) }.ok()
 }
 
-fn bounds_of(el: &IUIAutomationElement, failed: &mut bool) -> Option<Rect> {
+/// The walk `observe` produces plus the live `IUIAutomationElement`
+/// handle at every index — act resolves an element by its flat
+/// position, then calls patterns on `nodes[index]`.
+pub struct LiveWalk {
+    pub elements: Vec<Element>,
+    pub nodes: Vec<IUIAutomationElement>,
+    pub truncated: bool,
+}
+
+/// Walk `roots` in observe's order (each root at depth 0, sequential
+/// ids), keeping the live handle of every element. Truncation stops
+/// the walk at the same limits a scoped observe uses.
+pub fn walk_roots(
+    uia: &Uia,
+    roots: &[IUIAutomationElement],
+    max_depth: u32,
+    max_elements: usize,
+) -> LiveWalk {
+    let mut ctx = Ctx {
+        max_depth,
+        max_elements,
+        elements: Vec::new(),
+        nodes: Some(Vec::new()),
+        truncated: false,
+        errors: 0,
+        next_id: 1,
+    };
+    for root in roots {
+        walk(uia, root, None, 0, &mut ctx);
+        if ctx.truncated {
+            break;
+        }
+    }
+    LiveWalk {
+        elements: ctx.elements,
+        nodes: ctx.nodes.unwrap_or_default(),
+        truncated: ctx.truncated,
+    }
+}
+
+pub fn bounds_of(el: &IUIAutomationElement, failed: &mut bool) -> Option<Rect> {
     let rc = rd(unsafe { el.CurrentBoundingRectangle() }, failed)?;
     // UIA reports an all-zero rect for elements that have no on-screen
     // extent (offscreen items, collapsed nodes) — `None`, not a fake
@@ -393,6 +445,9 @@ fn walk(
     ctx.next_id += 1;
     ctx.elements
         .push(read_element(el, id, parent, depth, &mut ctx.errors));
+    if let Some(nodes) = &mut ctx.nodes {
+        nodes.push(el.clone());
+    }
     if depth >= ctx.max_depth {
         return;
     }

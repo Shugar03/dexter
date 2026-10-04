@@ -40,7 +40,9 @@ fn every_entrypoint_is_honestly_unsupported() {
         .unwrap());
 }
 
-/// Actions are not part of the observe slice — on every platform.
+/// Off Windows every entrypoint must still decline honestly — act is
+/// part of the skeleton contract on platforms without a backend.
+#[cfg(not(windows))]
 #[test]
 fn act_is_honestly_unsupported() {
     let driver = WindowsDriver::new();
@@ -54,6 +56,27 @@ fn act_is_honestly_unsupported() {
         ),
         Err(DriverError::Unsupported(_))
     ));
+}
+
+/// On Windows the act slice is real — a semantic click without an app
+/// scope fails closed (`NotFound`), never acts on an arbitrary app.
+#[cfg(windows)]
+#[test]
+fn act_fails_closed_without_app_scope() {
+    let driver = WindowsDriver::new();
+    let err = driver
+        .act(
+            &Action::Click {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("button".into()),
+                    ..SemanticTarget::default()
+                }),
+                button: MouseButton::Left,
+            },
+            &ActContext::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(err, DriverError::NotFound(_)), "{err:?}");
 }
 
 #[test]

@@ -1,14 +1,19 @@
 //! `dexter-windows` — Windows `ComputerDriver`.
 //!
-//! The UIA observe backend is real on `windows`: `windows()` lists
-//! top-level windows (Win32 `EnumWindows`) and `observe()` walks UI
-//! Automation ControlView trees anchored on those HWNDs into normalized
-//! `Element`s. Actions stay `Unsupported` — observe is the shipped
-//! slice. Off Windows the crate keeps the skeleton contract: no
-//! capability is claimed and every operation declines honestly.
+//! The UIA backend is real on `windows`: `windows()` lists top-level
+//! windows (Win32 `EnumWindows`), `observe()` walks UI Automation
+//! ControlView trees anchored on those HWNDs into normalized `Element`s,
+//! and `act()` resolves targets through UIA patterns first — `SendInput`
+//! physical input only behind `ctx.allow_coordinates`. Off Windows the
+//! crate keeps the skeleton contract: no capability is claimed and
+//! every operation declines honestly.
 
 #[cfg(windows)]
+mod actions;
+#[cfg(windows)]
 mod apps;
+pub mod keymap;
+pub mod resolve;
 #[cfg(windows)]
 mod uia;
 #[cfg(windows)]
@@ -19,17 +24,20 @@ use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError}
 #[cfg(windows)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(not(windows))]
 fn unsupported() -> DriverError {
     DriverError::Unsupported("not implemented on dexter-windows yet".into())
 }
 
-/// Windows driver. See crate docs — on Windows the element tree is
-/// real (UIA needs no permission grant); input and capture arrive in
-/// later slices.
+/// Windows driver. See crate docs — on Windows the element tree and
+/// pattern-driven actions are real (UIA needs no permission grant);
+/// capture arrives in a later slice.
 #[derive(Debug, Default)]
 pub struct WindowsDriver {
     #[cfg(windows)]
     next_observation: AtomicU64,
+    #[cfg(windows)]
+    obs_cache: actions::ObsCache,
 }
 
 impl WindowsDriver {
@@ -63,7 +71,22 @@ impl ComputerDriver for WindowsDriver {
         let result = {
             let id =
                 dexter_core::ObservationId(self.next_observation.fetch_add(1, Ordering::SeqCst));
-            self::uia::observe(id, scope)
+            let obs = self::uia::observe(id, scope);
+            // Only app-scoped observations bind element ids worth acting
+            // on; cache plain data, never COM handles.
+            if let Ok(o) = &obs {
+                if let Some(pid) = o.pid {
+                    self.obs_cache.store(
+                        o.id,
+                        pid,
+                        scope.window,
+                        scope.max_depth,
+                        scope.max_elements,
+                        o.elements.clone(),
+                    );
+                }
+            }
+            obs
         };
         #[cfg(not(windows))]
         let result = {
@@ -74,8 +97,14 @@ impl ComputerDriver for WindowsDriver {
     }
 
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
-        let _ = (action, ctx);
-        Err(unsupported())
+        #[cfg(windows)]
+        let result = actions::act(action, ctx, &self.obs_cache);
+        #[cfg(not(windows))]
+        let result = {
+            let _ = (action, ctx);
+            Err(unsupported())
+        };
+        result
     }
 }
 
