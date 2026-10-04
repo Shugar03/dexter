@@ -113,22 +113,49 @@ fn observe_unknown_window_fails_closed() {
 }
 
 #[test]
-fn unimplemented_perception_declines() {
+fn perception_scopes_capture_or_fail_closed() {
     let driver = WindowsDriver::new();
     let Some(pid) = some_window_pid(&driver) else {
         return;
     };
-    for field in ["screenshot", "vision"] {
-        let mut scope = ObservationScope::for_app(AppSelector::Pid(pid));
-        match field {
-            "screenshot" => scope.screenshot = true,
-            _ => scope.vision = true,
+
+    // scope.screenshot: a capturable window on a display-carrying box
+    // produces a real PNG at the contracted path; a displayless host
+    // declines with a platform error — never a partial or guessed image.
+    let mut scope = ObservationScope::for_app(AppSelector::Pid(pid));
+    scope.screenshot = true;
+    match driver.observe(&scope) {
+        Ok(obs) => {
+            let path = obs.screenshot.expect("screenshot scope sets a path");
+            let png = std::fs::read(&path).expect("screenshot file exists");
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
         }
-        let err = driver.observe(&scope).unwrap_err();
-        assert!(
-            matches!(err, DriverError::Unsupported(_)),
-            "{field}: {err:?}"
-        );
+        Err(DriverError::Platform(_)) | Err(DriverError::NotFound(_)) => {}
+        Err(e) => panic!("screenshot declined dishonestly: {e:?}"),
+    }
+
+    // scope.vision: narrowed to one on-screen window so the opt-in
+    // fires. The pass degrades via collection_errors rather than
+    // failing, and whatever `source: ocr` elements land are inert —
+    // evidence, never agency.
+    let first = driver
+        .observe(&ObservationScope::for_app(AppSelector::Pid(pid)))
+        .expect("windowed pid observes");
+    let Some(wid) = first.windows.iter().find(|w| w.on_screen).map(|w| w.id) else {
+        return;
+    };
+    let mut scope = ObservationScope::for_app(AppSelector::Pid(pid));
+    scope.vision = true;
+    scope.window = Some(wid);
+    let obs = driver
+        .observe(&scope)
+        .expect("vision degrades, never fails");
+    for e in obs
+        .elements
+        .iter()
+        .filter(|e| e.source == ElementSource::Ocr)
+    {
+        assert!(e.actions.is_empty(), "ocr elements are inert: {e:?}");
     }
 }
 

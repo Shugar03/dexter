@@ -10,6 +10,16 @@ license.workspace = true
 dexter-core.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [

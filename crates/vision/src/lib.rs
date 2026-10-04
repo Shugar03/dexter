@@ -14,6 +14,8 @@
 
 #[cfg(target_os = "macos")]
 mod apple;
+#[cfg(windows)]
+mod win;
 
 use dexter_core::{Element, ElementId, ElementSource, Rect};
 
@@ -55,13 +57,18 @@ pub trait VisionProvider: Send + Sync {
 }
 
 /// The on-device provider for this platform, when one exists.
-/// macOS returns the Apple Vision provider; everything else returns `None`.
+/// macOS returns the Apple Vision provider, Windows the built-in
+/// `Windows.Media.Ocr` engine; everything else returns `None`.
 pub fn platform_provider() -> Option<Box<dyn VisionProvider>> {
     #[cfg(target_os = "macos")]
     {
         Some(Box::new(apple::AppleVision))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        Some(Box::new(win::WinOcr))
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         None
     }
@@ -102,6 +109,31 @@ pub fn token_rect(token: &NormRect, img_w_px: u32, img_h_px: u32, window: &Rect)
         w: (token.w * f64::from(img_w_px) / px_per_pt_x).round(),
         h: (token.h * f64::from(img_h_px) / px_per_pt_y).round(),
     })
+}
+
+/// Map a top-left-origin pixel rect — the shape `OcrWord.BoundingRect`
+/// reports on Windows — to the normalized bottom-left `NormRect` every
+/// `VisionToken` uses. `img_*_px` is the bitmap the recognizer actually
+/// saw (already downscaled when applicable), so normalized tokens stay
+/// valid for the caller's own full-size capture. A degenerate image
+/// returns an all-zero box — honest zero coverage, not invented bounds.
+pub fn ocr_word_rect(px: &Rect, img_w_px: u32, img_h_px: u32) -> NormRect {
+    if img_w_px == 0 || img_h_px == 0 {
+        return NormRect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        };
+    }
+    let w = f64::from(img_w_px);
+    let h = f64::from(img_h_px);
+    NormRect {
+        x: px.x / w,
+        y: 1.0 - (px.y + px.h) / h,
+        w: px.w / w,
+        h: px.h / h,
+    }
 }
 
 /// One display in global screen points (the CGWindowList space) and its
@@ -299,6 +331,72 @@ mod tests {
         },
         scale: 1.0,
     };
+
+    #[test]
+    fn ocr_word_rect_maps_top_left_pixels_to_bottom_left_norm() {
+        // 960x240 image: a box at (240,30) 480x60 px maps to
+        // x=0.25, w=0.5, y = 1-(30+60)/240 = 0.625, h=0.25.
+        assert_eq!(
+            ocr_word_rect(
+                &Rect {
+                    x: 240.0,
+                    y: 30.0,
+                    w: 480.0,
+                    h: 60.0,
+                },
+                960,
+                240,
+            ),
+            NormRect {
+                x: 0.25,
+                y: 0.625,
+                w: 0.5,
+                h: 0.25,
+            }
+        );
+    }
+
+    #[test]
+    fn ocr_word_rect_full_image_box_and_degenerate_image() {
+        assert_eq!(
+            ocr_word_rect(
+                &Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 960.0,
+                    h: 240.0,
+                },
+                960,
+                240,
+            ),
+            NormRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            }
+        );
+        // No image dimensions: nothing to normalize against — a zero
+        // box, never a NaN or a guessed coverage.
+        assert_eq!(
+            ocr_word_rect(
+                &Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+                0,
+                0,
+            ),
+            NormRect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            }
+        );
+    }
 
     #[test]
     fn capture_monitor_picks_the_display_containing_the_region() {

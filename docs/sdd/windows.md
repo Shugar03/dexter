@@ -1,4 +1,4 @@
-# SDD — Windows driver (UIA observe + act slices)
+# SDD — Windows driver (UIA observe + act + capture/OCR slices)
 
 ## Intent
 
@@ -10,15 +10,23 @@ and walks the ControlView tree into normalized `Element`s through
 `uia_role()`. `act()` is semantic-first: UIA patterns carry every
 control mutation, and `SendInput` is reachable only behind
 `ctx.allow_coordinates` (plus a foreground check where keystrokes would
-otherwise land in the wrong app). Off Windows the crate keeps the
-skeleton contract: every claim stays false, every operation declines.
+otherwise land in the wrong app). Perception beyond UIA mirrors the
+macOS slice: `scope.screenshot` captures the target window to PNG via
+GDI per-display crops, and `scope.vision` appends inert `source: ocr`
+elements from the on-device `Windows.Media.Ocr` engine. Off Windows
+the crate keeps the skeleton contract: every claim stays false, every
+operation declines.
 
 ## Contract
 
 - `capabilities()`: `element_tree` is `cfg!(windows)` — UIA needs no
   permission grant, so the honest flag is the platform. `screenshots`
-  and `background_input` stay `false` in this slice (SendInput always
-  targets the foreground — there is no background input path).
+  is `capture::available()`: the exact probes the capture path runs
+  (a display device context exists and at least one monitor reports a
+  measurable raster), so the flag is only true where a capture would
+  succeed — session-0 or displayless hosts report `false`.
+  `background_input` stays `false` (SendInput always targets the
+  foreground — there is no background input path).
 - `windows()` returns every top-level `HWND` as a `Window`: `id` is the
   HWND truncated to `u32` (HWNDs are 32-bit in practice), `app` the
   process image stem (`notepad.exe` → `notepad`), `bundle_id` the
@@ -49,9 +57,39 @@ skeleton contract: every claim stays false, every operation declines.
   - `ax_limited` when the app reports windows but UIA produced no
     elements — the honest "can't see" signature (elevated app, dead
     provider), degrading absence-dependent verification to UNCERTAIN.
-  - `scope.screenshot`/`scope.vision` return `Unsupported`: the flags
-    stay false in capabilities, and an ignored request is simulated
+  - `scope.screenshot` captures the capture window — `scope.window`'s
+    HWND when set, else `pick_capture_window` (largest on-screen
+    layer-0 window of the pid) — to `screenshot_path` or a temp file,
+    exposed as `obs.screenshot`. The captured region is the window's
+    *visible* frame: `DWMWA_EXTENDED_FRAME_BOUNDS` when the attribute
+    reads (the `GetWindowRect` bounds carry invisible resize borders
+    that would spill off-monitor on edge-snapped windows), the listed
+    bounds otherwise. The capture is a per-display crop: monitors are
+    `EnumDisplayMonitors` + `GetMonitorInfoW` mapped through
+    `geometry::monitor_geometry` (scale = physical raster px per
+    logical unit, from `EnumDisplaySettingsW` `dmPelsWidth/Height` over
+    `rcMonitor` — the same number `GetDpiForMonitor/96` reports where
+    Win32 does not virtualize coordinates, and still correct where it
+    does), the monitor chosen by `dexter_vision::capture_monitor`, the
+    monitor rasterized at physical size (`CreateDCW("DISPLAY")` +
+    `StretchBlt`) and cropped by `dexter_vision::monitor_pixel_crop`.
+    Spanning, off-screen or degenerate regions fail closed
+    (`DriverError`, never a partial or guessed image), and a failed
+    capture fails the request — an ignored screenshot is simulated
     success.
+  - `scope.vision` mirrors the macOS augment exactly: opt-in only,
+    fires only when `ax_limited || elements.is_empty() ||
+    scope.window.is_some()`, appends `source: ocr` elements via
+    `dexter_vision::tokens_to_elements` mapped over the rect actually
+    captured, and a failed pass degrades (`collection_errors += 1`)
+    rather than fails. The provider is `Windows.Media.Ocr` (WinRT,
+    on-device, no downloads) via `dexter_vision::platform_provider()`;
+    a box with no recognizer language pack degrades through
+    `VisionError::Unsupported` — never fabricated tokens. `OcrWord`
+    boxes (top-left origin pixels) map to `NormRect` through
+    `dexter_vision::ocr_word_rect`; WinRT reports no per-word
+    confidence, so tokens carry `NaN` — the honest "not measured",
+    not an invented score.
   - A successful app-scoped observe stores `(ObservationId, pid,
     scope.window, elements)` in the driver's `ObsCache` (plain
     `Element` data — `WindowsDriver` stays `Send + Sync`, COM is
@@ -116,7 +154,7 @@ skeleton contract: every claim stays false, every operation declines.
     BOOL, `ShellExecuteW` > 32).
 - UIA's built-in MSAA bridge already surfaces most legacy `IAccessible`
   content as ControlTypes; a dedicated MSAA fallback pass remains open
-  work alongside screenshot/vision.
+  work.
 
 ## Why UIA first
 

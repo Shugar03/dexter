@@ -129,17 +129,6 @@ pub fn observe(
     id: dexter_core::ObservationId,
     scope: &ObservationScope,
 ) -> Result<Observation, DriverError> {
-    if scope.screenshot {
-        return Err(DriverError::Unsupported(
-            "screenshot capture not implemented on dexter-windows yet".into(),
-        ));
-    }
-    if scope.vision {
-        return Err(DriverError::Unsupported(
-            "OCR vision augmentation not implemented on dexter-windows yet".into(),
-        ));
-    }
-
     let mut obs = Observation {
         id,
         timestamp: SystemTime::now(),
@@ -212,6 +201,24 @@ pub fn observe(
     // elevated process, dead provider, or UIA off. `not found` results
     // against this observation are not definitive.
     obs.ax_limited = !obs.windows.is_empty() && obs.elements.is_empty();
+
+    // Opt-in OCR: warranted when UIA produced nothing usable (limited
+    // or empty tree) or the caller narrowed to one window — the same
+    // opt-in-only contract macOS uses, same degrade-on-failure rule.
+    if scope.vision && (obs.ax_limited || obs.elements.is_empty() || scope.window.is_some()) {
+        crate::vision::augment(&mut obs, scope);
+    }
+
+    if scope.screenshot {
+        let path = scope
+            .screenshot_path
+            .clone()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("dexter-obs-{}.png", id.0)));
+        crate::capture::capture_app_window(&obs.windows, &path)?;
+        obs.screenshot = Some(path.display().to_string());
+    }
+
     obs.digest = dexter_world_model::digest(&obs, 250);
     Ok(obs)
 }
