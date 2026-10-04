@@ -163,9 +163,33 @@ dispatched to child sessions (see Item tags above).
   on-screen pixels (display-raster semantics, same as macOS), OCR
   stays evidence-only (`Target::Point` + `allow_coordinates` to
   act), no Linux provider yet — PR #59, 2026-10-04 (Etapa 4)
-- [ ] `[windows]` dedicated MSAA fallback — real MSAA walk for
+- [x] `[windows]` dedicated MSAA fallback — real MSAA walk for
   controls UIA misses (legacy Win32), beyond UIA's built-in
-  LegacyIAccessible bridge. (Etapa 4)
+  LegacyIAccessible bridge. `msaa::augment` fires only on measured
+  gaps — Server 2022 stock apps are fully covered by the bridge (0
+  adds on msconfig/odbcad32/charmap/cleanmgr/dxdiag/netplwiz/classic
+  CPLs/MMC snap-ins): a window whose UIA partition is empty or
+  root-only (`warranted`) earns a whole `OBJID_CLIENT` walk, and
+  unclaimed, visible (`IsWindowVisible`), non-nested,
+  non-interior-covered descendant HWNDs earn their own. The walk
+  (`AccessibleObjectFromWindow` → `IAccessible`, `accChildCount`/
+  `AccessibleChildren` in chunks) maps `ROLE_SYSTEM_*` via
+  `msaa_role` (`raw_role` carries the `msaa:` origin),
+  `UNAVAILABLE` → `enabled=false`, `FOCUSED` → `focused`,
+  `PROTECTED` → value never read, `INVISIBLE|OFFSCREEN` nodes
+  skipped with subtrees; `merge_msaa` dedupes on name+bounds (±2px)
+  plus identical-rect role tolerance (providers mis-report roles —
+  measured on odbcad32), children reparent to the UIA twin,
+  failures → `collection_errors`, caps → `elements_truncated`.
+  act: `Click` → `accDoDefaultAction` (no default → `UNSUPPORTED`,
+  disabled → `FAILED`, right/middle → `SendInput` behind
+  `allow_coordinates`), `SetValue`/`TypeText` → `put_accValue`
+  (else opt-in keyboard path), `Focus` → `accSelect(TAKEFOCUS)`,
+  `Target::Element` re-walk identity check → `StaleReference`.
+  Remaining: hidden-but-reachable containers (inactive tab pages)
+  stay out of perception by the visibility rule; unclaimed HWNDs
+  whose interior UIA partially covered are skipped whole — PR #61,
+  2026-10-04 (Etapa 4)
 - [ ] `[linux]` `dexter-linux` real observe — AT-SPI2 tree walk on
   X11 mirroring the Windows observe slice: window enumeration,
   app/window-scoped walk → normalized `Element`s, same
