@@ -18,7 +18,8 @@ canvas-based UIs — are effectively invisible to Dexter. The spec's §8.3
   normalized 0..1 with **bottom-left** origin (Vision native).
 - `VisionError::{Unsupported, Failed}` — no provider → `Unsupported`;
   never fabricated elements.
-- `platform_provider()` — `Some(AppleVision)` on macOS, `None` elsewhere.
+- `platform_provider()` — `Some(AppleVision)` on macOS, `Some(WinOcr)`
+  on Windows, `None` elsewhere.
 - `token_rect` / `tokens_to_elements` — pure mapping to Dexter screen
   points (top-left origin), handling Retina scale via
   `img_px / window_pt`. Bounds rounded to whole points.
@@ -110,5 +111,5 @@ OCR elements have no semantic actions and no live handle:
 ## Non-goals
 
 - No VLM / cloud vision, no silent fallback on rich AX trees, no
-  semantic actions for OCR elements, no OCR on Windows/Linux yet
+  semantic actions for OCR elements, no OCR on Linux yet
   (`platform_provider()` → `None` → `collection_errors` bump when asked).

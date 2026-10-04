@@ -12,10 +12,15 @@
 mod actions;
 #[cfg(windows)]
 mod apps;
+#[cfg(windows)]
+mod capture;
+pub mod geometry;
 pub mod keymap;
 pub mod resolve;
 #[cfg(windows)]
 mod uia;
+#[cfg(windows)]
+mod vision;
 #[cfg(windows)]
 mod win;
 
@@ -29,9 +34,10 @@ fn unsupported() -> DriverError {
     DriverError::Unsupported("not implemented on dexter-windows yet".into())
 }
 
-/// Windows driver. See crate docs — on Windows the element tree and
-/// pattern-driven actions are real (UIA needs no permission grant);
-/// capture arrives in a later slice.
+/// Windows driver. See crate docs — on Windows the element tree,
+/// pattern-driven actions and screenshot/OCR perception are real (UIA
+/// needs no permission grant; capture needs a display, probed live by
+/// `capabilities().screenshots`).
 #[derive(Debug, Default)]
 pub struct WindowsDriver {
     #[cfg(windows)]
@@ -53,7 +59,21 @@ impl ComputerDriver for WindowsDriver {
             // UIA is a read path with no grant — the flag is a fact on
             // Windows, an honest zero anywhere else.
             element_tree: cfg!(windows),
-            screenshots: false,
+            // Screenshots are claimed only where the capture path can
+            // actually produce an image — `capture::available()` probes
+            // the same calls (display DC + measurable monitors), so a
+            // displayless host reports false, never a claim that would
+            // fail.
+            screenshots: {
+                #[cfg(windows)]
+                {
+                    capture::available()
+                }
+                #[cfg(not(windows))]
+                {
+                    false
+                }
+            },
             background_input: false,
         }
     }

@@ -14,7 +14,10 @@ fn capabilities_match_the_platform_backend() {
     // On Windows the UIA tree is a real read path — the flag is a fact,
     // not a grant. Off Windows there is no backend to claim.
     assert_eq!(caps.element_tree, cfg!(windows));
-    // Not earned yet in either world: no capture, no input slice.
+    // Screenshots are honest too: `capture::available()` probes the
+    // same display the capture path uses, so the flag is only claimed
+    // where a capture would succeed (a displayless host reports false).
+    #[cfg(not(windows))]
     assert!(!caps.screenshots);
     assert!(!caps.background_input);
 }
