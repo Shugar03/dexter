@@ -146,9 +146,23 @@ dispatched to child sessions (see Item tags above).
   pid-scoped; `Navigate` on a closed http/https/mailto allowlist.
   Remaining: context-menu patterns, OCR targets, `background_input`,
   capture slice — PR #57, 2026-10-04 (Etapa 4; observe landed in PR #45)
-- [ ] `[windows]` screenshot/vision perception — capture + OCR
-  mirroring `dexter_vision::capture_monitor` semantics (per-display
-  crop, spanning windows fail closed). (Etapa 4)
+- [x] `[windows]` screenshot/vision perception — `scope.screenshot`
+  captures the capture window's visible frame
+  (`DWMWA_EXTENDED_FRAME_BOUNDS`, listed bounds as fallback) as a
+  per-display GDI crop: `EnumDisplayMonitors`/`MONITORINFOEXW` +
+  `EnumDisplaySettingsW` raster → `geometry::monitor_geometry` scale
+  (axes must agree), `CreateDCW("DISPLAY")` + `StretchBlt` +
+  top-down `GetDIBits`; `capture_monitor`/`monitor_pixel_crop` pick
+  and crop, spanning/off-screen/degenerate → `NotFound`.
+  `capabilities().screenshots = capture::available()` — honest on
+  displayless hosts. `scope.vision` mirrors the macOS augment over
+  the captured rect; `dexter_vision::platform_provider()` gains a
+  `WinOcr` provider (`Windows.Media.Ocr`, on-device, `ocr_word_rect`
+  mapping, `Unsupported` with no language pack, `NaN` confidence —
+  WinRT reports none). Remaining: occluded windows capture their
+  on-screen pixels (display-raster semantics, same as macOS), OCR
+  stays evidence-only (`Target::Point` + `allow_coordinates` to
+  act), no Linux provider yet — PR #59, 2026-10-04 (Etapa 4)
 - [ ] `[windows]` dedicated MSAA fallback — real MSAA walk for
   controls UIA misses (legacy Win32), beyond UIA's built-in
   LegacyIAccessible bridge. (Etapa 4)
