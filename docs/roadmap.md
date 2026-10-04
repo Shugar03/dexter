@@ -135,12 +135,17 @@ Seeded from the slices the last PRs flagged as remaining plus
 ROADMAP.md Etapas 1, 3, 4, 5 and 6. `[windows]`/`[macos]` items are
 dispatched to child sessions (see Item tags above).
 
-- [ ] `[windows]` `act()` slice — UIA patterns first:
-  `Invoke`/`Toggle`/`ScrollItem`/`SelectionItem` →
-  `press`/`toggle`/`scroll`, writable `Value` → `set_value`,
-  focusable → `focus`; Win32 `SendInput` only where no pattern
-  reaches. Reuse the Element ids observe binds. (Etapa 4; observe
-  landed in PR #45)
+- [x] `[windows]` `act()` slice — UIA patterns first:
+  `Invoke`/`Toggle`/`SelectionItem`/`ExpandCollapse`/`LegacyIAccessible`
+  press ladder, writable `Value` → `set_value`/`type_text`,
+  `SetFocus`/`SetForegroundWindow` → `focus`, `ScrollItem`/`Scroll` →
+  `scroll`; Win32 `SendInput` only behind `ctx.allow_coordinates`
+  (+ foreground pid for keys). `Target::Element` re-walks the live UIA
+  tree and identity-checks (mismatch → `StaleReference`), `Semantic`
+  resolves via `dexter_world_model`, `Focused` via `GetFocusedElement`
+  pid-scoped; `Navigate` on a closed http/https/mailto allowlist.
+  Remaining: context-menu patterns, OCR targets, `background_input`,
+  capture slice — PR #57, 2026-10-04 (Etapa 4; observe landed in PR #45)
 - [ ] `[windows]` screenshot/vision perception — capture + OCR
   mirroring `dexter_vision::capture_monitor` semantics (per-display
   crop, spanning windows fail closed). (Etapa 4)
