@@ -7,6 +7,7 @@
 
 use dexter_core::{Element, ElementId, ElementSource, Observation, ObservationScope, Rect};
 use dexter_driver::DriverError;
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::SystemTime;
 use windows::core::{Interface, BOOL};
@@ -109,16 +110,50 @@ pub struct UiaTree {
     pub errors: u32,
 }
 
+/// A live handle the act() path can call back on: a UIA element, or an
+/// MSAA `(IAccessible, child)` pair kept from a fallback walk. Handles
+/// are carried in walk order so `nodes[i]` is always `elements[i]`.
+#[derive(Clone)]
+pub enum LiveNode {
+    Uia(IUIAutomationElement),
+    Msaa(crate::msaa::MsaaRef),
+}
+
 struct Ctx {
     max_depth: u32,
     max_elements: usize,
     elements: Vec<Element>,
     /// Live handles aligned with `elements` — only collected for `act`,
     /// which resolves an element then calls patterns on its handle.
-    nodes: Option<Vec<IUIAutomationElement>>,
+    nodes: Option<Vec<LiveNode>>,
+    /// Every `NativeWindowHandle` a UIA element claimed — an HWND in
+    /// this set is already covered, so the MSAA pass skips it.
+    claimed: HashSet<usize>,
     truncated: bool,
     errors: u32,
     next_id: u64,
+}
+
+/// The MSAA second pass for one window: `msaa::augment` decides from
+/// the UIA partition + claimed HWNDs whether and where to walk (see
+/// `msaa.rs` for the honest trigger), then merges kept elements onto
+/// `ctx.elements` — handles appended in lock-step for `act`.
+fn augment_window(ctx: &mut Ctx, hwnd: HWND, part_start: usize) {
+    let budget = ctx.max_elements.saturating_sub(ctx.elements.len());
+    let (els, handles, truncated, errors) = crate::msaa::augment(
+        &ctx.elements[part_start..],
+        &ctx.claimed,
+        hwnd,
+        ctx.max_depth,
+        budget,
+        &mut ctx.next_id,
+    );
+    ctx.errors += errors;
+    ctx.truncated |= truncated;
+    if let Some(nodes) = &mut ctx.nodes {
+        nodes.extend(handles.into_iter().map(LiveNode::Msaa));
+    }
+    ctx.elements.extend(els);
 }
 
 /// `observe` on Windows: list windows, resolve the selector, anchor
@@ -158,8 +193,17 @@ pub fn observe(
             }
             obs.windows.retain(|w| w.id == wid);
             let hwnd = crate::win::hwnd_of(wid);
-            let root = uia.normalize(uia.element_from(hwnd)?);
-            collect(&uia, root, scope.max_depth, scope.max_elements)
+            // A window UIA can't anchor on at all isn't lost — collect
+            // runs the same MSAA pass on an empty partition (the walk
+            // in `walk_live` mirrors this, so element ids line up).
+            let root = uia.element_from(hwnd).ok().map(|e| uia.normalize(e));
+            collect(
+                &uia,
+                hwnd,
+                root.as_ref(),
+                scope.max_depth,
+                scope.max_elements,
+            )
         }
         None => {
             let mut ctx = Ctx {
@@ -167,20 +211,26 @@ pub fn observe(
                 max_elements: scope.max_elements,
                 elements: Vec::new(),
                 nodes: None,
+                claimed: HashSet::new(),
                 truncated: false,
                 errors: 0,
                 next_id: 1,
             };
             for w in obs.windows.iter() {
                 let hwnd = crate::win::hwnd_of(w.id);
+                let part_start = ctx.elements.len();
                 match uia.element_from(hwnd) {
                     Ok(el) => {
                         let root = uia.normalize(el);
                         walk(&uia, &root, None, 0, &mut ctx);
                     }
                     // A window closed between EnumWindows and here —
-                    // partial data is honest, count it.
+                    // partial data is honest, count it. The MSAA pass
+                    // still runs: this is exactly the gap it covers.
                     Err(_) => ctx.errors += 1,
+                }
+                if !ctx.truncated {
+                    augment_window(&mut ctx, hwnd, part_start);
                 }
                 if ctx.truncated {
                     break;
@@ -223,17 +273,33 @@ pub fn observe(
     Ok(obs)
 }
 
-fn collect(uia: &Uia, root: IUIAutomationElement, max_depth: u32, max_elements: usize) -> UiaTree {
+fn collect(
+    uia: &Uia,
+    hwnd: HWND,
+    root: Option<&IUIAutomationElement>,
+    max_depth: u32,
+    max_elements: usize,
+) -> UiaTree {
     let mut ctx = Ctx {
         max_depth,
         max_elements,
         elements: Vec::new(),
         nodes: None,
+        claimed: HashSet::new(),
         truncated: false,
         errors: 0,
         next_id: 1,
     };
-    walk(uia, &root, None, 0, &mut ctx);
+    if let Some(root) = root {
+        walk(uia, root, None, 0, &mut ctx);
+    } else {
+        // UIA refused the window itself — count the failed anchor the
+        // same way the app-scoped loop does.
+        ctx.errors += 1;
+    }
+    if !ctx.truncated {
+        augment_window(&mut ctx, hwnd, 0);
+    }
     UiaTree {
         elements: ctx.elements,
         truncated: ctx.truncated,
@@ -266,21 +332,24 @@ pub fn has_pattern<T: Interface>(el: &IUIAutomationElement, id: UIA_PATTERN_ID) 
     unsafe { el.GetCurrentPatternAs::<T>(id) }.ok()
 }
 
-/// The walk `observe` produces plus the live `IUIAutomationElement`
-/// handle at every index — act resolves an element by its flat
-/// position, then calls patterns on `nodes[index]`.
+/// The walk `observe` produces plus the live handle at every index —
+/// act resolves an element by its flat position, then calls patterns
+/// or MSAA methods on `nodes[index]`.
 pub struct LiveWalk {
     pub elements: Vec<Element>,
-    pub nodes: Vec<IUIAutomationElement>,
+    pub nodes: Vec<LiveNode>,
     pub truncated: bool,
 }
 
 /// Walk `roots` in observe's order (each root at depth 0, sequential
-/// ids), keeping the live handle of every element. Truncation stops
-/// the walk at the same limits a scoped observe uses.
+/// ids), keeping the live handle of every element — including the MSAA
+/// pass each root's window earns, so an act-time re-walk reproduces
+/// the same merged order an observation reported. A `None` root is a
+/// window UIA could not anchor on: the MSAA pass still runs, matching
+/// observe's behaviour so element ids line up.
 pub fn walk_roots(
     uia: &Uia,
-    roots: &[IUIAutomationElement],
+    roots: &[(HWND, Option<IUIAutomationElement>)],
     max_depth: u32,
     max_elements: usize,
 ) -> LiveWalk {
@@ -289,12 +358,19 @@ pub fn walk_roots(
         max_elements,
         elements: Vec::new(),
         nodes: Some(Vec::new()),
+        claimed: HashSet::new(),
         truncated: false,
         errors: 0,
         next_id: 1,
     };
-    for root in roots {
-        walk(uia, root, None, 0, &mut ctx);
+    for (hwnd, root) in roots {
+        let part_start = ctx.elements.len();
+        if let Some(root) = root {
+            walk(uia, root, None, 0, &mut ctx);
+        }
+        if !ctx.truncated {
+            augment_window(&mut ctx, *hwnd, part_start);
+        }
         if ctx.truncated {
             break;
         }
@@ -453,7 +529,15 @@ fn walk(
     ctx.elements
         .push(read_element(el, id, parent, depth, &mut ctx.errors));
     if let Some(nodes) = &mut ctx.nodes {
-        nodes.push(el.clone());
+        nodes.push(LiveNode::Uia(el.clone()));
+    }
+    // The HWND this element is backed by claims that subtree for UIA —
+    // an unclaimed child HWND is where the MSAA pass earns its keep.
+    // Non-fatal bookkeeping, so it never counts as an element failure.
+    if let Ok(h) = unsafe { el.CurrentNativeWindowHandle() } {
+        if !h.0.is_null() {
+            ctx.claimed.insert(h.0 as usize);
+        }
     }
     if depth >= ctx.max_depth {
         return;

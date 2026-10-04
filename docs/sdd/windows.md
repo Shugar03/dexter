@@ -1,4 +1,4 @@
-# SDD — Windows driver (UIA observe + act + capture/OCR slices)
+# SDD — Windows driver (UIA observe + act + capture/OCR + MSAA slices)
 
 ## Intent
 
@@ -152,9 +152,72 @@ operation declines.
     `SetForegroundWindow`/`ShellExecuteW`/`Wait`. `SUCCESS` is returned
     only when the underlying call returned success (`S_OK`, nonzero
     BOOL, `ShellExecuteW` > 32).
-- UIA's built-in MSAA bridge already surfaces most legacy `IAccessible`
-  content as ControlTypes; a dedicated MSAA fallback pass remains open
-  work.
+- `observe()` runs a dedicated MSAA fallback pass per window, scoped
+  by what UIA provably did NOT cover — measured on Server 2022:
+  UIA's LegacyIAccessible bridge surfaces essentially every stock
+  app (msconfig, odbcad32, charmap, cleanmgr, dxdiag, netplwiz,
+  control-panel applets, MMC snap-ins once settled → 0 adds each),
+  so the pass must fire only on real gaps, never as a blanket second
+  walk. Two triggers, in `msaa::augment`:
+  (a) the window's UIA partition is empty or root-only
+  (`msaa::warranted`) → walk that window's `OBJID_CLIENT`;
+  (b) among `EnumChildWindows` descendants, each HWND that is
+  unclaimed (no UIA element reported it as `NativeWindowHandle`),
+  visible (`IsWindowVisible` — hidden subtrees such as inactive tab
+  pages report live bounds and would lie about what is on screen),
+  not nested under an already-chosen root (`IsChild`), and not
+  interior-covered (no UIA element whose bounds lie strictly inside
+  the HWND's rect — bridged windowless children don't claim their
+  host HWND, so the containment test is what keeps prop pages out)
+  → walk each such HWND's `OBJID_CLIENT`. The pass itself
+  (`AccessibleObjectFromWindow(OBJID_CLIENT)` → `IAccessible`,
+  `accChildCount`/`AccessibleChildren` recursion into simple
+  elements and child objects) maps `ROLE_SYSTEM_*` through
+  `msaa_role` (raw role is `msaa:ROLE_SYSTEM_*` — the source stays
+  `Accessibility`, the MSAA origin is carried in `raw_role`),
+  `STATE_SYSTEM_UNAVAILABLE` → `enabled = false`,
+  `STATE_SYSTEM_FOCUSED` → `focused`, `STATE_SYSTEM_PROTECTED` →
+  value never read (redacted before it exists, same rule as
+  `CurrentIsPassword`), and `STATE_SYSTEM_INVISIBLE|OFFSCREEN`
+  nodes are skipped with their subtrees — UIA's ControlView applies
+  the same `IsOffscreen` filter, and the browser walker skips
+  `aria-hidden` subtrees the same way.
+  The merge (`msaa::merge_msaa`) adds only elements UIA did not
+  surface: an MSAA node duplicates a UIA element when name and
+  bounds match within drift (±2px) plus either an identical rect
+  (providers mis-report roles on real HWNDs — measured on
+  odbcad32's Add/Remove appearing as `ROLE_SYSTEM_WINDOW` at the
+  exact rect of UIA's Button) or matching roles (when both mapped);
+  dropped nodes' children re-parent onto the matched element's id
+  so the merged forest keeps honest `parent`/`depth` links, and the
+  same dedupe runs across the kept MSAA elements (cross-root dups).
+  MSAA roots attach under the window's UIA root (depth 0 roots
+  themselves when UIA produced none). Per-element failures count
+  into `collection_errors`; `max_depth`/`max_elements` bound the
+  merged list and set `elements_truncated`. `ax_limited` is
+  computed after the merge — an app whose windows list but yield
+  nothing anywhere (UIA or MSAA) still reports limited. Known blind
+  spots, documented for later slices: hidden-but-reachable
+  containers (inactive tab pages) stay out of perception by the
+  visibility rule, and an unclaimed HWND whose interior UIA
+  partially covered is skipped whole — UIA elements don't carry
+  HWND attribution granular enough to prove partial coverage
+  inside one window.
+- Acting on an MSAA-only element is semantic: `Click` (left) →
+  `IAccessible::accDoDefaultAction` — a missing default action is
+  `UNSUPPORTED`, a disabled element `FAILED`, right/middle →
+  `SendInput` at the `accLocation` center behind `ctx.allow_coordinates`;
+  `SetValue`/`TypeText` → `put_accValue` where the state allows
+  (`!READONLY`, never `PROTECTED`), else the same opt-in `SendInput`
+  keyboard path behind `ctx.allow_coordinates` (focus via
+  `accSelect(SELFLAG_TAKEFOCUS)`, foreground checked against the
+  `WindowFromAccessibleObject` pid); `Focus` → `accSelect(TAKEFOCUS)`;
+  `Scroll` reports `UNSUPPORTED` — MSAA has no scroll contract.
+  `Target::Element` on an MSAA element re-walks and identity-checks
+  exactly like UIA: the merged list must reproduce the stored index or
+  the reference is `StaleReference`. `Mechanism::Accessibility`
+  throughout — `accDoDefaultAction` is an accessibility call, not a
+  pointer event.
 
 ## Why UIA first
 
