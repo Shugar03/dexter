@@ -40,8 +40,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_SHOWNORMAL,
 };
 
+use crate::msaa;
 use crate::resolve::{self, PressPattern};
-use crate::uia::{self, has_pattern, Uia};
+use crate::uia::{self, has_pattern, LiveNode, Uia};
 
 /// Re-walk bounds when an action resolves a target that was never
 /// bound by an observation (semantic, focused). `Target::Element`
@@ -49,9 +50,11 @@ use crate::uia::{self, has_pattern, Uia};
 const ACTION_WALK_DEPTH: u32 = 40;
 const ACTION_WALK_MAX: usize = 4_000;
 
-/// A live element resolved for an action, with a display detail.
+/// A live element resolved for an action, with a display detail. The
+/// node is whatever produced it — a UIA element or an MSAA
+/// `(IAccessible, child)` pair — and each act arm handles both.
 struct Resolved {
-    el: IUIAutomationElement,
+    node: LiveNode,
     detail: String,
 }
 
@@ -160,7 +163,13 @@ fn walk_live(
     max_elements: usize,
 ) -> Result<uia::LiveWalk, DriverError> {
     let hwnds = crate::win::hwnds();
-    let mut roots: Vec<IUIAutomationElement> = Vec::new();
+    // Roots are `(HWND, element)` pairs — the HWND travels with its
+    // root so `walk_roots` can run the same per-window MSAA pass
+    // observe ran, keeping merged element order (and ids) identical.
+    let mut roots: Vec<(
+        windows::Win32::Foundation::HWND,
+        Option<IUIAutomationElement>,
+    )> = Vec::new();
     match window {
         Some(wid) => {
             let hwnd = crate::win::hwnd_of(wid);
@@ -169,15 +178,17 @@ fn walk_live(
                     "window {wid} is no longer a top-level window of pid {pid} — re-observe"
                 )));
             }
-            roots.push(uia.normalize(uia.element_from(hwnd)?));
+            // A window UIA can't anchor still enters the walk — its
+            // MSAA pass may be the only tree, exactly as in observe.
+            let root = uia.element_from(hwnd).ok().map(|e| uia.normalize(e));
+            roots.push((hwnd, root));
         }
         None => {
             for (hwnd, _) in hwnds.into_iter().filter(|(_, p)| *p == pid) {
                 // A window closed mid-resolution yields no root — the
                 // identity check downstream treats it as staleness.
-                if let Ok(el) = uia.element_from(hwnd) {
-                    roots.push(uia.normalize(el));
-                }
+                let root = uia.element_from(hwnd).ok().map(|e| uia.normalize(e));
+                roots.push((hwnd, root));
             }
         }
     }
@@ -232,12 +243,12 @@ fn resolve_element(
                     element.0, observation.0
                 ))
             })?;
-            let el = tree.nodes.get(idx).cloned().ok_or_else(|| {
+            let node = tree.nodes.get(idx).cloned().ok_or_else(|| {
                 DriverError::StaleReference("resolved element vanished mid-walk".into())
             })?;
             Ok(Resolved {
-                detail: describe(&el),
-                el,
+                detail: describe_node(&node),
+                node,
             })
         }
         Target::Semantic(_) => {
@@ -251,12 +262,12 @@ fn resolve_element(
             let found = dexter_world_model::resolve_element(&obs, target)
                 .map_err(|e| resolve::resolve_error(e, obs.elements_truncated))?;
             let idx = found.id.0 as usize - 1;
-            let el = tree.nodes.get(idx).cloned().ok_or_else(|| {
+            let node = tree.nodes.get(idx).cloned().ok_or_else(|| {
                 DriverError::StaleReference("resolved element vanished mid-walk".into())
             })?;
             Ok(Resolved {
-                detail: describe(&el),
-                el,
+                detail: describe_node(&node),
+                node,
             })
         }
         Target::Focused => {
@@ -270,7 +281,7 @@ fn resolve_element(
             }
             Ok(Resolved {
                 detail: describe(&el),
-                el,
+                node: LiveNode::Uia(el),
             })
         }
         Target::Point { .. } | Target::Window { .. } => {
@@ -279,15 +290,28 @@ fn resolve_element(
     }
 }
 
+fn describe_node(node: &LiveNode) -> String {
+    match node {
+        LiveNode::Uia(el) => describe(el),
+        LiveNode::Msaa(m) => msaa::describe(m),
+    }
+}
+
 /// A resolved element must be enabled for a mutation to mean anything —
 /// UIA patterns on disabled controls are no-ops, and success on a no-op
 /// is simulated success. Unreadable state is not invented as disabled:
 /// the pattern call itself reports the failure. (The browser driver's
-/// disabled guard, same rule.)
+/// disabled guard, same rule.) The MSAA arm reads `accState` for
+/// `STATE_SYSTEM_UNAVAILABLE` instead of `CurrentIsEnabled`.
 fn disabled_verdict(r: &Resolved) -> Option<ActionResult> {
-    let enabled = unsafe { r.el.CurrentIsEnabled() }
-        .map(|b| b.as_bool())
-        .unwrap_or(true);
+    let enabled = match &r.node {
+        LiveNode::Uia(el) => unsafe { el.CurrentIsEnabled() }
+            .map(|b| b.as_bool())
+            .unwrap_or(true),
+        LiveNode::Msaa(m) => msaa::state_of(m)
+            .map(|st| st & msaa::STATE_SYSTEM_UNAVAILABLE == 0)
+            .unwrap_or(true),
+    };
     if enabled {
         return None;
     }
@@ -321,10 +345,40 @@ fn has(el: &IUIAutomationElement, pat: PressPattern) -> bool {
     }
 }
 
+/// MSAA left click: `accDoDefaultAction` is the only activation MSAA
+/// has — a control with no default action is honestly UNSUPPORTED,
+/// and a failed call is a platform error, never a pretend press.
+fn press_msaa(m: &msaa::MsaaRef, detail: &str) -> Result<ActionResult, DriverError> {
+    let var = msaa::var_child(m.child);
+    let has_default = unsafe { m.acc.get_accDefaultAction(&var) }
+        .ok()
+        .map(|b| !String::from_utf16_lossy(&b).is_empty())
+        .unwrap_or(false);
+    if !has_default {
+        return Ok(ActionResult::failure(
+            ActionStatus::Unsupported,
+            Mechanism::Accessibility,
+            format!("no default action on {detail}"),
+        ));
+    }
+    unsafe { m.acc.accDoDefaultAction(&var) }
+        .map_err(|e| DriverError::Platform(format!("accDoDefaultAction: {e}")))?;
+    Ok(ActionResult::success(
+        Mechanism::Accessibility,
+        Some(format!("default action on {detail}")),
+    ))
+}
+
 /// Left click: the press-pattern ladder, first present wins. The ladder
 /// is the `PRESS_ORDER` contract — probed per element, never assumed.
+/// An MSAA node skips the ladder entirely: `accDoDefaultAction` is its
+/// one verb.
 fn press(r: &Resolved) -> Result<ActionResult, DriverError> {
-    let Some(pat) = resolve::first_press_pattern(|p| has(&r.el, p)) else {
+    let el = match &r.node {
+        LiveNode::Uia(el) => el,
+        LiveNode::Msaa(m) => return press_msaa(m, &r.detail),
+    };
+    let Some(pat) = resolve::first_press_pattern(|p| has(el, p)) else {
         return Ok(ActionResult::failure(
             ActionStatus::Unsupported,
             Mechanism::Accessibility,
@@ -333,14 +387,14 @@ fn press(r: &Resolved) -> Result<ActionResult, DriverError> {
     };
     let detail = match pat {
         PressPattern::Invoke => {
-            let p = has_pattern::<IUIAutomationInvokePattern>(&r.el, UIA_InvokePatternId)
+            let p = has_pattern::<IUIAutomationInvokePattern>(el, UIA_InvokePatternId)
                 .ok_or_else(|| DriverError::Platform("Invoke pattern raced away".into()))?;
             unsafe { p.Invoke() }
                 .map_err(|e| DriverError::Platform(format!("InvokePattern.Invoke: {e}")))?;
             format!("pressed {}", r.detail)
         }
         PressPattern::Toggle => {
-            let p = has_pattern::<IUIAutomationTogglePattern>(&r.el, UIA_TogglePatternId)
+            let p = has_pattern::<IUIAutomationTogglePattern>(el, UIA_TogglePatternId)
                 .ok_or_else(|| DriverError::Platform("Toggle pattern raced away".into()))?;
             unsafe { p.Toggle() }
                 .map_err(|e| DriverError::Platform(format!("TogglePattern.Toggle: {e}")))?;
@@ -348,7 +402,7 @@ fn press(r: &Resolved) -> Result<ActionResult, DriverError> {
         }
         PressPattern::SelectItem => {
             let p =
-                has_pattern::<IUIAutomationSelectionItemPattern>(&r.el, UIA_SelectionItemPatternId)
+                has_pattern::<IUIAutomationSelectionItemPattern>(el, UIA_SelectionItemPatternId)
                     .ok_or_else(|| {
                         DriverError::Platform("SelectionItem pattern raced away".into())
                     })?;
@@ -357,11 +411,11 @@ fn press(r: &Resolved) -> Result<ActionResult, DriverError> {
             format!("selected {}", r.detail)
         }
         PressPattern::ExpandCollapse => {
-            let p = has_pattern::<IUIAutomationExpandCollapsePattern>(
-                &r.el,
-                UIA_ExpandCollapsePatternId,
-            )
-            .ok_or_else(|| DriverError::Platform("ExpandCollapse pattern raced away".into()))?;
+            let p =
+                has_pattern::<IUIAutomationExpandCollapsePattern>(el, UIA_ExpandCollapsePatternId)
+                    .ok_or_else(|| {
+                        DriverError::Platform("ExpandCollapse pattern raced away".into())
+                    })?;
             let expanded = unsafe { p.CurrentExpandCollapseState() }
                 .map(|s| s == ExpandCollapseState_Expanded)
                 .unwrap_or(false);
@@ -376,7 +430,7 @@ fn press(r: &Resolved) -> Result<ActionResult, DriverError> {
         }
         PressPattern::LegacyIAccessible => {
             let p = has_pattern::<IUIAutomationLegacyIAccessiblePattern>(
-                &r.el,
+                el,
                 UIA_LegacyIAccessiblePatternId,
             )
             .ok_or_else(|| DriverError::Platform("LegacyIAccessible pattern raced away".into()))?;
@@ -393,34 +447,60 @@ fn press(r: &Resolved) -> Result<ActionResult, DriverError> {
 }
 
 /// The element's `ValuePattern` plus its read-only flag, when present.
-fn value_pattern(r: &Resolved) -> Option<(IUIAutomationValuePattern, bool)> {
-    let v = has_pattern::<IUIAutomationValuePattern>(&r.el, UIA_ValuePatternId)?;
+fn value_pattern(el: &IUIAutomationElement) -> Option<(IUIAutomationValuePattern, bool)> {
+    let v = has_pattern::<IUIAutomationValuePattern>(el, UIA_ValuePatternId)?;
     let read_only = unsafe { v.CurrentIsReadOnly() }
         .map(|b| b.as_bool())
         .unwrap_or(true);
     Some((v, read_only))
 }
 
-fn set_value(r: &Resolved, value: &str) -> Result<ActionResult, DriverError> {
-    match value_pattern(r) {
-        Some((v, false)) => {
-            unsafe { v.SetValue(&BSTR::from(value)) }
-                .map_err(|e| DriverError::Platform(format!("ValuePattern.SetValue: {e}")))?;
-            Ok(ActionResult::success(
-                Mechanism::Accessibility,
-                Some(format!("set value on {}", r.detail)),
-            ))
-        }
-        Some((_, true)) => Ok(ActionResult::failure(
+/// MSAA `put_accValue` — the semantic write. `READONLY` state gates
+/// it (PROTECTED masks reads, not writes — a password edit accepts a
+/// value set); an `Err` from the call itself is a platform failure.
+fn set_value_msaa(
+    m: &msaa::MsaaRef,
+    detail: &str,
+    value: &str,
+) -> Result<ActionResult, DriverError> {
+    let st = msaa::state_of(m).unwrap_or(0);
+    if st & msaa::STATE_SYSTEM_READONLY != 0 {
+        return Ok(ActionResult::failure(
             ActionStatus::Failed,
             Mechanism::Accessibility,
-            format!("{} is read-only", r.detail),
-        )),
-        None => Ok(ActionResult::failure(
-            ActionStatus::Unsupported,
-            Mechanism::Accessibility,
-            format!("no writable Value pattern on {}", r.detail),
-        )),
+            format!("{detail} is read-only"),
+        ));
+    }
+    msaa::try_put_value(m, value)?;
+    Ok(ActionResult::success(
+        Mechanism::Accessibility,
+        Some(format!("set value on {detail}")),
+    ))
+}
+
+fn set_value(r: &Resolved, value: &str) -> Result<ActionResult, DriverError> {
+    match &r.node {
+        LiveNode::Uia(el) => match value_pattern(el) {
+            Some((v, false)) => {
+                unsafe { v.SetValue(&BSTR::from(value)) }
+                    .map_err(|e| DriverError::Platform(format!("ValuePattern.SetValue: {e}")))?;
+                Ok(ActionResult::success(
+                    Mechanism::Accessibility,
+                    Some(format!("set value on {}", r.detail)),
+                ))
+            }
+            Some((_, true)) => Ok(ActionResult::failure(
+                ActionStatus::Failed,
+                Mechanism::Accessibility,
+                format!("{} is read-only", r.detail),
+            )),
+            None => Ok(ActionResult::failure(
+                ActionStatus::Unsupported,
+                Mechanism::Accessibility,
+                format!("no writable Value pattern on {}", r.detail),
+            )),
+        },
+        LiveNode::Msaa(m) => set_value_msaa(m, &r.detail, value),
     }
 }
 
@@ -509,6 +589,18 @@ fn element_center(el: &IUIAutomationElement) -> Option<(f64, f64)> {
     let mut failed = false;
     let c = uia::bounds_of(el, &mut failed)?.center();
     Some((c.x, c.y))
+}
+
+/// Center of a resolved node — `accLocation` for MSAA nodes, UIA
+/// bounds for UIA nodes. Same `None`-means-no-bounds rule.
+fn resolved_center(r: &Resolved) -> Option<(f64, f64)> {
+    match &r.node {
+        LiveNode::Uia(el) => element_center(el),
+        LiveNode::Msaa(m) => msaa::bounds_of(m).map(|b| {
+            let c = b.center();
+            (c.x, c.y)
+        }),
+    }
 }
 
 /// `SendInput` unicode keystrokes — one down/up pair per UTF-16 unit so
@@ -620,9 +712,20 @@ fn scroll_amounts(d: &ScrollDelta) -> (ScrollAmount, ScrollAmount) {
 }
 
 fn scroll_element(r: &Resolved, delta: &ScrollDelta) -> Result<ActionResult, DriverError> {
+    let el = match &r.node {
+        LiveNode::Uia(el) => el,
+        // MSAA has no scroll contract — unsupported, not simulated.
+        LiveNode::Msaa(_) => {
+            return Ok(ActionResult::failure(
+                ActionStatus::Unsupported,
+                Mechanism::Accessibility,
+                format!("no scroll semantics on {}", r.detail),
+            ))
+        }
+    };
     // Bringing the target into view is the semantic scroll — mirrors
     // AXScrollToVisible; the delta is irrelevant to it.
-    if let Some(p) = has_pattern::<IUIAutomationScrollItemPattern>(&r.el, UIA_ScrollItemPatternId) {
+    if let Some(p) = has_pattern::<IUIAutomationScrollItemPattern>(el, UIA_ScrollItemPatternId) {
         unsafe { p.ScrollIntoView() }
             .map_err(|e| DriverError::Platform(format!("ScrollItemPattern.ScrollIntoView: {e}")))?;
         return Ok(ActionResult::success(
@@ -630,7 +733,7 @@ fn scroll_element(r: &Resolved, delta: &ScrollDelta) -> Result<ActionResult, Dri
             Some(format!("scrolled {} into view", r.detail)),
         ));
     }
-    if let Some(p) = has_pattern::<IUIAutomationScrollPattern>(&r.el, UIA_ScrollPatternId) {
+    if let Some(p) = has_pattern::<IUIAutomationScrollPattern>(el, UIA_ScrollPatternId) {
         let (h, v) = scroll_amounts(delta);
         unsafe { p.Scroll(h, v) }
             .map_err(|e| DriverError::Platform(format!("ScrollPattern.Scroll: {e}")))?;
@@ -788,7 +891,7 @@ pub fn act(
                                 "no UIA pattern reaches a context menu — enable coords for a pointer click",
                             ));
                         }
-                        let Some((x, y)) = element_center(&r.el) else {
+                        let Some((x, y)) = resolved_center(&r) else {
                             return Ok(ActionResult::failure(
                                 ActionStatus::Unsupported,
                                 Mechanism::Coordinates,
@@ -810,16 +913,42 @@ pub fn act(
             if let Some(fail) = disabled_verdict(&r) {
                 return Ok(fail);
             }
-            // Semantic first: a writable Value pattern is a real set.
-            if let Some((v, read_only)) = value_pattern(&r) {
-                if !read_only {
-                    unsafe { v.SetValue(&BSTR::from(text)) }.map_err(|e| {
-                        DriverError::Platform(format!("ValuePattern.SetValue: {e}"))
-                    })?;
-                    return Ok(ActionResult::success(
-                        Mechanism::Accessibility,
-                        Some(format!("set value on {}", r.detail)),
-                    ));
+            // Semantic first: a writable Value channel is a real set —
+            // UIA's ValuePattern, or MSAA's put_accValue.
+            match &r.node {
+                LiveNode::Uia(el) => {
+                    if let Some((v, read_only)) = value_pattern(el) {
+                        if !read_only {
+                            unsafe { v.SetValue(&BSTR::from(text)) }.map_err(|e| {
+                                DriverError::Platform(format!("ValuePattern.SetValue: {e}"))
+                            })?;
+                            return Ok(ActionResult::success(
+                                Mechanism::Accessibility,
+                                Some(format!("set value on {}", r.detail)),
+                            ));
+                        }
+                    }
+                }
+                LiveNode::Msaa(m) => {
+                    let readonly = msaa::state_of(m)
+                        .map(|st| st & msaa::STATE_SYSTEM_READONLY != 0)
+                        .unwrap_or(false);
+                    if readonly {
+                        return Ok(ActionResult::failure(
+                            ActionStatus::Failed,
+                            Mechanism::Accessibility,
+                            format!("{} is read-only", r.detail),
+                        ));
+                    }
+                    // A rejected write means no value channel here —
+                    // fall through to the keyboard path, same as a
+                    // missing pattern.
+                    if msaa::try_put_value(m, text).is_ok() {
+                        return Ok(ActionResult::success(
+                            Mechanism::Accessibility,
+                            Some(format!("set value on {}", r.detail)),
+                        ));
+                    }
                 }
             }
             // Physical typing is the coordinates path — opt-in only,
@@ -834,19 +963,34 @@ pub fn act(
                     ),
                 ));
             }
-            unsafe { r.el.SetFocus() }
-                .map_err(|e| DriverError::Platform(format!("SetFocus: {e}")))?;
-            let focused = unsafe { r.el.CurrentHasKeyboardFocus() }
-                .map(|b| b.as_bool())
-                .unwrap_or(false);
-            if !focused {
-                return Ok(ActionResult::failure(
-                    ActionStatus::Failed,
-                    Mechanism::Accessibility,
-                    format!("{} would not take keyboard focus", r.detail),
-                ));
-            }
-            let pid = unsafe { r.el.CurrentProcessId() }.unwrap_or(0);
+            let pid = match &r.node {
+                LiveNode::Uia(el) => {
+                    unsafe { el.SetFocus() }
+                        .map_err(|e| DriverError::Platform(format!("SetFocus: {e}")))?;
+                    let focused = unsafe { el.CurrentHasKeyboardFocus() }
+                        .map(|b| b.as_bool())
+                        .unwrap_or(false);
+                    if !focused {
+                        return Ok(ActionResult::failure(
+                            ActionStatus::Failed,
+                            Mechanism::Accessibility,
+                            format!("{} would not take keyboard focus", r.detail),
+                        ));
+                    }
+                    unsafe { el.CurrentProcessId() }.unwrap_or(0)
+                }
+                LiveNode::Msaa(m) => {
+                    msaa::take_focus(m)?;
+                    if !msaa::focused_of(m) {
+                        return Ok(ActionResult::failure(
+                            ActionStatus::Failed,
+                            Mechanism::Accessibility,
+                            format!("{} would not take keyboard focus", r.detail),
+                        ));
+                    }
+                    msaa::pid_of(&m.acc).unwrap_or(0)
+                }
+            };
             if pid == 0 || !pid_is_foreground(pid) {
                 return Ok(ActionResult::failure(
                     ActionStatus::ForegroundRequired,
@@ -907,8 +1051,11 @@ pub fn act(
             )),
             _ => {
                 let r = resolve_element(target, ctx, cache, &uia)?;
-                unsafe { r.el.SetFocus() }
-                    .map_err(|e| DriverError::Platform(format!("SetFocus: {e}")))?;
+                match &r.node {
+                    LiveNode::Uia(el) => unsafe { el.SetFocus() }
+                        .map_err(|e| DriverError::Platform(format!("SetFocus: {e}")))?,
+                    LiveNode::Msaa(m) => msaa::take_focus(m)?,
+                }
                 Ok(ActionResult::success(
                     Mechanism::Accessibility,
                     Some(format!("focused {}", r.detail)),

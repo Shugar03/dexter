@@ -16,13 +16,16 @@ mod apps;
 mod capture;
 pub mod geometry;
 pub mod keymap;
+pub mod msaa;
 pub mod resolve;
 #[cfg(windows)]
-mod uia;
+#[doc(hidden)] // exposed for integration tests — internal walk seam
+pub mod uia;
 #[cfg(windows)]
 mod vision;
 #[cfg(windows)]
-mod win;
+#[doc(hidden)] // exposed for integration tests — HWND lookup
+pub mod win;
 
 use dexter_core::{Action, ActionResult, Observation, ObservationScope, Window};
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
