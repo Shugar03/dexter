@@ -1,24 +1,33 @@
-//! Skeleton contracts: every capability claim is honest (all false),
-//! every operation declines with `Unsupported` rather than faking it,
+//! Skeleton contracts: every capability claim is honest per platform,
+//! every operation without a backend declines with `Unsupported`
+//! rather than faking it,
 //! and the AT-SPI role tables cover the roles desktop toolkits
 //! (GTK, Qt, Firefox/Chromium) actually expose.
 
-use dexter_core::{Action, AppSelector, MouseButton, ObservationScope, SemanticTarget, Target};
+#[cfg(not(target_os = "linux"))]
+use dexter_core::ObservationScope;
+use dexter_core::{Action, AppSelector, MouseButton, SemanticTarget, Target};
 use dexter_driver::{ActContext, ComputerDriver, DriverError};
 use dexter_linux::{atspi_role, atspi_role_name, LinuxDriver};
 
 #[test]
-fn capabilities_admit_nothing() {
-    let caps = LinuxDriver::new().capabilities();
+fn capabilities_admit_nothing_without_a_backend() {
+    let driver = LinuxDriver::new();
+    let caps = driver.capabilities();
     assert_eq!(caps.name, "linux");
-    // A skeleton that claimed element trees, screenshots or input
-    // would be simulating — every flag stays false until a backend
-    // earns it.
+    // The element tree is claimed exactly when the AT-SPI2 bus answers
+    // (Linux only — `windows()` succeeds); off Linux there is no backend
+    // to claim. Screenshots and input have no backend yet anywhere.
+    assert_eq!(caps.element_tree, driver.windows().is_ok());
+    #[cfg(not(target_os = "linux"))]
     assert!(!caps.element_tree);
     assert!(!caps.screenshots);
     assert!(!caps.background_input);
 }
 
+/// Off Linux every entrypoint must still decline honestly — the
+/// skeleton contract never goes away on platforms without a backend.
+#[cfg(not(target_os = "linux"))]
 #[test]
 fn every_entrypoint_is_honestly_unsupported() {
     let driver = LinuxDriver::new();
@@ -27,6 +36,12 @@ fn every_entrypoint_is_honestly_unsupported() {
         driver.observe(&ObservationScope::default()),
         Err(DriverError::Unsupported(_))
     ));
+}
+
+/// `act()` has no backend on any platform yet — it declines everywhere.
+#[test]
+fn act_is_honestly_unsupported() {
+    let driver = LinuxDriver::new();
     assert!(matches!(
         driver.act(
             &Action::Click {

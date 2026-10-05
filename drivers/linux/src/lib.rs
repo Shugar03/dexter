@@ -1,29 +1,46 @@
-//! `dexter-linux` — Linux driver skeleton.
+//! `dexter-linux` — Linux `ComputerDriver`.
 //!
-//! The seam, not the backend: this crate owns the Linux-side shape of
-//! the `ComputerDriver` contract — capabilities that admit what it
-//! can't do (everything, for now) and the AT-SPI role → normalized-role
-//! tables the real AT-SPI2 backend will plug into. Every operation
-//! returns `Unsupported` honestly rather than simulating anything.
-//! Adding the backend later means filling in `windows`/`observe`/`act`
-//! behind `#[cfg(target_os = "linux")]` and flipping capability flags.
+//! The AT-SPI2 backend is real on Linux: `windows()` lists the
+//! top-level frames every registered application exposes on the a11y
+//! bus, `observe()` walks their accessible trees into normalized
+//! `Element`s (roles through the `atspi_role` tables, states through
+//! `atspi::States`), with the same `ax_limited` /
+//! `collection_errors` / `elements_truncated` honesty flags the AX, UIA
+//! and DOM walkers report. `act()` has no backend yet and declines.
+//! Off Linux the crate keeps the skeleton contract: no capability is
+//! claimed and every operation declines honestly.
+
+pub mod atspi;
+#[cfg(target_os = "linux")]
+#[doc(hidden)] // exposed for integration tests — internal walk seam
+pub mod bus;
 
 use dexter_core::{Action, ActionResult, Observation, ObservationScope, Window};
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(not(target_os = "linux"))]
 fn unsupported() -> DriverError {
-    DriverError::Unsupported("linux AT-SPI backend not implemented — skeleton only".into())
+    DriverError::Unsupported("linux AT-SPI backend not available off linux".into())
 }
 
-/// Linux driver skeleton. See crate docs — the type exists so engine
-/// and app code can hold a driver named `linux` whose every claim is
-/// honest.
+fn act_unsupported() -> DriverError {
+    DriverError::Unsupported("linux AT-SPI act() not implemented — observe only".into())
+}
+
+/// Linux driver. See crate docs — on Linux the element tree is real
+/// whenever the a11y bus answers; actions, screenshots and background
+/// input are still honestly unsupported.
 #[derive(Debug, Default)]
-pub struct LinuxDriver;
+pub struct LinuxDriver {
+    #[cfg(target_os = "linux")]
+    next_observation: AtomicU64,
+}
 
 impl LinuxDriver {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 }
 
@@ -31,24 +48,51 @@ impl ComputerDriver for LinuxDriver {
     fn capabilities(&self) -> DriverCapabilities {
         DriverCapabilities {
             name: "linux",
-            element_tree: false,
+            // Claimed only when the AT-SPI2 bus is reachable right now —
+            // the same probe `windows()` performs. A session without an
+            // a11y bus (no `at-spi-bus-launcher`) reports false, never a
+            // claim that would fail.
+            element_tree: {
+                #[cfg(target_os = "linux")]
+                {
+                    bus::available()
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    false
+                }
+            },
             screenshots: false,
             background_input: false,
         }
     }
 
     fn windows(&self) -> Result<Vec<Window>, DriverError> {
-        Err(unsupported())
+        #[cfg(target_os = "linux")]
+        let result = bus::list_windows().map(|ws| ws.into_iter().map(|(w, _)| w).collect());
+        #[cfg(not(target_os = "linux"))]
+        let result = Err(unsupported());
+        result
     }
 
     fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
-        let _ = scope;
-        Err(unsupported())
+        #[cfg(target_os = "linux")]
+        let result = {
+            let id =
+                dexter_core::ObservationId(self.next_observation.fetch_add(1, Ordering::SeqCst));
+            bus::observe(id, scope)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let result = {
+            let _ = scope;
+            Err(unsupported())
+        };
+        result
     }
 
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
         let _ = (action, ctx);
-        Err(unsupported())
+        Err(act_unsupported())
     }
 }
 
