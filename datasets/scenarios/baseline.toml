@@ -63,3 +63,7 @@ max_mean_steps = 1.0
 [scenario.ambiguous-twin]
 min_success = 1.0
 max_mean_steps = 1.0
+
+[scenario.dead-end-save]
+min_success = 1.0
+max_mean_steps = 2.0

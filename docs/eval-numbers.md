@@ -12,13 +12,14 @@ Regenerate with:
 cargo run -p dexter-eval --example suite_report 5
 ```
 
-Measured on Linux @ `main` (2026-10-02):
+Measured on Linux @ `main` (2026-10-05):
 
 | scenario | outcome | steps | over-opt | decide p50/p95 ms | recoveries | phys |
 |---|---|---|---|---|---|---|
 | admin-absent | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
 | ambiguous-twin | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
 | cancel-polarity | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
+| dead-end-save | completed | 2.0 | 1.0 | 0/0 | 0 | 0 |
 | download-wait | completed | 1.0 | 0.0 | 0/0 | 0 | 0 |
 | field-disabled | abstained | 0.0 | 0.0 | 0/0 | 0 | 0 |
 | files-open-dialog | completed | 2.0 | 0.0 | 0/0 | 0 | 0 |
@@ -31,13 +32,19 @@ Measured on Linux @ `main` (2026-10-02):
 | tab-reveal | completed | 2.0 | 0.0 | 0/0 | 0 | 0 |
 | wizard-install | completed | 2.0 | 0.0 | 0/0 | 0 | 0 |
 
-**70/70 runs — success rate 100%, worst decide p95 0ms, physical acts
+**75/75 runs — success rate 100%, worst decide p95 0ms, physical acts
 0.** `steps` is the rep mean; `over-opt` is mean steps over the
 declared optimum on successful reps (only where `optimal_steps` is
 set). `cancel-polarity` abstains by design since the polarity veto —
 see its spec header. `ambiguous-twin` and `modal-blocking` abstain
 under rule-based by design; under `Cascade[rule-based, laya]` the
 typed questions resolve them (docs/sdd/laya-questions.md).
+`dead-end-save` completes one step over optimum by design: the
+first-ranked target refuses the press and the next-best semantic
+target is tried (docs/sdd/recovery.md) — under rule-based the
+generator's already-tried penalty moves on after one failure, so the
+run shows 0 `recoveries`; the engine's rung-3 substitution only fires
+for deciders that insist on the failed action.
 
 ## Live suite (macOS gate)
 

@@ -903,3 +903,179 @@ fn cascade_hops_are_journaled_on_decision_made() {
     assert_eq!(hops, ["abstains", "rule-based"]);
     assert_eq!(made.data["hops"][1]["decision"]["type"], "act");
 }
+
+/// Dead-end world for the recovery ladder: "Guardar documento" ranks
+/// first (covers every goal term) but the app refuses the press;
+/// "Guardar" is the next-best candidate and actually saves.
+fn dead_end_world(with_alternative: bool) -> SimDriver {
+    let mut elements = vec![el(1, "button", "Guardar documento")];
+    if with_alternative {
+        elements.push(el(2, "button", "Guardar"));
+    }
+    let sim = SimDriver::new(elements);
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar documento".into()),
+            ..Default::default()
+        },
+        Effect::Fail("la aplicación rechazó la acción".into()),
+    );
+    sim.on_press(
+        SemanticTarget {
+            name: Some("Guardar".into()),
+            ..Default::default()
+        },
+        Effect::Spawn(el(0, "static_text", "Documento guardado")),
+    );
+    sim
+}
+
+fn saved_cfg(max_steps: u32) -> dexter_engine::TaskConfig {
+    dexter_engine::TaskConfig {
+        run: cfg(),
+        max_steps,
+        max_duration: None,
+        cancel: None,
+        done_when: ExpectedState::ElementExists {
+            target: SemanticTarget {
+                role: Some("static_text".into()),
+                name: Some("Documento guardado".into()),
+                ..Default::default()
+            },
+        },
+    }
+}
+
+/// A decider that acts on the top candidate once, then insists on
+/// `Route::Retry` forever — the shape that used to spin the engine on a
+/// failing action until `max_steps`.
+struct ActThenRetry;
+impl dexter_decision::DecisionEngine for ActThenRetry {
+    fn name(&self) -> &str {
+        "act-then-retry"
+    }
+    fn decide(
+        &self,
+        ctx: &dexter_decision::DecisionContext,
+    ) -> Result<dexter_decision::Decision, dexter_decision::DecisionError> {
+        use dexter_decision::{Decision, Route};
+        Ok(if ctx.step == 1 {
+            let first = ctx.candidates.first().expect("candidates");
+            Decision::Act {
+                action: first.action.clone(),
+                candidate_index: Some(0),
+                rationale: "top candidate".into(),
+            }
+        } else {
+            Decision::Route {
+                route: Route::Retry,
+                rationale: "insist".into(),
+            }
+        })
+    }
+}
+
+fn failed_presses(events: &[Event]) -> usize {
+    events
+        .iter()
+        .filter(|e| e.kind == EventKind::ActionExecuted && e.data["status"] == "Failed")
+        .count()
+}
+
+#[test]
+fn recovery_rung3_tries_next_best_candidate() {
+    use dexter_decision::HeuristicGenerator;
+    use dexter_engine::TaskOutcome;
+
+    let mut engine = Engine::new(dead_end_world(true), allow_all(), Duration::from_secs(60));
+    let outcome = engine.run_task(
+        "guardar el documento",
+        &HeuristicGenerator::default(),
+        &ActThenRetry,
+        &saved_cfg(6),
+    );
+    assert!(
+        matches!(outcome, TaskOutcome::Completed { .. }),
+        "alternative must complete the task, got {outcome:?}"
+    );
+    let events = engine.events();
+    // Rung 1 (one replay) happened, then rung 3 took over — the dead
+    // end was tried exactly twice, never a third time.
+    assert_eq!(failed_presses(&events), 2, "rung 1 retry, then rung 3");
+    let rung3 = events
+        .iter()
+        .find(|e| e.kind == EventKind::RecoveryStarted && e.data["rung"] == 3)
+        .expect("RecoveryStarted rung 3 journaled");
+    assert_eq!(rung3.data["failures"], 2);
+    assert_eq!(rung3.data["alternative"]["target"]["name"], "Guardar");
+    assert_eq!(
+        engine.driver().pressed(),
+        vec![ElementId(2)],
+        "only the alternative was actually pressed"
+    );
+}
+
+#[test]
+fn recovery_ladder_exhausted_escalates() {
+    use dexter_decision::{HeuristicGenerator, Route};
+    use dexter_engine::TaskOutcome;
+
+    let mut engine = Engine::new(dead_end_world(false), allow_all(), Duration::from_secs(60));
+    let outcome = engine.run_task(
+        "guardar el documento",
+        &HeuristicGenerator::default(),
+        &ActThenRetry,
+        &saved_cfg(6),
+    );
+    match outcome {
+        TaskOutcome::Escalated { route, reason } => {
+            assert_eq!(route, Route::EscalateHuman);
+            assert!(reason.contains("Guardar documento"), "{reason}");
+        }
+        other => panic!("no alternative must escalate, not spin: {other:?}"),
+    }
+    assert_eq!(failed_presses(&engine.events()), 2);
+}
+
+#[test]
+fn insisting_act_on_dead_candidate_is_substituted() {
+    // A decider that keeps *acting* on the same failing action (not
+    // routing Retry) hits the same ladder: twice is enough.
+    use dexter_decision::{Decision, DecisionContext, DecisionError, HeuristicGenerator};
+    use dexter_engine::TaskOutcome;
+
+    struct InsistDead;
+    impl dexter_decision::DecisionEngine for InsistDead {
+        fn name(&self) -> &str {
+            "insist-dead"
+        }
+        fn decide(&self, _ctx: &DecisionContext) -> Result<Decision, DecisionError> {
+            Ok(Decision::Act {
+                action: Action::Click {
+                    target: Target::Semantic(SemanticTarget {
+                        role: Some("button".into()),
+                        name: Some("Guardar documento".into()),
+                        ..Default::default()
+                    }),
+                    button: MouseButton::Left,
+                },
+                candidate_index: None,
+                rationale: "the one I like".into(),
+            })
+        }
+    }
+
+    let mut engine = Engine::new(dead_end_world(true), allow_all(), Duration::from_secs(60));
+    let outcome = engine.run_task(
+        "guardar el documento",
+        &HeuristicGenerator::default(),
+        &InsistDead,
+        &saved_cfg(6),
+    );
+    assert!(
+        matches!(outcome, TaskOutcome::Completed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(failed_presses(&engine.events()), 2);
+    assert_eq!(engine.driver().pressed(), vec![ElementId(2)]);
+}

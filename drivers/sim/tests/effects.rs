@@ -134,3 +134,24 @@ fn remove_by_target_vanishes_an_element_on_tick() {
         .collect();
     assert_eq!(names, vec!["notas_viaje.txt"]);
 }
+
+#[test]
+fn fail_rule_reports_failed_without_pressing() {
+    // A `Fail` rule models a control the app rejects: the driver answers
+    // `Failed` with the detail, records no press and applies nothing —
+    // the dead end the recovery ladder has to route around.
+    let sim = SimDriver::new(vec![el(1, "button", "Guardar documento")]);
+    sim.on_press(
+        by_name("Guardar documento"),
+        Effect::Fail("la aplicación rechazó la acción".into()),
+    );
+    let result = sim
+        .act(&click(by_name("Guardar documento")), &ActContext::default())
+        .unwrap();
+    assert_eq!(result.status, ActionStatus::Failed);
+    assert_eq!(
+        result.detail.as_deref(),
+        Some("la aplicación rechazó la acción")
+    );
+    assert!(sim.pressed().is_empty(), "a refused press is not a press");
+}

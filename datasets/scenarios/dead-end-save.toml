@@ -1,0 +1,47 @@
+# dead-end-save — the first-ranked target is a dead end. "Guardar
+# documento" covers every goal term, so it ranks first, but the app
+# refuses the press (the driver reports Failed — a toolbar control the
+# tree exposes as pressable that the app rejects). Recovery ladder rung
+# 3: after the failure the next-best semantic target, "Guardar", is
+# tried and completes the task — no coordinates, no repeat spin.
+[scenario]
+id = "dead-end-save"
+goal = "guardar el documento"
+optimal_steps = 1
+app = "Editor"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "guardado" } }
+expected = "completed"
+max_steps = 5
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Editor de texto"
+
+[[world.element]]
+id = 2
+parent = 1
+depth = 1
+role = "button"
+name = "Guardar documento"
+identifier = "save-dead"
+actions = ["press"]
+
+[[world.element]]
+id = 3
+parent = 1
+depth = 1
+role = "button"
+name = "Guardar"
+identifier = "save-ok"
+actions = ["press"]
+
+[[world.rule]]
+when = { identifier = "save-dead" }
+effect = { type = "fail", detail = "la aplicación rechazó la acción" }
+
+[[world.rule]]
+when = { identifier = "save-ok" }
+effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Documento guardado" } }
