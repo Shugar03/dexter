@@ -206,6 +206,10 @@ pub enum SpecEffect {
         target: SemanticTarget,
         values: Vec<String>,
     },
+    /// The pressed element refuses the action (`ActionStatus::Failed`).
+    Fail {
+        detail: String,
+    },
 }
 
 impl SpecEffect {
@@ -224,6 +228,7 @@ impl SpecEffect {
             SpecEffect::CycleValueOf { target, values } => {
                 Effect::CycleValueOf(target.clone(), values.clone())
             }
+            SpecEffect::Fail { detail } => Effect::Fail(detail.clone()),
         }
     }
 }

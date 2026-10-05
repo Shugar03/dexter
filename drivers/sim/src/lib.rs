@@ -40,6 +40,12 @@ pub enum Effect {
     /// Advance through `values` one step per application, then hold the
     /// last value — models progress completing while the agent waits.
     CycleValueOf(SemanticTarget, Vec<String>),
+    /// The pressed element refuses the action: the driver reports
+    /// `ActionStatus::Failed` with this detail, records no press and
+    /// applies no other effect — a control the tree exposes as
+    /// pressable but the app rejects (a dead end for the recovery
+    /// ladder).
+    Fail(String),
 }
 
 struct Rule {
@@ -272,28 +278,40 @@ impl SimDriver {
                     Self::mutate_first(&mut s.elements, target, |e| e.value = Some(v.clone()));
                 }
             }
+            // Refusal is decided in `press` before anything is applied;
+            // as a tick it has nothing to mutate.
+            Effect::Fail(_) => {}
         }
     }
 
-    fn apply_effects(&self, pressed_id: ElementId) {
+    /// Press `pressed_id`: record it and apply the first matching rule.
+    /// A `Fail` rule refuses the press — nothing is recorded or applied
+    /// and the detail comes back as the driver's failure reason.
+    fn press(&self, pressed_id: ElementId) -> Result<(), String> {
         let mut s = self.state.lock().unwrap();
-        let pressed_el = match s.elements.iter().find(|e| e.id == pressed_id) {
-            Some(e) => e.clone(),
-            None => return,
-        };
+        let pressed_el = s.elements.iter().find(|e| e.id == pressed_id).cloned();
         // First matching rule wins.
-        let idx = s.rules.iter().position(|r| {
-            let one = Observation {
-                elements: vec![pressed_el.clone()],
-                ..Default::default()
-            };
-            !dexter_world_model::find_elements(&one, &r.when).is_empty()
+        let idx = pressed_el.as_ref().and_then(|pressed_el| {
+            s.rules.iter().position(|r| {
+                let one = Observation {
+                    elements: vec![pressed_el.clone()],
+                    ..Default::default()
+                };
+                !dexter_world_model::find_elements(&one, &r.when).is_empty()
+            })
         });
-        let Some(idx) = idx else { return };
+        if let Some(idx) = idx {
+            if let Effect::Fail(detail) = &s.rules[idx].effect {
+                return Err(detail.clone());
+            }
+        }
+        s.pressed.push(pressed_id);
+        let Some(idx) = idx else { return Ok(()) };
         let cursor = s.rules[idx].cursor;
         let effect = s.rules[idx].effect.clone();
         s.rules[idx].cursor += 1;
         Self::apply_effect(&mut s, &effect, pressed_id, cursor);
+        Ok(())
     }
 
     /// Tick rules fire on every observe — before the snapshot is taken,
@@ -368,15 +386,17 @@ impl ComputerDriver for SimDriver {
                     ));
                 }
                 let id = self.resolve(target, ctx)?;
-                {
-                    let mut s = self.state.lock().unwrap();
-                    s.pressed.push(id);
+                match self.press(id) {
+                    Ok(()) => Ok(ActionResult::success(
+                        Mechanism::Api,
+                        Some(format!("pressed {id}")),
+                    )),
+                    Err(detail) => Ok(ActionResult::failure(
+                        ActionStatus::Failed,
+                        Mechanism::Api,
+                        detail,
+                    )),
                 }
-                self.apply_effects(id);
-                Ok(ActionResult::success(
-                    Mechanism::Api,
-                    Some(format!("pressed {id}")),
-                ))
             }
             Action::TypeText { text, target } => {
                 let t = target.clone().unwrap_or(Target::Focused);

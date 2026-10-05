@@ -577,6 +577,7 @@ impl<D: ComputerDriver> Engine<D> {
         let started = task_started;
         let mut last_error: Option<String> = None;
         let mut hist = GenHistory::default();
+        let mut ladder = Ladder::default();
         // Auto-completion state: the world signature at the moment the
         // last mutating act was decided on. If the next observation
         // differs, the act moved the world — the subgoal is done.
@@ -711,44 +712,15 @@ impl<D: ComputerDriver> Engine<D> {
             );
             let decision = traced.decision;
 
-            match decision {
+            // What to execute this step, if anything: the decided act,
+            // or the last action replayed on `Route::Retry` (rung 1 of
+            // the recovery ladder — a bare continue would silently drop
+            // the decider's intent and burn a step). No prior attempt:
+            // nothing to replay, the loop simply re-observes next step.
+            let to_run = match decision {
                 Decision::Act {
                     action, rationale, ..
-                } => {
-                    let mutating = is_mutating(&action);
-                    hist.attempts.push(action.clone());
-                    let status = self.run_step_inner(
-                        &Step {
-                            note: Some(rationale),
-                            action,
-                            expect: None, // progress is judged by done_when
-                            max_attempts: Some(1),
-                            app: cfg.run.app.clone(),
-                        },
-                        &cfg.run,
-                        Some(&obs),
-                    );
-                    match status {
-                        StepStatus::Done { .. } => {
-                            last_error = None;
-                            // Auto-completion bookkeeping: a successful
-                            // mutating act claims the subgoal — the next
-                            // observation decides whether the world
-                            // actually moved.
-                            if matches!(done, Completion::FirstVerifiedAct) && mutating {
-                                pending_sig = Some(world_signature(&obs));
-                            }
-                        }
-                        other => {
-                            last_error = Some(format!("{other:?}"));
-                        }
-                    }
-                    // Let a real app's state propagate before the next
-                    // observe judges done_when — live UI is async.
-                    if !cfg.run.post_act_settle.is_zero() {
-                        std::thread::sleep(cfg.run.post_act_settle);
-                    }
-                }
+                } => Some((action, rationale)),
                 Decision::Route { route, rationale } => match route {
                     Route::Wait { millis } => {
                         // Interruptible wait — poll the cancel token in
@@ -771,44 +743,17 @@ impl<D: ComputerDriver> Engine<D> {
                             std::thread::sleep(Duration::from_millis(slice));
                             slept += slice;
                         }
+                        None
                     }
-                    Route::Retry => {
-                        // Contract: repeat the last action (transient
-                        // failure). A bare continue would silently drop
-                        // the decider's intent and burn a step.
-                        if let Some(last) = hist.attempts.last().cloned() {
-                            let mutating = is_mutating(&last);
-                            hist.attempts.push(last.clone());
-                            let status = self.run_step_inner(
-                                &Step {
-                                    note: Some(format!("retry: {rationale}")),
-                                    action: last,
-                                    expect: None,
-                                    max_attempts: Some(1),
-                                    app: cfg.run.app.clone(),
-                                },
-                                &cfg.run,
-                                Some(&obs),
-                            );
-                            match status {
-                                StepStatus::Done { .. } => {
-                                    last_error = None;
-                                    if matches!(done, Completion::FirstVerifiedAct) && mutating {
-                                        pending_sig = Some(world_signature(&obs));
-                                    }
-                                }
-                                other => last_error = Some(format!("{other:?}")),
-                            }
-                            if !cfg.run.post_act_settle.is_zero() {
-                                std::thread::sleep(cfg.run.post_act_settle);
-                            }
-                        }
-                        // No prior attempt: nothing to replay — the loop
-                        // simply re-observes next step.
-                    }
+                    Route::Retry => hist
+                        .attempts
+                        .last()
+                        .cloned()
+                        .map(|last| (last, format!("retry: {rationale}"))),
                     Route::Reobserve => {
                         // The loop observes fresh at the top of every
                         // step; Reobserve just continues into it.
+                        None
                     }
                     Route::Abstain => {
                         self.journal(
@@ -828,6 +773,90 @@ impl<D: ComputerDriver> Engine<D> {
                         };
                     }
                 },
+            };
+            if let Some((decided, note)) = to_run {
+                // Rung 3 (docs/sdd/recovery.md): an action that already
+                // failed twice in a row (original + rung-1 replay, fresh
+                // observation in between) gets no third try — the
+                // next-best generated candidate does. Nothing left to
+                // try → escalate, never a silent spin to max_steps.
+                let (action, note) = if ladder.needs_alternative(&decided) {
+                    let failures = ladder.failures(&decided);
+                    match ladder.alternative(&ctx.candidates) {
+                        Some(alt) => {
+                            self.journal(
+                                EventKind::RecoveryStarted,
+                                serde_json::json!({
+                                    "rung": 3,
+                                    "step": step,
+                                    "failed": &decided,
+                                    "failures": failures,
+                                    "alternative": &alt.action,
+                                    "prior": alt.prior,
+                                    "rationale": &alt.rationale,
+                                }),
+                            );
+                            (
+                                alt.action.clone(),
+                                format!("recovery rung 3 (alternative target): {}", alt.rationale),
+                            )
+                        }
+                        None => {
+                            let reason = format!(
+                                "recovery ladder exhausted: {} failed {failures} times in a row and no alternative candidate remains",
+                                serde_json::to_string(&decided).unwrap_or_default()
+                            );
+                            self.journal(
+                                EventKind::TaskFailed,
+                                serde_json::json!({
+                                    "outcome": "escalated",
+                                    "ladder": "exhausted",
+                                    "reason": &reason,
+                                    "failed": &decided,
+                                    "failures": failures,
+                                    "step": step,
+                                }),
+                            );
+                            return TaskOutcome::Escalated {
+                                route: Route::EscalateHuman,
+                                reason,
+                            };
+                        }
+                    }
+                } else {
+                    (decided, note)
+                };
+                let mutating = is_mutating(&action);
+                hist.attempts.push(action.clone());
+                let status = self.run_step_inner(
+                    &Step {
+                        note: Some(note),
+                        action: action.clone(),
+                        expect: None, // progress is judged by done_when
+                        max_attempts: Some(1),
+                        app: cfg.run.app.clone(),
+                    },
+                    &cfg.run,
+                    Some(&obs),
+                );
+                let succeeded = matches!(status, StepStatus::Done { .. });
+                ladder.record(&action, succeeded);
+                if succeeded {
+                    last_error = None;
+                    // Auto-completion bookkeeping: a successful mutating
+                    // act claims the subgoal — the next observation
+                    // decides whether the world actually moved.
+                    if matches!(done, Completion::FirstVerifiedAct) && mutating {
+                        pending_sig = Some(world_signature(&obs));
+                    }
+                } else {
+                    last_error = Some(format!("{status:?}"));
+                }
+                // Let a real app's state propagate before the next
+                // observe judges done_when — live UI is async.
+                if !cfg.run.post_act_settle.is_zero() {
+                    std::thread::sleep(cfg.run.post_act_settle);
+                }
             }
             hist.prev = Some(obs);
         }
@@ -837,6 +866,64 @@ impl<D: ComputerDriver> Engine<D> {
             serde_json::json!({"outcome": "max_steps", "max_steps": cfg.max_steps}),
         );
         TaskOutcome::MaxSteps
+    }
+}
+
+/// Per-goal recovery-ladder state (docs/sdd/recovery.md). Rung 1 is the
+/// `Route::Retry` replay, rung 2 the fresh observation every step takes;
+/// this tracks when rung 3 — the next-best generated candidate — is due.
+#[derive(Default)]
+struct Ladder {
+    /// Last executed action and how many times in a row it failed.
+    failing: Option<(Action, u32)>,
+    /// Every action that failed in this goal — never offered again.
+    dead: Vec<Action>,
+}
+
+impl Ladder {
+    /// Original attempt + one replay; the third request is substituted.
+    const RUNG3_AFTER: u32 = 2;
+
+    fn failures(&self, action: &Action) -> u32 {
+        match &self.failing {
+            Some((a, n)) if a == action => *n,
+            _ => 0,
+        }
+    }
+
+    fn needs_alternative(&self, action: &Action) -> bool {
+        self.failures(action) >= Self::RUNG3_AFTER
+    }
+
+    /// Best-prior candidate of *this* observation that is not behind a
+    /// modal and has not failed in this goal — the first on ties, so
+    /// the generator's own ordering stands.
+    fn alternative<'a>(
+        &self,
+        candidates: &'a [dexter_decision::CandidateAction],
+    ) -> Option<&'a dexter_decision::CandidateAction> {
+        candidates
+            .iter()
+            .filter(|c| c.behind_modal.is_none() && !self.dead.contains(&c.action))
+            .fold(
+                None,
+                |best: Option<&dexter_decision::CandidateAction>, c| match best {
+                    Some(b) if b.prior >= c.prior => Some(b),
+                    _ => Some(c),
+                },
+            )
+    }
+
+    fn record(&mut self, action: &Action, succeeded: bool) {
+        if succeeded {
+            self.failing = None;
+            return;
+        }
+        let n = self.failures(action) + 1;
+        self.failing = Some((action.clone(), n));
+        if !self.dead.contains(action) {
+            self.dead.push(action.clone());
+        }
     }
 }
 

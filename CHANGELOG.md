@@ -29,6 +29,20 @@
 
 ### Added
 
+- **Recovery ladder rung 3 — alternative semantic target.** A decider
+  that keeps asking for an action that already failed twice in a row
+  (`Route::Retry`, or `Act` on the same candidate — original attempt +
+  one replay, fresh observation in between) no longer gets a third
+  try: `Engine::run_goal` executes the next-best *generated* candidate
+  of that step instead (highest prior, not behind a modal, never one
+  that already failed), journaled as `RecoveryStarted { rung: 3 }`.
+  With no such candidate the task ends `Escalated { EscalateHuman }`
+  rather than spinning to `max_steps`. Deciders that move on by
+  themselves (rule-based, via the generator's already-tried penalty)
+  are untouched. `dexter_sim::Effect::Fail(detail)` (spec `{ type =
+  "fail", detail }`) models a control that refuses the press;
+  `dead-end-save` pins the scenario. SDD: `docs/sdd/recovery.md`.
+
 - **Browser protected sessions — persistent profiles.**
   `--browser-profile <dir>` (with `--browser-url`) /
   `BrowserDriver::connect_with_profile` creates the WebDriver session
