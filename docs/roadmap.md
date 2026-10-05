@@ -205,11 +205,18 @@ dispatched to child sessions (see Item tags above).
   answers". Remaining: `act()` (Action.DoAction / EditableText /
   focus), screenshots (X11 capture), Wayland — PR #63, 2026-10-05
   (Etapa 5)
-- [ ] Recovery ladder rung 3 — alternative semantic target: when the
+- [x] Recovery ladder rung 3 — alternative semantic target: when the
   chosen candidate keeps failing, try the next-best generated
-  candidate before escalating (the engine currently replays the last
-  act on `Route::Retry`). Pin with a sim scenario whose first-ranked
-  target is a dead end. (Etapa 1 — recovery ladder pasos 1–3)
+  candidate before escalating (the engine previously replayed the
+  last act on `Route::Retry` until `max_steps`). Shipped in
+  `Engine::run_goal`: per-goal `Ladder` counts failures per action;
+  after two (original + rung-1 replay, fresh observation between) the
+  next-best generated candidate (highest `prior`, not `behind_modal`,
+  not already dead) runs instead and is journaled as
+  `RecoveryStarted { rung: 3 }`; no candidate left → `Escalated`
+  (`EscalateHuman`), never a silent spin. Sim `Effect::Fail`,
+  `dead-end-save` scenario, SDD `docs/sdd/recovery.md` — PR #64,
+  2026-10-05 (Etapa 1 — recovery ladder pasos 1–3)
 - [ ] Browser dataset expansion — `eval harvest --driver browser`
   over more pages into `datasets/browser/` (install chromedriver if
   missing); append honest numbers to `docs/eval-numbers.md`.
