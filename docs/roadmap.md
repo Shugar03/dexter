@@ -190,11 +190,21 @@ dispatched to child sessions (see Item tags above).
   stay out of perception by the visibility rule; unclaimed HWNDs
   whose interior UIA partially covered are skipped whole — PR #61,
   2026-10-04 (Etapa 4)
-- [ ] `[linux]` `dexter-linux` real observe — AT-SPI2 tree walk on
+- [x] `[linux]` `dexter-linux` real observe — AT-SPI2 tree walk on
   X11 mirroring the Windows observe slice: window enumeration,
   app/window-scoped walk → normalized `Element`s, same
   `ax_limited`/`collection_errors`/`elements_truncated` flags.
-  Depends on the Fase 5 skeleton. (Etapa 5)
+  Depends on the Fase 5 skeleton. Shipped over blocking `zbus`
+  (`bus.rs`, Linux-only): registry apps → pids from the bus, frames
+  with real `GetExtents(SCREEN)` as `Window`s (FNV id over unique
+  name + path), depth-first walk skipping non-`SHOWING` subtrees,
+  `DEFUNCT`/vanished/refused reads → `collection_errors`, caps →
+  `elements_truncated`, `scope.window` native, `Name` → `Ambiguous`
+  on two pids, `BundleId` → `Unsupported`, `scope.screenshot` →
+  `Unsupported`. `capabilities().element_tree` = "the a11y bus
+  answers". Remaining: `act()` (Action.DoAction / EditableText /
+  focus), screenshots (X11 capture), Wayland — PR #63, 2026-10-05
+  (Etapa 5)
 - [ ] Recovery ladder rung 3 — alternative semantic target: when the
   chosen candidate keeps failing, try the next-best generated
   candidate before escalating (the engine currently replays the last
