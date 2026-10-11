@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dexter</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        background: #10141c;
+        color: #e7edf5;
+      }
+      body { margin: 0; padding: 28px; }
+      header { margin: 0 auto 22px; max-width: 1100px; }
+      h1 { margin: 0; font-size: 24px; letter-spacing: .02em; }
+      header p { margin: 6px 0 0; color: #9ba9bb; }
+      main {
+        display: grid;
+        grid-template-columns: minmax(320px, .9fr) minmax(420px, 1.1fr);
+        gap: 16px;
+        margin: auto;
+        max-width: 1100px;
+      }
+      section {
+        min-width: 0;
+        padding: 20px;
+        border: 1px solid #293444;
+        border-radius: 12px;
+        background: #171e29;
+      }
+      h2 { margin: 0 0 14px; font-size: 16px; }
+      h3 { margin: 20px 0 8px; font-size: 13px; color: #aebbd0; }
+      .state { color: #aebbd0; overflow-wrap: anywhere; }
+      .defaults { display: grid; grid-template-columns: 110px 1fr; gap: 8px; }
+      .defaults span:nth-child(odd) { color: #93a1b4; }
+      .implicit { color: #f3c66b; }
+      .error { color: #ff9c9c; overflow-wrap: anywhere; }
+      .table-wrap { overflow-x: auto; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      th, td { padding: 8px 6px; border-bottom: 1px solid #293444; text-align: left; vertical-align: top; }
+      th { color: #93a1b4; font-weight: 600; }
+      td { overflow-wrap: anywhere; }
+      #events { display: flex; flex-direction: column; gap: 8px; padding: 0; margin: 0; list-style: none; }
+      #events li {
+        display: grid;
+        grid-template-columns: 82px minmax(120px, .55fr) minmax(0, 1fr);
+        gap: 10px;
+        padding: 9px 10px;
+        border-radius: 7px;
+        background: #111721;
+        font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+      #events time, #events .kind { color: #9aacca; }
+      #events .summary { overflow-wrap: anywhere; color: #d1dae6; }
+      .empty { color: #7f8da1; font-size: 13px; }
+      @media (max-width: 800px) {
+        body { padding: 16px; }
+        main { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Dexter</h1>
+      <p>Read-only runtime journal and policy state</p>
+    </header>
+    <main>
+      <section aria-labelledby="policy-heading">
+        <h2 id="policy-heading">Policy</h2>
+        <p id="policy-state" class="state">Loading policy…</p>
+        <p id="policy-error" class="error"></p>
+        <div class="defaults">
+          <span>Mutating</span><strong id="mutating">—</strong>
+          <span>Physical</span><strong id="physical">—</strong>
+        </div>
+        <h3>Rules · evaluation order</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Action</th><th>App</th><th>Intrusiveness</th><th>Decision</th><th>Reason</th></tr>
+            </thead>
+            <tbody id="rules"></tbody>
+          </table>
+        </div>
+      </section>
+      <section aria-labelledby="journal-heading">
+        <h2 id="journal-heading">Journal</h2>
+        <p id="journal-state" class="state">Waiting for snapshot…</p>
+        <ol id="events"></ol>
+      </section>
+    </main>
+    <script>
+      const invoke = window.__TAURI__.core.invoke;
+      const byId = (id) => document.getElementById(id);
+
+      function addCell(row, value) {
+        const cell = document.createElement("td");
+        cell.textContent = value ?? "—";
+        row.appendChild(cell);
+      }
+
+      function renderPolicy(policy) {
+        byId("policy-state").textContent =
+          policy.path ? `${policy.state} · ${policy.path}` : policy.state;
+        byId("policy-error").textContent =
+          policy.state === "error" ? policy.message : "";
+        const rules = byId("rules");
+        rules.replaceChildren();
+        if (!policy.summary) {
+          byId("mutating").textContent = "—";
+          byId("physical").textContent = "—";
+          const row = document.createElement("tr");
+          const cell = document.createElement("td");
+          cell.colSpan = 5;
+          cell.textContent = "Policy summary unavailable";
+          row.appendChild(cell);
+          rules.appendChild(row);
+          return;
+        }
+        const summary = policy.summary;
+        byId("mutating").textContent = summary.mutating;
+        byId("physical").textContent = summary.physical;
+        if (!summary.physical_explicit) {
+          byId("physical").textContent += " (implicit floor)";
+          byId("physical").classList.add("implicit");
+        } else {
+          byId("physical").classList.remove("implicit");
+        }
+        if (summary.rules.length === 0) {
+          const row = document.createElement("tr");
+          const cell = document.createElement("td");
+          cell.colSpan = 5;
+          cell.textContent = "No rules";
+          row.appendChild(cell);
+          rules.appendChild(row);
+          return;
+        }
+        for (const rule of summary.rules) {
+          const row = document.createElement("tr");
+          addCell(row, rule.action);
+          addCell(row, rule.app);
+          addCell(row, rule.intrusiveness);
+          addCell(row, rule.decision);
+          addCell(row, rule.reason);
+          rules.appendChild(row);
+        }
+      }
+
+      function renderJournal(journal, events) {
+        const state = typeof journal === "string" ? journal : journal.state;
+        const path = typeof journal === "string" ? undefined : journal.path;
+        byId("journal-state").textContent =
+          path ? `${state} · ${path}` : state;
+        const list = byId("events");
+        list.replaceChildren();
+        if (events.length === 0) {
+          const empty = document.createElement("li");
+          empty.className = "empty";
+          empty.textContent = "No journal events";
+          list.appendChild(empty);
+          return;
+        }
+        for (const event of events) {
+          const row = document.createElement("li");
+          const time = document.createElement("time");
+          time.textContent = new Date(event.ts_ms).toLocaleTimeString();
+          const kind = document.createElement("span");
+          kind.className = "kind";
+          kind.textContent = event.kind;
+          const summary = document.createElement("span");
+          summary.className = "summary";
+          summary.textContent = event.summary;
+          row.append(time, kind, summary);
+          list.appendChild(row);
+        }
+      }
+
+      async function poll() {
+        try {
+          const snapshot = await invoke("snapshot");
+          renderPolicy(snapshot.policy);
+          renderJournal(snapshot.journal, snapshot.events);
+        } catch (error) {
+          byId("journal-state").textContent = "Snapshot unavailable";
+          byId("policy-error").textContent = String(error);
+        }
+      }
+
+      poll();
+      window.setInterval(poll, 500);
+    </script>
+  </body>
+</html>

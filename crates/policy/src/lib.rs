@@ -6,7 +6,7 @@
 //! pass through the same `evaluate` path.
 
 use dexter_core::{Action, AppSelector, DexterError, Intrusiveness};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -90,6 +90,23 @@ pub struct Policy {
     rules: Vec<RawRule>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PolicySummary {
+    pub mutating: String,
+    pub physical: String,
+    pub physical_explicit: bool,
+    pub rules: Vec<RuleSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RuleSummary {
+    pub action: String,
+    pub app: Option<String>,
+    pub intrusiveness: Option<String>,
+    pub decision: String,
+    pub reason: String,
+}
+
 impl Policy {
     /// The shipped default: reads allowed, every mutation requires
     /// approval. Used when no policy file exists — safe, never permissive.
@@ -131,6 +148,29 @@ impl Policy {
     /// `physical = "deny"` or `require_approval` in the file always wins.
     pub fn permit_physical(&mut self) {
         self.defaults.physical.get_or_insert(DecisionKind::Allow);
+    }
+
+    /// Return an ordered, read-only view of effective defaults and rules.
+    pub fn summary(&self) -> PolicySummary {
+        PolicySummary {
+            mutating: decision_name(self.defaults.mutating).into(),
+            physical: decision_name(self.defaults.physical.unwrap_or(DecisionKind::Deny)).into(),
+            physical_explicit: self.defaults.physical.is_some(),
+            rules: self
+                .rules
+                .iter()
+                .map(|rule| RuleSummary {
+                    action: rule.action.clone(),
+                    app: rule.app.clone(),
+                    intrusiveness: rule
+                        .intrusiveness
+                        .map(intrusiveness_name)
+                        .map(str::to_owned),
+                    decision: rule.decision_str().into(),
+                    reason: rule.reason.clone(),
+                })
+                .collect(),
+        }
     }
 
     /// Evaluate an action. First matching rule wins; no match falls back
@@ -201,11 +241,23 @@ impl Policy {
 
 impl RawRule {
     fn decision_str(&self) -> &'static str {
-        match self.decision {
-            DecisionKind::Allow => "allow",
-            DecisionKind::Deny => "deny",
-            DecisionKind::RequireApproval => "require_approval",
-        }
+        decision_name(self.decision)
+    }
+}
+
+fn decision_name(decision: DecisionKind) -> &'static str {
+    match decision {
+        DecisionKind::Allow => "allow",
+        DecisionKind::Deny => "deny",
+        DecisionKind::RequireApproval => "require_approval",
+    }
+}
+
+fn intrusiveness_name(intrusiveness: Intrusiveness) -> &'static str {
+    match intrusiveness {
+        Intrusiveness::Background => "background",
+        Intrusiveness::Visual => "visual",
+        Intrusiveness::Physical => "physical",
     }
 }
 
