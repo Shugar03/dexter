@@ -265,9 +265,14 @@ dispatched to child sessions (see Item tags above).
   Remaining: ~10× per-surface rows is the obvious lever before
   revisiting; τ post-ft still doesn't isolate the false act —
   PR #67, 2026-10-11 (Etapa 3)
-- [ ] Desktop app scaffold — Tauri 2 shell (`apps/dexter-desktop`)
+- [x] Desktop app scaffold — Tauri 2 shell (`apps/dexter-desktop`)
   rendering journal tail + policy state read-only; no control
-  surface yet. (Etapa 6 — first slice)
+  surface yet. One IPC command (`snapshot`), `core:default` only, no
+  plugins; `JournalTail` moved to `dexter_core::journal` (newest 200
+  rows); `Policy::summary()` shows ordered rules + effective defaults
+  incl. the implicit physical floor; a failed `--policy` load is shown
+  as an error, never the embedded default. Remaining: approvals view,
+  session list, replay — PR #69, 2026-10-11 (Etapa 6 — first slice)
 
 ## Fase 7 — platform act + depth
 
