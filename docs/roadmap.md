@@ -229,9 +229,25 @@ dispatched to child sessions (see Item tags above).
   calibration re-run over 72 pooled items keeps 0.65. Remaining:
   fixtures are teacher-authored (not open-web pages) — PR #65,
   2026-10-11 (Etapa 3)
-- [ ] `[macos]` live-scenario expansion — more apps into
+- [x] `[macos]` live-scenario expansion — more apps into
   `datasets/scenarios/` live specs pinned es-ES per the
-  `AppleLanguages` contract (e.g. Safari, Notes flows). (Etapa 3)
+  `AppleLanguages` contract (e.g. Safari, Notes flows).
+  5 → 8 live specs on stock macOS apps: `safari-local-page`
+  (first spec acting on AXWebArea web content through the
+  `macos` driver — `file://` scratch fixture, `Marcar como hecho`
+  press verified by the page's own `pendiente` → `hecho`
+  mutation; prep polls `observe` so a cold render can't race the
+  first decide), `notes-write` (two-subgoal `crear una nota` →
+  `escribir 'hola dexter'`; prep dismisses Notes' welcome +
+  iCloud first-run sheets and deletes leftover notes so a failed
+  rep can't complete vacuously), `fontbook-view` (`Ver como
+  lista` radio flip; persisted view mode restored by
+  prep/teardown). Local run 23/23 suite, baseline ok, 0 physical
+  acts; CI green on the runner. Remaining: live specs stay
+  absent-from-results on AX-less hosts by design (the suite
+  rollup covers them when they run); unhandled first-run UI on
+  a fresh account would fail honestly — PR #66, 2026-10-11
+  (Etapa 3)
 - [ ] `[macos]` Laya fine-tune — `dexter eval export` rows →
   fine-tune `laya-mlx` (MLX needs Apple silicon); eval before/after
   on the matrix and report honestly — only worth keeping if the
