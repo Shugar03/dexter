@@ -3,7 +3,7 @@
 //! evaluated on the action itself.
 
 use dexter_core::{Action, AppSelector, DexterError, KeyChord, Target};
-use dexter_policy::{ActionContext, ApprovalStore, Policy, PolicyDecision};
+use dexter_policy::{ActionContext, ApprovalStore, Policy, PolicyDecision, RuleSummary};
 use std::time::Duration;
 
 fn ctx(app: Option<&str>) -> ActionContext {
@@ -334,4 +334,75 @@ fn nonexistent_file_fails_closed() {
         err,
         Err(DexterError::Io(_)) | Err(DexterError::Other(_))
     ));
+}
+
+#[test]
+fn embedded_summary_exposes_effective_defaults_and_implicit_floor() {
+    let summary = Policy::embedded().summary();
+
+    assert_eq!(summary.mutating, "require_approval");
+    assert_eq!(summary.physical, "deny");
+    assert!(!summary.physical_explicit);
+    assert!(summary.rules.is_empty());
+}
+
+#[test]
+fn summary_preserves_rules_and_all_rule_fields_in_order() {
+    let policy = Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "click"
+        app = "Safari"
+        intrusiveness = "background"
+        decision = "allow"
+        reason = "Safari is allowed"
+
+        [[rule]]
+        action = "*"
+        decision = "deny"
+        reason = "deny remaining actions"
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        policy.summary().rules,
+        vec![
+            RuleSummary {
+                action: "click".into(),
+                app: Some("Safari".into()),
+                intrusiveness: Some("background".into()),
+                decision: "allow".into(),
+                reason: "Safari is allowed".into(),
+            },
+            RuleSummary {
+                action: "*".into(),
+                app: None,
+                intrusiveness: None,
+                decision: "deny".into(),
+                reason: "deny remaining actions".into(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn summary_reports_permit_physical_and_explicit_deny_truthfully() {
+    let mut implicit = Policy::embedded();
+    implicit.permit_physical();
+    let summary = implicit.summary();
+    assert_eq!(summary.physical, "allow");
+    assert!(summary.physical_explicit);
+
+    let mut explicit = Policy::from_toml(
+        r#"
+        [defaults]
+        physical = "deny"
+        "#,
+    )
+    .unwrap();
+    explicit.permit_physical();
+    let summary = explicit.summary();
+    assert_eq!(summary.physical, "deny");
+    assert!(summary.physical_explicit);
 }
