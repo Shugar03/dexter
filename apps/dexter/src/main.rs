@@ -1340,46 +1340,6 @@ fn observe(driver: &dyn ComputerDriver, scope: &ObservationScope, digest: bool) 
 
 // ---- eval harness ----
 
-#[derive(Deserialize)]
-struct HarvestManifest {
-    #[serde(default)]
-    page: Vec<HarvestPage>,
-}
-
-#[derive(Deserialize)]
-struct HarvestPage {
-    id: String,
-    /// Browser: URL to navigate. macOS: omit and use `app` instead.
-    url: Option<String>,
-    /// Browser: HTML file relative to the manifest's directory.
-    path: Option<String>,
-    /// macOS: scope the observation to this app.
-    app: Option<String>,
-    /// Shell command to put the app in the intended state before
-    /// observing (e.g. osascript making a new document). Harvest
-    /// tooling only — never part of the agent path.
-    #[serde(default)]
-    prep: Option<String>,
-    /// Shell command to restore state after observing (e.g. close the
-    /// scratch document without saving).
-    #[serde(default)]
-    teardown: Option<String>,
-    goal: String,
-    gold: HarvestGold,
-    /// Extra settle time after navigate/scope before observing (ms).
-    #[serde(default)]
-    settle_ms: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum HarvestGold {
-    /// The correct move is acting on the element matching `target`.
-    Act { target: SemanticTarget },
-    /// The correct move is a route (wait/abstain/escalate/...).
-    Route { route: dexter_decision::Route },
-}
-
 /// Export frozen eval items as laya-format training rows:
 /// {id, state, options, n_candidates, gold_index|null, gold_route}.
 /// `gold_index` is the absolute option index (candidates first, then the
@@ -1615,91 +1575,10 @@ fn eval_run(
 }
 
 fn eval_harvest(driver: &dyn ComputerDriver, manifest_path: &str, out: &str) -> Result<()> {
-    let text = std::fs::read_to_string(manifest_path)
-        .with_context(|| format!("reading manifest '{manifest_path}'"))?;
-    let manifest: HarvestManifest =
-        toml::from_str(&text).with_context(|| format!("parsing manifest '{manifest_path}'"))?;
-
-    let manifest_dir = std::path::Path::new(manifest_path)
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .canonicalize()
-        .with_context(|| format!("resolving manifest dir '{manifest_path}'"))?;
-    let mut buf = String::new();
-    for page in &manifest.page {
-        let url = page.url.clone().or_else(|| {
-            page.path
-                .as_ref()
-                .map(|rel| format!("file://{}", manifest_dir.join(rel).display()))
-        });
-        if let Some(url) = &url {
-            driver
-                .act(
-                    &Action::Navigate { url: url.clone() },
-                    &dexter_driver::ActContext::default(),
-                )
-                .map_err(|e| anyhow::anyhow!("{}: navigate: {e}", page.id))?;
-        }
-        if let Some(cmd) = &page.prep {
-            let status = std::process::Command::new("sh")
-                .env("DEXTER_OVERLAY", "0")
-                .arg("-c")
-                .arg(cmd)
-                .status()
-                .with_context(|| format!("{}: prep spawn", page.id))?;
-            if !status.success() {
-                eprintln!("{}: prep exited {status} — continuing", page.id);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(page.settle_ms.unwrap_or(600)));
-
-        let scope = ObservationScope {
-            app: page.app.as_deref().map(AppSelector::parse),
-            ..Default::default()
-        };
-        let obs = driver
-            .observe(&scope)
-            .map_err(|e| anyhow::anyhow!("{}: observe: {e}", page.id))?;
-        if let Some(cmd) = &page.teardown {
-            let _ = std::process::Command::new("sh")
-                .env("DEXTER_OVERLAY", "0")
-                .arg("-c")
-                .arg(cmd)
-                .status();
-        }
-
-        let gold = match &page.gold {
-            HarvestGold::Act { target } => {
-                let el =
-                    dexter_world_model::resolve_element(&obs, &Target::Semantic(target.clone()))
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "{}: gold target did not resolve uniquely: {e}",
-                                page.id
-                            )
-                        })?;
-                dexter_eval::Gold::Act {
-                    target: target.clone(),
-                    element: el.id,
-                }
-            }
-            HarvestGold::Route { route } => dexter_eval::Gold::Route { route: *route },
-        };
-
-        let item = dexter_eval::EvalItem {
-            id: page.id.clone(),
-            goal: page.goal.clone(),
-            observation: obs,
-            gold,
-            source: "harvest".into(),
-            meta: serde_json::json!({"url": url, "app": page.app}),
-        };
-        buf.push_str(&serde_json::to_string(&item)?);
-        buf.push('\n');
-        eprintln!("harvested {}", page.id);
-    }
-    std::fs::write(out, buf).with_context(|| format!("writing '{out}'"))?;
-    println!("wrote {} items to {out}", manifest.page.len());
+    let items = dexter_eval::harvest::harvest_file(driver, std::path::Path::new(manifest_path))?;
+    let jsonl = dexter_eval::to_jsonl(&items)?;
+    std::fs::write(out, jsonl).with_context(|| format!("writing '{out}'"))?;
+    println!("wrote {} items to {out}", items.len());
     Ok(())
 }
 

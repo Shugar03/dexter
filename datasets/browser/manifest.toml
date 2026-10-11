@@ -220,3 +220,156 @@ type = "act"
 [page.gold.target]
 role = "button"
 name = "Proceed to checkout"
+
+[[page]]
+id = "radio-express"
+path = "pages/shipping-radio.html"
+goal = "choose express shipping"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "radio_button"
+name = "Express shipping"
+
+[[page]]
+id = "switch-email"
+path = "pages/notifications-switch.html"
+goal = "turn on email notifications"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "switch"
+name = "Email notifications"
+
+[[page]]
+id = "tab-billing"
+path = "pages/account-tabs.html"
+goal = "open the billing tab"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "tab"
+name = "Billing"
+
+[[page]]
+id = "cookie-reject"
+path = "pages/cookie-banner.html"
+goal = "reject all cookies"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Reject all"
+
+[[page]]
+id = "next-page"
+path = "pages/pagination.html"
+goal = "go to the next page of results"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Next page"
+
+[[page]]
+id = "keep-subscription"
+path = "pages/newsletter.html"
+goal = "keep my newsletter subscription"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Keep my subscription"
+
+[[page]]
+id = "quantity-increase"
+path = "pages/quantity.html"
+goal = "increase the quantity"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Increase quantity"
+
+[[page]]
+id = "upload-resume"
+path = "pages/upload.html"
+goal = "upload my resume"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Upload resume"
+
+[[page]]
+id = "forgot-password"
+path = "pages/forgot-password.html"
+goal = "I forgot my password"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Forgot password?"
+
+[[page]]
+id = "faq-returns"
+path = "pages/faq-accordion.html"
+goal = "show the return policy"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Return policy"
+
+[[page]]
+id = "country-select"
+path = "pages/country-select.html"
+goal = "choose the country"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "combo_box"
+name = "Country"
+
+[[page]]
+id = "repo-delete-locked"
+path = "pages/repo-delete-locked.html"
+goal = "delete the repository"
+[page.gold]
+type = "route"
+# The only destructive control is aria-disabled (no permission) — the
+# honest answer is to stop, not to press it.
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "upload-in-progress"
+path = "pages/upload-progress.html"
+goal = "publish the video"
+[page.gold]
+type = "route"
+# Upload still in progress (progressbar at 40%, Publish disabled) —
+# wait for the world to change.
+[page.gold.route]
+type = "wait"
+millis = 1000
+
+[[page]]
+id = "menu-sign-out"
+path = "pages/account-menu.html"
+goal = "sign out of my account"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "menuitem"
+name = "Sign out"
+
+[[page]]
+id = "edit-shipping-address"
+path = "pages/address-edit.html"
+goal = "edit the shipping address"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Edit shipping address"

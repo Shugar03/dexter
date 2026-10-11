@@ -25,6 +25,7 @@ use dexter_decision::{
 use serde::{Deserialize, Serialize};
 
 pub mod calibrate;
+pub mod harvest;
 pub mod scenario;
 
 /// The labeled correct answer for one decision point.
@@ -66,6 +67,16 @@ pub fn load_jsonl(text: &str) -> Result<Vec<EvalItem>, serde_json::Error> {
         .filter(|l| !l.trim().is_empty())
         .map(serde_json::from_str)
         .collect()
+}
+
+/// Serialize eval items as JSONL, with one trailing newline per item.
+pub fn to_jsonl(items: &[EvalItem]) -> Result<String, serde_json::Error> {
+    let mut text = String::new();
+    for item in items {
+        text.push_str(&serde_json::to_string(item)?);
+        text.push('\n');
+    }
+    Ok(text)
 }
 
 /// Provenance key for cross-app evaluation: the app (or page) this item

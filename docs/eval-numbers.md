@@ -73,6 +73,11 @@ same run by provenance app. Regenerate with:
 chromedriver --port=9515 &
 dexter --driver browser --browser-url http://localhost:9515 \
   eval harvest datasets/browser/manifest.toml -o datasets/browser/items.jsonl
+# same harvest on any host (Linux included — the `dexter` CLI is
+# macOS-only, the library harvest is not):
+cargo run -p dexter-eval --example harvest -- \
+  datasets/browser/manifest.toml -o datasets/browser/items.jsonl \
+  --browser-url http://localhost:9515
 
 # macos — needs a Mac with AX permission and `dexter` on PATH; the
 # manifest's preps pin each app to es-ES:
@@ -85,6 +90,7 @@ Measured on macOS 26.5 (Apple Silicon) @ this branch (2026-10-02):
 | dataset | items | coverage | act accuracy | routes | false acts | false routes |
 |---|---|---|---|---|---|---|
 | browser | 21 | 100% (18/18 act) | 18/18 (100%) | 3/3 | 0 | 0 |
+| browser (2026-10-11, see below) | 36 | 100% (31/31 act) | 31/31 (100%) | 5/5 | 0 | 0 |
 | macos | 20 | 100% (15/15 act) | 12/15 (80%) | 4/5 | 1 | 0 |
 
 macOS per app (`dexter eval matrix`):
@@ -113,37 +119,64 @@ measures — every gold resolved against the live AX tree at harvest:
   presses the "Vuelta" column header — a pressable static_text that
   marks nothing — instead of abstaining. The one false act.
 
+Browser expansion — re-harvested on Linux (Ubuntu, Chrome for Testing
+137.0.7118.2 + matching chromedriver, `dexter-eval` `harvest` example)
+on 2026-10-11: 15 new pages/items on top of the 21 above, covering
+affordances the set lacked — radio (`radio-express`), ARIA switch
+(`switch-email`), tabs (`tab-billing`), a cookie dialog with
+accept/reject polarity (`cookie-reject`), icon-only pagination
+(`next-page`), keep-vs-unsubscribe polarity (`keep-subscription`),
+icon steppers (`quantity-increase`), file input (`upload-resume`), a
+"Forgot password?" link (`forgot-password`), accordion disclosure
+(`faq-returns`), `<select>` (`country-select`), ARIA menu items
+(`menu-sign-out`), twin "Edit" buttons told apart only by
+`aria-label` (`edit-shipping-address`), plus two routes: an
+`aria-disabled` destructive control (`repo-delete-locked`, abstain)
+and an upload in progress behind a progressbar (`upload-in-progress`,
+wait). The original 21 re-harvested on Linux score exactly as the
+macOS harvest did (18/18 act, 3/3 routes).
+
+Result at the default threshold: **36 items, 31/31 act, 5/5 routes,
+0 false acts, 0 false routes.** Read it with care: every page is a
+small hand-authored fixture written by the same teacher that labels
+the gold, with accessible names that share vocabulary with the goal —
+it measures that the generator/engine handle these affordance shapes,
+not open-web robustness. The margin is thin above the default: at
+0.75 five browser act-golds already fall to false routes (0.80: 7,
+0.90: 15).
+
 ## Threshold calibration (rule-based act threshold)
 
 Sweep of `RuleBased.act_threshold` over all four frozen datasets
-(browser 21, macos 20, sim 11, vision 5 = 57 items). Regenerate with:
+(browser 36, macos 20, sim 11, vision 5 = 72 items). Regenerate with:
 
 ```sh
 cargo run -p dexter-eval --example calibrate        # any host
 dexter eval matrix datasets/*/items.jsonl --act-threshold 0.4,0.5,0.6,0.65,0.7,0.8,0.9,1.0
 ```
 
-Measured on Linux @ this branch (2026-10-02), all datasets pooled:
+Measured on Linux (2026-10-11, after the browser expansion), all
+datasets pooled:
 
 | act_threshold | act | routes | false acts | false routes | score | utility |
 |---|---|---|---|---|---|---|
-| 0.40–0.50 | 40/43 (93%) | 8/14 | 3 | 0 | 48 | 42 |
-| 0.55–0.60 | 39/43 (91%) | 8/14 | 3 | 1 | 47 | 41 |
-| **0.65 (default)** | **39/43 (91%)** | **9/14** | **2** | **1** | **48** | **44** |
-| 0.70 | 38/43 (88%) | 9/14 | 2 | 2 | 47 | 43 |
-| 0.75 | 30/43 (70%) | 9/14 | 2 | 10 | 39 | 35 |
-| 0.80 | 29/43 (67%) | 9/14 | 2 | 11 | 38 | 34 |
-| 0.85 | 21/43 (49%) | 9/14 | 2 | 19 | 30 | 26 |
-| 0.90 | 20/43 (47%) | 9/14 | 2 | 20 | 29 | 25 |
-| 0.95 | 9/43 (21%) | 9/14 | 2 | 33 | 18 | 14 |
-| 1.00 | 4/43 (9%) | 11/14 | 0 | 39 | 15 | 15 |
+| 0.40–0.50 | 53/56 (95%) | 10/16 | 3 | 0 | 63 | 57 |
+| 0.55–0.60 | 52/56 (93%) | 10/16 | 3 | 1 | 62 | 56 |
+| **0.65 (default)** | **52/56 (93%)** | **11/16** | **2** | **1** | **63** | **59** |
+| 0.70 | 51/56 (91%) | 11/16 | 2 | 2 | 62 | 58 |
+| 0.75 | 42/56 (75%) | 11/16 | 2 | 11 | 53 | 49 |
+| 0.80 | 40/56 (71%) | 11/16 | 2 | 13 | 51 | 47 |
+| 0.85 | 30/56 (54%) | 11/16 | 2 | 23 | 41 | 37 |
+| 0.90 | 28/56 (50%) | 11/16 | 2 | 25 | 39 | 35 |
+| 0.95 | 12/56 (21%) | 11/16 | 2 | 43 | 23 | 19 |
+| 1.00 | 7/56 (12%) | 13/16 | 0 | 49 | 20 | 20 |
 
-Coverage is 100% (43/43 act-golds) at every value — the threshold
+Coverage is 100% (56/56 act-golds) at every value — the threshold
 only moves the engine, never the generator. `utility = score − 2 ·
 false acts`; `calibrate::pick` (max utility → fewest false acts →
 highest value, `docs/sdd/calibration.md`) selects **0.65**.
 
-**Before/after: 0.65 → 0.65 — the shipped default is already the
+**Before/after: 0.65 → 0.65 (re-confirmed 2026-10-11 over 72 items) — the shipped default is already the
 calibrated point, so it does not move.** Per item: lowering to 0.50
 buys `sim` `files-search` (top prior 0.55, a false route at 0.65) but
 re-opens a false act on `macos` `finder-open-disabled` (prior 0.63 —

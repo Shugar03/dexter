@@ -867,6 +867,7 @@ dependencies = [
 name = "dexter-eval"
 version = "0.1.0"
 dependencies = [
+ "dexter-browser",
  "dexter-core",
  "dexter-decision",
  "dexter-driver",
