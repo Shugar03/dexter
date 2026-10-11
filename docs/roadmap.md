@@ -269,6 +269,35 @@ dispatched to child sessions (see Item tags above).
   rendering journal tail + policy state read-only; no control
   surface yet. (Etapa 6 — first slice)
 
+## Fase 7 — platform act + depth
+
+Seeded 2026-10-11 from the slices the last PRs flagged as remaining
+(#57, #59, #63, #67) plus ROADMAP.md Etapas 1, 3 and 6.
+
+- [ ] `[linux]` `dexter-linux` `act()` — AT-SPI2 `Action.DoAction`
+  press ladder, `EditableText`/`Text` → `set_value`/`type_text`,
+  `Component.GrabFocus` → `focus`; `Target::Element` re-walks and
+  identity-checks (mismatch → `StaleReference`), `Semantic` via
+  `dexter_world_model`; XTest input only behind
+  `ctx.allow_coordinates`. Mirrors the Windows act slice (PR #57).
+  (Etapa 5; remaining from PR #63)
+- [ ] `[linux]` X11 screenshot + OCR provider — `scope.screenshot`
+  capture of the window's frame, honest `capabilities().screenshots`,
+  and a Linux `dexter_vision::platform_provider()` (e.g. Tesseract)
+  that stays evidence-only like WinOcr. (Etapa 5; remaining from
+  PRs #59/#63)
+- [ ] Scenario recording/replay — record a live `run_goal` journal
+  into a replayable scenario fixture and replay it through the single
+  `Engine::run_step` path with the sim driver. (Etapa 1 — event log
+  completo + recording/replay)
+- [ ] Laya "did the action take effect?" + goal-completion questions —
+  typed `Question`s through the decision layer, pinned by sim
+  scenarios, like the modal/ambiguity questions (PR #51). (Etapa 3 —
+  usos concretos)
+- [ ] `[windows]` act remainder — context-menu patterns and
+  `background_input`, keeping SendInput behind `allow_coordinates`.
+  (Etapa 4; remaining from PR #57)
+
 ## Cleanup backlog (low severity, pick when convenient)
 
 - Done in PR #16: `secure_text_field` editable, `parse_goal` real
