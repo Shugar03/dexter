@@ -1,0 +1,42 @@
+# notes-write — real AX flow on Notes: press 'Nueva nota' spawns an
+# editable text_area, then TypeText writes into it — the two-step
+# create-then-edit chain the textedit spec covers in one step.
+#
+# Fresh accounts show two first-run sheets — the welcome card
+# ('Continuar') and the iCloud upsell ('Cancelar' declines it, leaving
+# the local "En mi Mac" account). Prep retries both clicks a few times:
+# the buttons are absent once dismissed, and a no-match click fails
+# harmlessly (exit 1 → sleep → retry). Any *other* first-run UI stays
+# up and the run fails honestly — sheets disable 'Nueva nota'
+# (measured), so a blocked flow can't pass.
+#
+# Hermetic: prep and teardown delete any note titled 'hola dexter' —
+# leftovers from a failed rep can't satisfy done_when vacuously (the
+# empty-state text_area holds no text until a note exists and text is
+# typed). Deleted notes land in Recently Deleted and self-purge.
+#
+# Targets are Spanish AX names: prep pins the app to es-ES via
+# AppleLanguages so the scenario is deterministic on any host locale
+# (CI runners are en-US); teardown deletes the override. Prep kills via
+# `pkill`, not an osascript quit — `tell application ... to quit`
+# *launches* the app in the host locale before the pin lands, and
+# `open -a` then reactivates that English instance. The launch itself
+# also passes `-AppleLanguages` (NSArgumentDomain outranks any prefs
+# domain, so a per-app defaults write that misses a container can't
+# leave it English).
+[scenario]
+id = "notes-write"
+driver = "macos"
+goal = "crear una nota y escribir 'hola dexter'"
+optimal_steps = 2
+app = "Notes"
+
+[live]
+app = "com.apple.Notes"
+prep = "pkill -x 'Notes' 2>/dev/null || true; sleep 0.5; defaults write com.apple.Notes AppleLanguages -array es; sleep 0.5; open -a Notes --args -AppleLanguages '(es)'; for i in 1 2 3 4 5; do dexter click --app com.apple.Notes --target '{\"role\":\"button\",\"name\":\"Continuar\"}' --approve 2>/dev/null && break; sleep 1; done; for i in 1 2 3 4 5; do dexter click --app com.apple.Notes --target '{\"role\":\"button\",\"name\":\"Cancelar\"}' --approve 2>/dev/null && break; sleep 1; done; osascript -e 'tell application id \"com.apple.Notes\"' -e 'repeat while (exists note \"hola dexter\")' -e 'delete note \"hola dexter\"' -e 'end repeat' -e 'end tell' 2>/dev/null || true"
+teardown = "osascript -e 'tell application id \"com.apple.Notes\"' -e 'repeat while (exists note \"hola dexter\")' -e 'delete note \"hola dexter\"' -e 'end repeat' -e 'end tell' 2>/dev/null || true; osascript -e 'tell application id \"com.apple.Notes\" to quit' 2>/dev/null || true; defaults delete com.apple.Notes AppleLanguages 2>/dev/null || true"
+settle_ms = 1500
+
+[task]
+done_when = { type = "element_value", target = { role = "text_area" }, predicate = { contains = "hola dexter" } }
+max_steps = 10

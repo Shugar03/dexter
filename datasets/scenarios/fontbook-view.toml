@@ -1,0 +1,36 @@
+# fontbook-view — real state flip on Font Book: the view-mode radio
+# group ('Ver como cuadrícula / muestras / lista') is a single-select
+# control — pressing 'Ver como lista' sets its value to 1, which
+# done_when verifies. Same tab-selection shape as clock-timer on an
+# app whose content is a stock read-only catalogue: nothing about the
+# run mutates anything a user would miss.
+#
+# Font Book persists the view mode across quit, so prep and teardown
+# re-select 'Ver como cuadrícula' — without that a list-mode leftover
+# would complete vacuously on the next rep (the radio already reads 1).
+#
+# Targets are Spanish AX names: prep pins the app to es-ES via
+# AppleLanguages so the scenario is deterministic on any host locale
+# (CI runners are en-US); teardown deletes the override. Prep kills via
+# `pkill`, not an osascript quit — `tell application ... to quit`
+# *launches* the app in the host locale before the pin lands, and
+# `open -a` then reactivates that English instance. The launch itself
+# also passes `-AppleLanguages` (NSArgumentDomain outranks any prefs
+# domain, so a per-app defaults write that misses a container can't
+# leave it English).
+[scenario]
+id = "fontbook-view"
+driver = "macos"
+goal = "ver como lista"
+optimal_steps = 1
+app = "FontBook"
+
+[live]
+app = "com.apple.FontBook"
+prep = "pkill -x 'Font Book' 2>/dev/null || true; sleep 0.5; defaults write com.apple.FontBook AppleLanguages -array es; sleep 0.5; open -a 'Font Book' --args -AppleLanguages '(es)'; sleep 1; dexter click --app com.apple.FontBook --target '{\"role\":\"radio_button\",\"name\":\"Ver como cuadrícula\"}' --approve 2>/dev/null || true"
+teardown = "dexter click --app com.apple.FontBook --target '{\"role\":\"radio_button\",\"name\":\"Ver como cuadrícula\"}' --approve 2>/dev/null || true; osascript -e 'tell application id \"com.apple.FontBook\" to quit' 2>/dev/null || true; defaults delete com.apple.FontBook AppleLanguages 2>/dev/null || true"
+settle_ms = 1500
+
+[task]
+done_when = { type = "element_value", target = { role = "radio_button", name = "Ver como lista" }, predicate = { equals = "1" } }
+max_steps = 6

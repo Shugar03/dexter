@@ -1,0 +1,61 @@
+# safari-local-page — real semantic act inside Safari's rendered web
+# content: the target button lives in the AXWebArea subtree, so this
+# exercises AXPress on DOM-descended elements through the macos driver —
+# the same surface the browser specs cover via WebDriver, here via AX.
+#
+# The page is a scratch fixture the prep writes to /tmp and opens over
+# file:// — no network, no shared state. Clicking 'Marcar como hecho'
+# mutates the DOM text ('pendiente' → 'hecho'); done_when reads the
+# mutated value, so a no-op press fails honestly. A stale 'Estado:
+# hecho' can't complete vacuously because prep rewrites the fixture and
+# teardown quits Safari (session restore off would still reopen the same
+# file with 'pendiente' state).
+#
+# Targets are Spanish AX names: prep pins the app to es-ES via
+# AppleLanguages so the scenario is deterministic on any host locale
+# (CI runners are en-US); teardown deletes the override. Prep kills via
+# `pkill`, not an osascript quit — `tell application ... to quit`
+# *launches* the app in the host locale before the pin lands, and
+# `open -a` then reactivates that English instance. The launch itself
+# also passes `-AppleLanguages` (NSArgumentDomain outranks any prefs
+# domain, so a per-app defaults write that misses a container can't
+# leave it English).
+[scenario]
+id = "safari-local-page"
+driver = "macos"
+goal = "marcar como hecho"
+optimal_steps = 1
+app = "Safari"
+
+[live]
+app = "com.apple.Safari"
+prep = """
+pkill -x 'Safari' 2>/dev/null || true; sleep 0.5
+defaults write com.apple.Safari AppleLanguages -array es; sleep 0.5
+cat > /tmp/dexter-safari-live.html <<'HTML'
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><title>dexter safari live</title></head>
+<body>
+<main>
+  <h1>Prueba en vivo</h1>
+  <p id="estado">Estado: pendiente</p>
+  <button onclick="document.getElementById('estado').textContent='Estado: hecho'">Marcar como hecho</button>
+</main>
+</body>
+</html>
+HTML
+open -a Safari /tmp/dexter-safari-live.html --args -AppleLanguages '(es)'
+# The window paints before the AXWebArea is populated — poll until the
+# page's own button is observable so the first decide sees it.
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  dexter observe --app com.apple.Safari 2>/dev/null | grep -q 'Marcar como hecho' && break
+  sleep 1
+done
+"""
+teardown = "osascript -e 'tell application id \"com.apple.Safari\" to quit' 2>/dev/null || true; rm -f /tmp/dexter-safari-live.html; defaults delete com.apple.Safari AppleLanguages 2>/dev/null || true"
+settle_ms = 1500
+
+[task]
+done_when = { type = "element_value", target = { role = "static_text" }, predicate = { contains = "Estado: hecho" } }
+max_steps = 6

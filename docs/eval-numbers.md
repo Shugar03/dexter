@@ -49,7 +49,8 @@ for deciders that insist on the failed action.
 ## Live suite (macOS gate)
 
 The live specs (`calc-add`, `calc-scientific`, `clock-timer`,
-`settings-wifi`, `textedit-write`) run on the CI macOS runner via
+`fontbook-view`, `notes-write`, `safari-local-page`, `settings-wifi`,
+`textedit-write`) run on the CI macOS runner via
 
 ```sh
 dexter eval scenario datasets/scenarios --check datasets/scenarios/baseline.toml
@@ -61,6 +62,32 @@ Current gate: suite success rate 100% (latest `main` CI run —
 es-ES locale). Browser specs (`web-login`, `web-checkout`) need a
 W3C WebDriver endpoint (`--browser-url`) and report `skipped`
 otherwise — they keep the suite hermetic rather than pretending.
+
+2026-10-11 expansion — three more stock apps, measured on macOS 26.5.2
+(Apple Silicon), rule-based engine, same command as the gate:
+
+| scenario | app | outcome | steps | opt |
+|---|---|---|---|---|
+| fontbook-view | com.apple.FontBook | completed | 1 | 1 |
+| notes-write | com.apple.Notes | completed | 2 | 2 |
+| safari-local-page | com.apple.Safari | completed | 1 | 1 |
+
+`fontbook-view` flips the single-select view-mode radio and verifies
+the AX value reads 1 (prep/teardown re-select grid — the mode persists
+across quit). `notes-write` runs the two-subgoal chain "create a note
+→ type 'hola dexter'"; its prep dismisses Notes' two first-run sheets
+(welcome 'Continuar', iCloud 'Cancelar') with retried no-match-safe
+clicks — on an already-onboarded account the clicks just fail and the
+run is unchanged. `safari-local-page` presses a button inside the
+AXWebArea of a scratch `file://` fixture prep writes to /tmp — a real
+AXPress on DOM-descended web content, verified by the page's own
+mutation ('pendiente' → 'hecho'); prep polls until the button is
+observable so a cold render can't race the first decide. Without the
+poll one local run measured 2 steps — the engine re-observed mid-load
+and still completed; the poll removes that path. All three are
+hermetic: scratch or read-only fixtures, no network, teardown restores
+state (note deleted, view restored, app quit, `AppleLanguages` override
+deleted).
 
 ## Harvest datasets (decision-point replay)
 
