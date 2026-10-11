@@ -248,10 +248,23 @@ dispatched to child sessions (see Item tags above).
   rollup covers them when they run); unhandled first-run UI on
   a fresh account would fail honestly — PR #66, 2026-10-11
   (Etapa 3)
-- [ ] `[macos]` Laya fine-tune — `dexter eval export` rows →
+- [x] `[macos]` Laya fine-tune — `dexter eval export` rows →
   fine-tune `laya-mlx` (MLX needs Apple silicon); eval before/after
   on the matrix and report honestly — only worth keeping if the
-  numbers justify it. (Etapa 3)
+  numbers justify it.
+  `--provider laya-mlx` worker backend (same NDJSON protocol,
+  fail-honest exit 2), `workers/laya/finetune_mlx.py` (MLX-native
+  port of the torch recipe: frozen encoder, cached hidden states,
+  proper-reward + act BCE, permutation augmentation, loadable
+  checkpoint dir out), `rows.py` split helpers shared by both
+  trainers + 10 stdlib seam tests. Measured on the frozen datasets:
+  in-sample ~99% but held-out inconsistent — LOAO `sim/` 4/9→8/9
+  act & fr 5→1, calculator +1 route, checkout +1 act, but random
+  20% holdout 7/9→6/9 and LOAO `vision/` −1 route → checkpoint NOT
+  shipped as default; full before/after in `docs/eval-numbers.md`.
+  Remaining: ~10× per-surface rows is the obvious lever before
+  revisiting; τ post-ft still doesn't isolate the false act —
+  PR #67, 2026-10-11 (Etapa 3)
 - [ ] Desktop app scaffold — Tauri 2 shell (`apps/dexter-desktop`)
   rendering journal tail + policy state read-only; no control
   surface yet. (Etapa 6 — first slice)
