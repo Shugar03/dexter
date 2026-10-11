@@ -18,6 +18,10 @@
 # also passes `-AppleLanguages` (NSArgumentDomain outranks any prefs
 # domain, so a per-app defaults write that misses a container can't
 # leave it English).
+#
+# `dexter` is expected on PATH (the same contract as a real install);
+# DX falls back to the workspace build because the CI gate invokes
+# `cargo run -p dexter-cu` and never puts the binary on PATH.
 [scenario]
 id = "fontbook-view"
 driver = "macos"
@@ -27,8 +31,8 @@ app = "FontBook"
 
 [live]
 app = "com.apple.FontBook"
-prep = "pkill -x 'Font Book' 2>/dev/null || true; sleep 0.5; defaults write com.apple.FontBook AppleLanguages -array es; sleep 0.5; open -a 'Font Book' --args -AppleLanguages '(es)'; sleep 1; dexter click --app com.apple.FontBook --target '{\"role\":\"radio_button\",\"name\":\"Ver como cuadrícula\"}' --approve 2>/dev/null || true"
-teardown = "dexter click --app com.apple.FontBook --target '{\"role\":\"radio_button\",\"name\":\"Ver como cuadrícula\"}' --approve 2>/dev/null || true; osascript -e 'tell application id \"com.apple.FontBook\" to quit' 2>/dev/null || true; defaults delete com.apple.FontBook AppleLanguages 2>/dev/null || true"
+prep = "DX=$(command -v dexter || echo ./target/debug/dexter); pkill -x 'Font Book' 2>/dev/null || true; sleep 0.5; defaults write com.apple.FontBook AppleLanguages -array es; sleep 0.5; open -a 'Font Book' --args -AppleLanguages '(es)'; sleep 1; $DX click --app com.apple.FontBook --target '{\"role\":\"radio_button\",\"name\":\"Ver como cuadrícula\"}' --approve 2>/dev/null || true"
+teardown = "DX=$(command -v dexter || echo ./target/debug/dexter); $DX click --app com.apple.FontBook --target '{\"role\":\"radio_button\",\"name\":\"Ver como cuadrícula\"}' --approve 2>/dev/null || true; osascript -e 'tell application id \"com.apple.FontBook\" to quit' 2>/dev/null || true; defaults delete com.apple.FontBook AppleLanguages 2>/dev/null || true"
 settle_ms = 1500
 
 [task]

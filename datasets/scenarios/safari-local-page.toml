@@ -29,7 +29,11 @@ app = "Safari"
 
 [live]
 app = "com.apple.Safari"
+# `dexter` is expected on PATH (the same contract as a real install);
+# DX falls back to the workspace build because the CI gate invokes
+# `cargo run -p dexter-cu` and never puts the binary on PATH.
 prep = """
+DX=$(command -v dexter || echo ./target/debug/dexter)
 pkill -x 'Safari' 2>/dev/null || true; sleep 0.5
 defaults write com.apple.Safari AppleLanguages -array es; sleep 0.5
 cat > /tmp/dexter-safari-live.html <<'HTML'
@@ -49,7 +53,7 @@ open -a Safari /tmp/dexter-safari-live.html --args -AppleLanguages '(es)'
 # The window paints before the AXWebArea is populated — poll until the
 # page's own button is observable so the first decide sees it.
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  dexter observe --app com.apple.Safari 2>/dev/null | grep -q 'Marcar como hecho' && break
+  $DX observe --app com.apple.Safari 2>/dev/null | grep -q 'Marcar como hecho' && break
   sleep 1
 done
 """

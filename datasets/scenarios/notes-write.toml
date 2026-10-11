@@ -10,6 +10,10 @@
 # up and the run fails honestly — sheets disable 'Nueva nota'
 # (measured), so a blocked flow can't pass.
 #
+# `dexter` is expected on PATH (the same contract as a real install);
+# DX falls back to the workspace build because the CI gate invokes
+# `cargo run -p dexter-cu` and never puts the binary on PATH.
+#
 # Hermetic: prep and teardown delete any note titled 'hola dexter' —
 # leftovers from a failed rep can't satisfy done_when vacuously (the
 # empty-state text_area holds no text until a note exists and text is
@@ -33,7 +37,7 @@ app = "Notes"
 
 [live]
 app = "com.apple.Notes"
-prep = "pkill -x 'Notes' 2>/dev/null || true; sleep 0.5; defaults write com.apple.Notes AppleLanguages -array es; sleep 0.5; open -a Notes --args -AppleLanguages '(es)'; for i in 1 2 3 4 5; do dexter click --app com.apple.Notes --target '{\"role\":\"button\",\"name\":\"Continuar\"}' --approve 2>/dev/null && break; sleep 1; done; for i in 1 2 3 4 5; do dexter click --app com.apple.Notes --target '{\"role\":\"button\",\"name\":\"Cancelar\"}' --approve 2>/dev/null && break; sleep 1; done; osascript -e 'tell application id \"com.apple.Notes\"' -e 'repeat while (exists note \"hola dexter\")' -e 'delete note \"hola dexter\"' -e 'end repeat' -e 'end tell' 2>/dev/null || true"
+prep = "DX=$(command -v dexter || echo ./target/debug/dexter); pkill -x 'Notes' 2>/dev/null || true; sleep 0.5; defaults write com.apple.Notes AppleLanguages -array es; sleep 0.5; open -a Notes --args -AppleLanguages '(es)'; for i in 1 2 3 4 5; do $DX click --app com.apple.Notes --target '{\"role\":\"button\",\"name\":\"Continuar\"}' --approve 2>/dev/null && break; sleep 1; done; for i in 1 2 3 4 5; do $DX click --app com.apple.Notes --target '{\"role\":\"button\",\"name\":\"Cancelar\"}' --approve 2>/dev/null && break; sleep 1; done; osascript -e 'tell application id \"com.apple.Notes\"' -e 'repeat while (exists note \"hola dexter\")' -e 'delete note \"hola dexter\"' -e 'end repeat' -e 'end tell' 2>/dev/null || true"
 teardown = "osascript -e 'tell application id \"com.apple.Notes\"' -e 'repeat while (exists note \"hola dexter\")' -e 'delete note \"hola dexter\"' -e 'end repeat' -e 'end tell' 2>/dev/null || true; osascript -e 'tell application id \"com.apple.Notes\" to quit' 2>/dev/null || true; defaults delete com.apple.Notes AppleLanguages 2>/dev/null || true"
 settle_ms = 1500
 
