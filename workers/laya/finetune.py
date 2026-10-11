@@ -26,7 +26,6 @@ import argparse
 import json
 import os
 import random
-import re
 import shutil
 import sys
 
@@ -35,37 +34,10 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(__file__))
+from rows import PROMPT, criteria_from_options, load_rows, split_rows  # noqa: E402
 
 # Route option text -> variant, matching ROUTE_OPTIONS order in the engine.
 ROUTE_VARIANTS = ["wait", "reobserve", "abstain", "escalate_llm"]
-
-
-def criteria_from_options(options):
-    """Worker-identical option -> criteria mapping (c{i}/r{i} keys)."""
-    crit = {}
-    for i, opt in enumerate(options):
-        if re.match(r"^candidate \d+:", opt):
-            crit[f"c{i}"] = re.sub(r"^candidate \d+:\s*", "", opt)
-        else:
-            crit[f"r{i}"] = opt
-    return crit
-
-
-def load_rows(path):
-    rows = [json.loads(l) for l in open(path) if l.strip()]
-    return [r for r in rows if r["gold_index"] is not None]
-
-
-def split_rows(rows, holdout: float, seed: int):
-    """Hold out whole items (by id), stratified-ish across the file."""
-    rng = random.Random(seed)
-    ids = list(dict.fromkeys(r["id"] for r in rows))
-    rng.shuffle(ids)
-    n_held = max(1, round(len(ids) * holdout))
-    held = set(ids[:n_held])
-    train = [r for r in rows if r["id"] not in held]
-    test = [r for r in rows if r["id"] in held]
-    return train, test
 
 
 def build_examples(rows, tok, cfg, perms: int, seed: int, prompt: str):
@@ -207,13 +179,6 @@ def main():
     cfg = agent.cfg
     device = agent.device
     tok = agent.tok
-
-    PROMPT = ("You are choosing the next action for a computer-use agent. "
-              "Pick the UI element whose action best advances the goal in [GOAL]. "
-              "If no element fits, pick a route: 'wait' for busy/loading states, "
-              "'re-observe' when the view may be stale, 'abstain' when nothing "
-              "applies, or 'escalate' for genuinely hard steps. Priors in the "
-              "option text are heuristic hints, not truth.")
 
     train_ex = build_examples(train_rows, tok, cfg, args.perms, args.seed, PROMPT)
     test_ex = build_examples(test_rows, tok, cfg, 1, args.seed, PROMPT)

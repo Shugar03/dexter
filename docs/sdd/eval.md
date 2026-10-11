@@ -175,6 +175,69 @@ Honest reads:
   (Metal device contention serializes to ~0% CPU); use
   `--device cpu` for parallel LODO runs.
 
+## MLX fine-tune (`workers/laya/finetune_mlx.py`, `--provider laya-mlx`)
+
+Same recipe as `finetune.py` ported to MLX for the `laya-mlx` package
+(Apple silicon port of the Laya decision models, no torch). The worker
+exposes it as `--provider laya-mlx` (same NDJSON protocol, provider
+label `laya-mlx`); checkpoints load via `--model <dir|hub-id>
+--subfolder root` — `root` maps to None because MLX hub repos are flat
+(no `multilingual/` subfolder). Train:
+
+```sh
+dexter eval export datasets/*/items.jsonl -o /tmp/rows.jsonl
+python3 workers/laya/finetune_mlx.py /tmp/rows.jsonl \
+    --out /tmp/ckpt --holdout 0.2 --device cpu
+```
+
+Base = `aac6fef/laya-mlx` (English, ModernBERT-large encoder, ~26.5M
+trainable head params — encoder stays frozen). `--holdout-app <prefix>`
+holds out whole provenance groups for LOAO runs; `--device cpu`
+because the paravirt GPU stalls in the Metal allocator during training.
+
+Measured on the frozen datasets (macOS, Apple silicon, MLX 0.32.3,
+laya-mlx 0.4.0; argmax act accuracy unless noted):
+
+| engine | browser | macos | sim | vision |
+|---|---|---|---|---|
+| laya-mlx base | 22/31 + 1/5r, fr 2 | 7/15 + 0/5r, fa 1 | 4/9 + 1/2r, fr 5 | 1/1 + 2/4r, fa 1 |
+| laya-mlx ft, **in-sample** | 31/31 + 5/5r | 14/15 + 5/5r | 9/9 + 2/2r | 1/1 + 4/4r |
+
+In-sample the head memorizes the set (~99% train accuracy) — expected
+with a frozen encoder on 72 rows; the honest question is held-out.
+
+Held-out splits (each number's split named):
+
+| split | held out | base | ft |
+|---|---|---|---|
+| random 20% (14 items, all datasets) | 9 acts + 5 routes | 7/9 + 1/5r, fa 1 | **6/9** + 1/5r, fa 1 |
+| LOAO `sim/` (whole surface) | sim, 11 items | 4/9 + 1/2r, fr 5 | **8/9** + 0/2r, **fr 1** |
+| LOAO `vision/` (whole surface) | vision, 5 items | 1/1 + 2/4r, fa 1 | 1/1 + **1/4r**, fa 1 |
+| LOAO `com.apple.calculator` | 4 of 20 macos items | 1/3 + 0/1r | 1/3 + **1/1r** |
+| LOAO browser `checkout.html` | 2 of 36 items | 1/2 | **2/2** |
+
+Honest reads:
+
+- **Inconsistent held-out transfer.** Fine-tuning moved sim up hard
+  (+4 acts, −4 false routes) and nudged calculator/checkout, but lost
+  an act on the random holdout and a route on vision. Within-surface
+  LOAO barely transfers (calculator same acts, +1 route); cross-surface
+  LOAO is a wash on vision and a real but partial win on sim.
+- **The random-holdout regression matters**: ft-indomain trains on 58
+  rows yet scores *below* base on unseen items from the same
+  distribution — the head overfits row idiosyncrasies, not surface
+  patterns. That is the same "learns what it saw" shape as the torch
+  LODO above, at smaller scale.
+- **τ post-ft does not isolate the false act** (sweep on the 14-item
+  holdout: utility flat at 0/0.25, a false route appears at 0.5) —
+  per-checkpoint calibration still needed before enabling
+  `--min-confidence`.
+- **Verdict: not shipped as default.** 72 rows overfit a 26.5M head;
+  per-surface data at 10× this volume is the obvious next lever. The
+  tooling is the keepable artifact: `finetune_mlx.py`, the `laya-mlx`
+  worker provider, and `holdout_app`/`split_rows` in `rows.py` make
+  the honest-split protocol one command per holdout.
+
 ## Non-goals
 
 - No end-to-end task success in this layer — that's

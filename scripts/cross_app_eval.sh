@@ -11,13 +11,17 @@
 # informative axis; within-surface app holdouts add little).
 # Requires: python3 -m pip install laya (+ torch), cargo-built dexter.
 # Trainer runs use --device cpu: concurrent MPS workers stall.
+# MLX variant (no torch, Apple silicon): pip install laya-mlx, then
+#   FT="python3 workers/laya/finetune_mlx.py" \
+#   WORKER="python3 workers/laya/worker.py --provider laya-mlx --subfolder root" \
+#   scripts/cross_app_eval.sh
 
 set -eu
 cd "$(dirname "$0")/.."
 
 DEX="cargo run -q -p dexter-cu --"
-FT="python3 workers/laya/finetune.py"
-WORKER="python3 workers/laya/worker.py --provider laya"
+FT="${FT:-python3 workers/laya/finetune.py}"
+WORKER="${WORKER:-python3 workers/laya/worker.py --provider laya}"
 ALL="datasets/browser/items.jsonl datasets/macos/items.jsonl datasets/sim/items.jsonl datasets/vision/items.jsonl"
 
 # Rows carry `"app"` provenance (eval export emits it since v0.1).

@@ -18,11 +18,16 @@ never allowed to proceed silently.
 Question/Answer shapes mirror crates/decision (`type: choice|score|bool`).
 
 Providers (`--provider`, default `dev`):
-  dev   — deterministic keyword heuristic for development and contract
-          tests. Labeled "dev" in every response; NOT a decision model.
-  laya  — the real Laya model. Fails honestly when the SDK/checkpoint
-          is not installed: this worker exits with an error line and
-          dexter reports DecisionError, never a silent fallback.
+  dev      — deterministic keyword heuristic for development and
+             contract tests. Labeled "dev" in every response; NOT a
+             decision model.
+  laya     — the real Laya model (PyTorch SDK). Fails honestly when
+             the SDK/checkpoint is not installed: this worker exits
+             with an error line and dexter reports DecisionError,
+             never a silent fallback.
+  laya-mlx — same checkpoints through the MLX port (`pip install
+             laya-mlx`, Apple silicon). Labeled "laya-mlx" so audit
+             lines name the runtime that answered.
 """
 import argparse
 import json
@@ -66,8 +71,21 @@ def answer_dev(question: dict, state: str) -> dict:
     return {"type": "choice", "id": question["id"], "index": best}
 
 
+class DevProvider:
+    name = "dev"
+
+    def predict(self, state: str, questions: list) -> list:
+        return [answer_dev(q, state) for q in questions]
+
+
 class LayaProvider:
     """Real Laya provider — convaiinnovations/laya checkpoints.
+
+    `backend` selects the SDK: "laya" = PyTorch package, "laya-mlx" =
+    MLX port (Apple silicon). Both expose the same
+    `load(model, subfolder, device)` + `agent.predict` surface, and
+    both fail at construction when the SDK or checkpoint is missing —
+    the worker reports that error honestly and exits.
 
     The model evaluates every question in ONE forward pass, so we batch
     the whole request's questions into a single predict() call.
@@ -84,8 +102,13 @@ class LayaProvider:
 
     SCORE_BINS = ["0.0", "0.25", "0.5", "0.75", "1.0"]
 
-    def __init__(self, model: str, subfolder: str | None, device: str | None):
-        import laya
+    def __init__(self, model: str, subfolder: str | None, device: str | None,
+                 backend: str = "laya"):
+        self.name = backend
+        if backend == "laya-mlx":
+            import laya_mlx as laya
+        else:
+            import laya
 
         self.agent = laya.load(model, subfolder=subfolder, device=device)
         # Warm the tokenizer + first forward pass — the first real
@@ -163,36 +186,38 @@ def handle(req: dict, provider) -> dict:
     params = req.get("params", {})
     state = params.get("state", "")
     questions = params.get("questions", [])
-    if provider == "dev":
-        answers = [answer_dev(q, state) for q in questions]
-        name = "dev"
-    else:
-        answers = provider.predict(state, questions)
-        name = "laya"
-    return {"id": req.get("id"), "ok": True, "provider": name, "answers": answers}
+    answers = provider.predict(state, questions)
+    return {"id": req.get("id"), "ok": True, "provider": provider.name, "answers": answers}
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--provider", default="dev", choices=["dev", "laya"])
+    ap.add_argument("--provider", default="dev", choices=["dev", "laya", "laya-mlx"])
     ap.add_argument("--model", default="convaiinnovations/laya",
-                    help="HF model id (default: laya family repo)")
+                    help="HF model id or local checkpoint dir (default: laya family repo)")
     ap.add_argument("--subfolder", default="multilingual",
                     help="checkpoint subfolder: multilingual (localized UIs) | "
                          "typed-decisions | root for the english checkpoint")
-    ap.add_argument("--device", default=None, help="cpu | cuda | mps (default: auto)")
-    args = ap.parse_args()
+    ap.add_argument("--device", default=None,
+                    help="laya: cpu | cuda | mps (default: auto); "
+                         "laya-mlx: gpu | metal | cpu (default: Metal GPU)")
+    return ap
 
-    provider = "dev"
-    if args.provider == "laya":
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+
+    provider = DevProvider()
+    if args.provider != "dev":
         # Load once, fail fast at startup rather than mid-session.
         try:
             subfolder = None if args.subfolder in ("", "root") else args.subfolder
-            provider = LayaProvider(args.model, subfolder, args.device)
+            provider = LayaProvider(args.model, subfolder, args.device,
+                                    backend=args.provider)
         except Exception as e:
             print(json.dumps({
                 "id": None, "ok": False,
-                "error": f"laya provider failed to load: {e}",
+                "error": f"{args.provider} provider failed to load: {e}",
             }), flush=True)
             return 2
 
@@ -219,4 +244,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main())  # pragma: no cover

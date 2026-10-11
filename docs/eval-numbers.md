@@ -223,6 +223,34 @@ last measured τ numbers (root checkpoint, τ=0.25 catches the one
 false act) live in `docs/sdd/eval.md`; τ stays 0 until a per-checkpoint
 sweep justifies a value.
 
+## Laya-MLX fine-tune (before/after, honest splits)
+
+The MLX port (`--provider laya-mlx`, base `aac6fef/laya-mlx` English)
+was fine-tuned on `eval export` rows (`workers/laya/finetune_mlx.py`,
+encoder frozen, ~26.5M head params). Measured 2026-10-11 on macOS
+(Apple silicon, MLX 0.32.3, laya-mlx 0.4.0) — full protocol and
+per-split tables in `docs/sdd/eval.md`.
+
+| split | base | fine-tuned |
+|---|---|---|
+| browser 36 (in-sample) | 22/31 act + 1/5r, fr 2 | 31/31 + 5/5r |
+| macos 20 (in-sample) | 7/15 + 0/5r, fa 1 | 14/15 + 5/5r |
+| sim 11 (in-sample) | 4/9 + 1/2r, fr 5 | 9/9 + 2/2r |
+| vision 5 (in-sample) | 1/1 + 2/4r, fa 1 | 1/1 + 4/4r |
+| **random 20% holdout** (14 items) | 7/9 + 1/5r, fa 1 | **6/9** + 1/5r, fa 1 |
+| **LOAO sim/** (held out) | 4/9 + 1/2r, fr 5 | **8/9** + 0/2r, fr 1 |
+| **LOAO vision/** (held out) | 1/1 + 2/4r, fa 1 | 1/1 + 1/4r, fa 1 |
+| **LOAO calculator** (4 macos items) | 1/3 + 0/1r | 1/3 + 1/1r |
+| **LOAO checkout** (2 browser items) | 1/2 | 2/2 |
+
+**Verdict: the checkpoint is not shipped as default.** In-sample it
+memorizes (~99% train argmax); held-out it is inconsistent — a real
+win on the sim surface and small wins on calculator/checkout, a
+regression on the random holdout and on vision routes. 72 rows are
+not enough signal for a 26.5M head to generalize. What shipped is the
+tooling (worker provider, trainer, split helpers) plus these measured
+numbers; revisit with ~10× per-surface rows.
+
 ## Reading the numbers
 
 - **Outcome ≠ success**: `abstained` is a pass where the world

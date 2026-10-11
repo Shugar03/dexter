@@ -256,6 +256,13 @@ wait/reobserve/retry/abstain/escalate). Ships with:
     right for localized UIs), `typed-decisions`, or `--subfolder ''` for
     the English root. Model loads once at worker startup; ~160ms/predict
     on Apple-Silicon CPU.
+  - `laya-mlx` — the Apple-silicon MLX port: `pip install laya-mlx`,
+    `--engine-path "python3 workers/laya/worker.py --provider laya-mlx
+    --model aac6fef/laya-mlx --subfolder root"` (`root` = no subfolder;
+    MLX hub repos are flat). `workers/laya/finetune_mlx.py` fine-tunes
+    it on `eval export` rows — measured honestly in
+    `docs/eval-numbers.md` (not shipped as default: held-out transfer
+    is inconsistent on 72 rows).
 - `openai` — any OpenAI-compatible endpoint (Gemini by default,
   `docs/sdd/decision.md`).
 - `cascade` — `rule-based` → `laya` → `openai`, escalating only on
