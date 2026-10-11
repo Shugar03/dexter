@@ -217,10 +217,18 @@ dispatched to child sessions (see Item tags above).
   (`EscalateHuman`), never a silent spin. Sim `Effect::Fail`,
   `dead-end-save` scenario, SDD `docs/sdd/recovery.md` — PR #64,
   2026-10-05 (Etapa 1 — recovery ladder pasos 1–3)
-- [ ] Browser dataset expansion — `eval harvest --driver browser`
+- [x] Browser dataset expansion — `eval harvest --driver browser`
   over more pages into `datasets/browser/` (install chromedriver if
   missing); append honest numbers to `docs/eval-numbers.md`.
-  (Etapa 3)
+  Harvest moved into `dexter_eval::harvest` (`harvest`/`harvest_file`,
+  fail-closed gold resolution) so it runs on Linux via
+  `cargo run -p dexter-eval --example harvest`; 15 new fixtures
+  (radio, switch, tabs, cookie polarity, pagination, menuitem, twin
+  `aria-label`s, `aria-disabled` abstain, progressbar wait, …) →
+  36 items, rule-based 31/31 act, 5/5 routes, 0 false acts;
+  calibration re-run over 72 pooled items keeps 0.65. Remaining:
+  fixtures are teacher-authored (not open-web pages) — PR #65,
+  2026-10-11 (Etapa 3)
 - [ ] `[macos]` live-scenario expansion — more apps into
   `datasets/scenarios/` live specs pinned es-ES per the
   `AppleLanguages` contract (e.g. Safari, Notes flows). (Etapa 3)
