@@ -311,10 +311,18 @@ Seeded 2026-10-11 from the slices the last PRs flagged as remaining
   and checks `done_when`. Truncated/dropped/malformed journals refuse
   to record. 15 sim fixtures in `datasets/recordings/`. Remaining:
   CLI `record`/`replay` verbs, replaying live (non-sim) journals.
-- [ ] Laya "did the action take effect?" + goal-completion questions —
+- [x] Laya "did the action take effect?" + goal-completion questions —
   typed `Question`s through the decision layer, pinned by sim
   scenarios, like the modal/ambiguity questions (PR #51). (Etapa 3 —
-  usos concretos)
+  usos concretos) —
+  [PR #73](https://github.com/Shugar03/dexter/pull/73), 2026-10-12:
+  `DecisionContext.last_act` carries the previous successful act and
+  its `WorldDelta` (`Changed`/`Unchanged`, `Unknown` on incomplete
+  perception); `action_effect` / `goal_complete` typed Bools (true =
+  stop acting → `EscalateHuman`), never completing a goal; RuleBased
+  refuses to blindly repeat a no-effect act. Sim scenarios
+  `no-effect-submit`, `goal-complete-mismatch` + recordings.
+  Remaining: per-question accuracy on real data.
 - [ ] `[windows]` act remainder — context-menu patterns and
   `background_input`, keeping SendInput behind `allow_coordinates`.
   (Etapa 4; remaining from PR #57)
