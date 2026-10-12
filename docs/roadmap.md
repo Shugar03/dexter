@@ -279,13 +279,16 @@ dispatched to child sessions (see Item tags above).
 Seeded 2026-10-11 from the slices the last PRs flagged as remaining
 (#57, #59, #63, #67) plus ROADMAP.md Etapas 1, 3 and 6.
 
-- [ ] `[linux]` `dexter-linux` `act()` — AT-SPI2 `Action.DoAction`
+- [x] `[linux]` `dexter-linux` `act()` — AT-SPI2 `Action.DoAction`
   press ladder, `EditableText`/`Text` → `set_value`/`type_text`,
   `Component.GrabFocus` → `focus`; `Target::Element` re-walks and
   identity-checks (mismatch → `StaleReference`), `Semantic` via
   `dexter_world_model`; XTest input only behind
   `ctx.allow_coordinates`. Mirrors the Windows act slice (PR #57).
-  (Etapa 5; remaining from PR #63)
+  Identity rules shared via `dexter_driver::identity`; 14 live GTK
+  fixture tests. Remaining: XTest backend (physical input still
+  `Unsupported` even with coords), window focus, targeted scroll,
+  `Navigate` — PR #70, 2026-10-11 (Etapa 5; remaining from PR #63)
 - [ ] `[linux]` X11 screenshot + OCR provider — `scope.screenshot`
   capture of the window's frame, honest `capabilities().screenshots`,
   and a Linux `dexter_vision::platform_provider()` (e.g. Tesseract)
