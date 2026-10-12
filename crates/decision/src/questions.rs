@@ -3,13 +3,17 @@
 //! Structure is detected here, deterministically; Q&A engines ask the
 //! model only for the judgment.
 
-use crate::{CandidateAction, DecisionContext, Question};
+use crate::{CandidateAction, DecisionContext, Question, WorldDelta};
 use dexter_core::{Action, Target};
 
 /// `Question::Bool` id: does the open modal block the goal?
 pub const BLOCKING_MODAL_ID: &str = "blocking_modal";
 /// `Question::Choice` id: which of the identical targets is meant?
 pub const DISAMBIGUATE_ID: &str = "disambiguate";
+/// `Question::Bool` id: did an unchanged successful action take effect?
+pub const ACTION_EFFECT_ID: &str = "action_effect";
+/// `Question::Bool` id: does a changed world already satisfy the goal?
+pub const GOAL_COMPLETE_ID: &str = "goal_complete";
 
 /// The action with its semantic target's `index` cleared — twins
 /// compare equal under it.
@@ -91,5 +95,42 @@ pub fn typed_questions(ctx: &DecisionContext) -> Vec<Question> {
             options,
         });
     }
+    if let Some(last_act) = &ctx.last_act {
+        match last_act.delta {
+            WorldDelta::Unchanged | WorldDelta::Unknown => {
+                let action = format!("{:?}", last_act.action);
+                let incomplete = if last_act.delta == WorldDelta::Unknown {
+                    " Perception was incomplete, so no change could be confirmed."
+                } else {
+                    ""
+                };
+                out.push(Question::Bool {
+                    id: ACTION_EFFECT_ID.into(),
+                    prompt: format!(
+                        "The previous action {action} reported success but no change was observed.{incomplete} \
+                         Did it take effect (e.g. invisibly), so repeating it would do it twice?"
+                    ),
+                });
+            }
+            WorldDelta::Changed => out.push(Question::Bool {
+                id: GOAL_COMPLETE_ID.into(),
+                prompt: "After the previous action the world changed. Is the goal in [GOAL] already complete?"
+                    .into(),
+            }),
+        }
+    }
     out
+}
+
+/// Whether the candidate at `candidate_index` would blindly repeat the
+/// last successful action after an unchanged or uncertain observation.
+pub fn repeats_last_act(ctx: &DecisionContext, candidate_index: usize) -> bool {
+    let Some(last_act) = &ctx.last_act else {
+        return false;
+    };
+    matches!(last_act.delta, WorldDelta::Unchanged | WorldDelta::Unknown)
+        && ctx
+            .candidates
+            .get(candidate_index)
+            .is_some_and(|candidate| candidate.action == last_act.action)
 }

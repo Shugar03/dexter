@@ -1079,3 +1079,163 @@ fn insisting_act_on_dead_candidate_is_substituted() {
     assert_eq!(failed_presses(&engine.events()), 2);
     assert_eq!(engine.driver().pressed(), vec![ElementId(2)]);
 }
+
+#[test]
+fn run_goal_journals_last_successful_action_delta() {
+    use dexter_decision::{
+        CandidateAction, CandidateGenerator, Decision, DecisionContext, DecisionEngine,
+        DecisionError, GenHistory, LastAct, Route, WorldDelta,
+    };
+    use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
+    use dexter_engine::{TaskConfig, TaskOutcome};
+
+    struct TestDriver {
+        inner: SimDriver,
+        incomplete: bool,
+    }
+
+    impl ComputerDriver for TestDriver {
+        fn capabilities(&self) -> DriverCapabilities {
+            self.inner.capabilities()
+        }
+
+        fn windows(&self) -> Result<Vec<Window>, DriverError> {
+            self.inner.windows()
+        }
+
+        fn observe(&self, scope: &ObservationScope) -> Result<Observation, DriverError> {
+            let mut observation = self.inner.observe(scope)?;
+            observation.elements_truncated = self.incomplete;
+            Ok(observation)
+        }
+
+        fn act(&self, action: &Action, context: &ActContext) -> Result<ActionResult, DriverError> {
+            self.inner.act(action, context)
+        }
+    }
+
+    struct FixedGenerator;
+    impl CandidateGenerator for FixedGenerator {
+        fn generate(
+            &self,
+            _observation: &Observation,
+            _goal: &str,
+            _history: &GenHistory,
+        ) -> Vec<CandidateAction> {
+            vec![CandidateAction {
+                action: Action::Click {
+                    target: Target::Semantic(SemanticTarget {
+                        role: Some("button".into()),
+                        name: Some("Enviar".into()),
+                        ..Default::default()
+                    }),
+                    button: MouseButton::Left,
+                },
+                rationale: "Enviar button".into(),
+                prior: 0.9,
+                behind_modal: None,
+            }]
+        }
+    }
+
+    struct ActOnce;
+    impl DecisionEngine for ActOnce {
+        fn name(&self) -> &str {
+            "act-once"
+        }
+
+        fn decide(&self, context: &DecisionContext) -> Result<Decision, DecisionError> {
+            Ok(if context.step == 1 {
+                Decision::Act {
+                    action: context.candidates[0].action.clone(),
+                    candidate_index: Some(0),
+                    rationale: "initial press".into(),
+                }
+            } else {
+                Decision::Route {
+                    route: Route::Abstain,
+                    rationale: "stop after inspecting delta".into(),
+                }
+            })
+        }
+    }
+
+    fn contexts(effect: Option<Effect>, incomplete: bool) -> Vec<DecisionContext> {
+        let sim = SimDriver::new(vec![el(1, "button", "Enviar")]);
+        if let Some(effect) = effect {
+            sim.on_press(
+                SemanticTarget {
+                    name: Some("Enviar".into()),
+                    ..Default::default()
+                },
+                effect,
+            );
+        }
+        let mut engine = Engine::new(
+            TestDriver {
+                inner: sim,
+                incomplete,
+            },
+            allow_all(),
+            Duration::from_secs(60),
+        );
+        let outcome = engine.run_task(
+            "enviar el mensaje",
+            &FixedGenerator,
+            &ActOnce,
+            &TaskConfig {
+                run: cfg(),
+                max_steps: 2,
+                max_duration: None,
+                cancel: None,
+                done_when: ExpectedState::ElementExists {
+                    target: SemanticTarget {
+                        name: Some("Nunca".into()),
+                        ..Default::default()
+                    },
+                },
+            },
+        );
+        assert!(matches!(outcome, TaskOutcome::Abstained { .. }));
+        engine
+            .events()
+            .iter()
+            .filter(|event| event.kind == EventKind::CandidatesGenerated)
+            .map(|event| {
+                serde_json::from_value(event.data["context"].clone()).expect("decision context")
+            })
+            .collect()
+    }
+
+    let no_change = contexts(None, false);
+    assert_eq!(no_change.len(), 2);
+    assert_eq!(no_change[0].last_act, None);
+    assert_eq!(
+        no_change[1]
+            .last_act
+            .as_ref()
+            .map(|last: &LastAct| last.delta),
+        Some(WorldDelta::Unchanged)
+    );
+
+    let changed = contexts(
+        Some(Effect::Spawn(el(0, "static_text", "Gracias, recibido"))),
+        false,
+    );
+    assert_eq!(
+        changed[1]
+            .last_act
+            .as_ref()
+            .map(|last: &LastAct| last.delta),
+        Some(WorldDelta::Changed)
+    );
+
+    let incomplete = contexts(None, true);
+    assert_eq!(
+        incomplete[1]
+            .last_act
+            .as_ref()
+            .map(|last: &LastAct| last.delta),
+        Some(WorldDelta::Unknown)
+    );
+}

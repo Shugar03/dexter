@@ -25,6 +25,8 @@ use std::time::SystemTime;
 pub enum Effect {
     /// Spawn a new element into the world (id assigned automatically).
     Spawn(Element),
+    /// Spawn several elements into the world (ids assigned automatically).
+    SpawnMany(Vec<Element>),
     /// Set the pressed element's value.
     SetValue(String),
     /// Remove the pressed element (e.g. a button that dismisses a dialog).
@@ -253,6 +255,14 @@ impl SimDriver {
                 el.id = ElementId(s.next_element_id);
                 s.next_element_id += 1;
                 s.elements.push(el);
+            }
+            Effect::SpawnMany(elements) => {
+                for element in elements {
+                    let mut element = element.clone();
+                    element.id = ElementId(s.next_element_id);
+                    s.next_element_id += 1;
+                    s.elements.push(element);
+                }
             }
             Effect::SetValue(v) => {
                 if let Some(e) = s.elements.iter_mut().find(|e| e.id == pressed) {

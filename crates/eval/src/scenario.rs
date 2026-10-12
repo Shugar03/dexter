@@ -187,6 +187,9 @@ pub enum SpecEffect {
     Spawn {
         element: SpecElement,
     },
+    SpawnMany {
+        elements: Vec<SpecElement>,
+    },
     SetValue {
         value: String,
     },
@@ -216,6 +219,9 @@ impl SpecEffect {
     fn to_effect(&self) -> Effect {
         match self {
             SpecEffect::Spawn { element } => Effect::Spawn(element.to_element()),
+            SpecEffect::SpawnMany { elements } => {
+                Effect::SpawnMany(elements.iter().map(SpecElement::to_element).collect())
+            }
             SpecEffect::SetValue { value } => Effect::SetValue(value.clone()),
             SpecEffect::RemoveSelf => Effect::RemoveSelf,
             SpecEffect::SetValueOf { target, value } => {

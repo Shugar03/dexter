@@ -70,6 +70,36 @@ semantics vary by toolkit); scenario outcomes rest on the decision
 layer's verdicts. Modal dismissal as a generated candidate is a later
 slice.
 
+## Action effect and goal completion
+
+`DecisionContext.last_act` carries the previous successful action and
+its structural world delta. `WorldDelta::Changed` means the complete
+observation's world signature changed; `Unchanged` means it did not.
+If either observation is incomplete (`elements_truncated`, `ax_limited`,
+or `collection_errors > 0`), the delta is `Unknown`. Unknown is treated
+like no observable change by the repeat guard.
+
+The questions use the same conservative convention: `true` means stop
+acting. `action_effect` is asked after `Unchanged` or `Unknown` and asks
+whether the successful act took effect invisibly, so repeating it would
+duplicate the effect. If the chosen candidate repeats that act and the
+answer is true, Laya escalates to a human; false permits a retry. The
+deterministic `RuleBased` engine abstains rather than blindly repeating
+the same action in either delta state. A changed world asks
+`goal_complete`; true escalates when the structural `done_when` still
+does not verify, while false permits the decision to continue.
+
+The model can never complete a goal: only the engine's existing
+structural or first-verified-act checks do that. These questions can
+only veto further acting.
+
+Tests: `crates/decision/tests/questions.rs` pins delta questions and the
+repeat guard; engine tests pin `None`, `Unchanged`, `Changed`, and
+incomplete-perception `Unknown`; `crates/laya/tests/contract.rs` pins
+typed answers and protocol failures. The `no-effect-submit` and
+`goal-complete-mismatch` sim scenarios in
+`crates/eval/tests/scenario.rs` pin rule-based and cascade behavior.
+
 ## Tests
 
 - `crates/decision/tests/questions.rs` — group detection, typed

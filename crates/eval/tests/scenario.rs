@@ -452,6 +452,40 @@ fn laya_dev_cascade() -> dexter_decision::Cascade {
     dexter_decision::Cascade::new(vec![Box::new(RuleBased::default()), Box::new(laya)])
 }
 
+fn laya_dev_engine() -> dexter_laya::LayaEngine {
+    let worker =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/laya/worker.py");
+    dexter_laya::LayaEngine::spawn(
+        &format!("python3 \"{}\"", worker.display()),
+        std::time::Duration::from_secs(10),
+    )
+    .expect("dev worker spawns")
+}
+
+fn executed_actions(run: &ScenarioRun) -> Vec<serde_json::Value> {
+    run.events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            if event.kind != dexter_core::EventKind::ActionExecuted {
+                return None;
+            }
+            let proposal = run.events[..index]
+                .iter()
+                .rev()
+                .find(|event| event.kind == dexter_core::EventKind::ActionProposed)
+                .expect("executed action has a proposal");
+            Some(proposal.data["action"].clone())
+        })
+        .collect()
+}
+
+fn assert_clicked_label(action: &serde_json::Value, name: &str) {
+    assert_eq!(action["type"], "click");
+    assert_eq!(action["target"]["role"], "button");
+    assert_eq!(action["target"]["name"], name);
+}
+
 fn dataset_spec(name: &str) -> ScenarioSpec {
     let path = format!(
         "{}/../../datasets/scenarios/{name}.toml",
@@ -479,4 +513,93 @@ fn cascade_escalates_on_blocking_modal_via_laya() {
     let spec = dataset_spec("modal-blocking");
     let run = run_scenario(&spec, &HeuristicGenerator::default(), &laya_dev_cascade());
     assert_eq!(run.outcome, "escalated", "steps={}", run.steps);
+}
+
+#[test]
+fn no_effect_submit_rule_based_presses_once_then_abstains() {
+    let spec = dataset_spec("no-effect-submit");
+    let rule = RuleBased {
+        act_threshold: 0.25,
+    };
+    let run = run_scenario(&spec, &HeuristicGenerator::default(), &rule);
+    let actions = executed_actions(&run);
+    assert_eq!(actions.len(), 1);
+    assert_clicked_label(&actions[0], "Enviar");
+    assert_eq!(run.outcome, "abstained");
+    let final_decision = run
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.kind == dexter_core::EventKind::DecisionMade)
+        .expect("RuleBased repeat decision");
+    assert!(
+        final_decision.data["decision"]["rationale"]
+            .as_str()
+            .unwrap()
+            .contains("not repeating blindly"),
+        "{:?}",
+        final_decision.data
+    );
+}
+
+#[test]
+fn no_effect_submit_cascade_escalates_after_one_act() {
+    let spec = dataset_spec("no-effect-submit");
+    let run = run_scenario(&spec, &HeuristicGenerator::default(), &laya_dev_cascade());
+    assert_eq!(run.outcome, "escalated");
+    let actions = executed_actions(&run);
+    assert_eq!(actions.len(), 1);
+    assert_clicked_label(&actions[0], "Enviar");
+}
+
+#[test]
+fn goal_complete_mismatch_rule_based_avoids_repeating_extra_submit() {
+    let spec = dataset_spec("goal-complete-mismatch");
+    let rule = RuleBased {
+        act_threshold: 0.25,
+    };
+    let run = run_scenario(&spec, &HeuristicGenerator::default(), &rule);
+    assert_eq!(run.outcome, "abstained");
+    let actions = executed_actions(&run);
+    assert_eq!(actions.len(), 2);
+    assert_clicked_label(&actions[0], "Enviar");
+    assert_clicked_label(&actions[1], "Enviar otro mensaje");
+    let final_decision = run
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.kind == dexter_core::EventKind::DecisionMade)
+        .expect("RuleBased repeat decision");
+    assert!(
+        final_decision.data["decision"]["rationale"]
+            .as_str()
+            .unwrap()
+            .contains("not repeating blindly"),
+        "{:?}",
+        final_decision.data
+    );
+}
+
+#[test]
+fn goal_complete_mismatch_laya_escalates_after_first_submit() {
+    let spec = dataset_spec("goal-complete-mismatch");
+    let run = run_scenario(&spec, &HeuristicGenerator::default(), &laya_dev_engine());
+    assert_eq!(run.outcome, "escalated");
+    let actions = executed_actions(&run);
+    assert_eq!(actions.len(), 1);
+    assert_clicked_label(&actions[0], "Enviar");
+    let final_decision = run
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.kind == dexter_core::EventKind::DecisionMade)
+        .expect("Laya final decision");
+    assert!(
+        final_decision.data["decision"]["rationale"]
+            .as_str()
+            .unwrap()
+            .contains("goal looks complete"),
+        "{:?}",
+        final_decision.data
+    );
 }

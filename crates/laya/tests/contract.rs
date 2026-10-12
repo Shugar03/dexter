@@ -3,9 +3,13 @@
 //! — the real protocol path, deterministic answers, honestly labeled.
 
 use dexter_core::{Action, MouseButton, SemanticTarget, Target};
-use dexter_decision::{CandidateAction, Decision, DecisionContext, DecisionEngine, Route};
+use dexter_decision::{
+    CandidateAction, Decision, DecisionContext, DecisionEngine, DecisionError, LastAct, Route,
+    WorldDelta,
+};
 use dexter_laya::LayaEngine;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 fn worker_cmd() -> String {
@@ -31,6 +35,50 @@ fn candidate(name: &str) -> CandidateAction {
     }
 }
 
+fn repeated_action_context(delta: WorldDelta) -> DecisionContext {
+    let candidate = candidate("Enviar");
+    DecisionContext {
+        goal: "enviar el mensaje".into(),
+        state_digest: "button Enviar".into(),
+        candidates: vec![candidate.clone()],
+        last_error: None,
+        step: 2,
+        last_act: Some(LastAct {
+            action: candidate.action,
+            delta,
+        }),
+    }
+}
+
+fn typed_fixture(overrides: &str, omit_bool: Option<&str>) -> LayaEngine {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    let old_bools = std::env::var_os("TYPED_BOOLS");
+    let old_omit = std::env::var_os("TYPED_OMIT_BOOL");
+    std::env::set_var("TYPED_BOOLS", overrides);
+    if let Some(id) = omit_bool {
+        std::env::set_var("TYPED_OMIT_BOOL", id);
+    } else {
+        std::env::remove_var("TYPED_OMIT_BOOL");
+    }
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/typed_worker.py");
+    let spawned = LayaEngine::spawn(
+        &format!("python3 \"{}\" 0 0 0", path.display()),
+        Duration::from_secs(10),
+    );
+    if let Some(value) = old_bools {
+        std::env::set_var("TYPED_BOOLS", value);
+    } else {
+        std::env::remove_var("TYPED_BOOLS");
+    }
+    if let Some(value) = old_omit {
+        std::env::set_var("TYPED_OMIT_BOOL", value);
+    } else {
+        std::env::remove_var("TYPED_OMIT_BOOL");
+    }
+    spawned.expect("typed fixture worker spawns")
+}
+
 #[test]
 fn laya_picks_candidate_matching_goal() {
     let engine = LayaEngine::spawn(&worker_cmd(), Duration::from_secs(10)).expect("worker spawns");
@@ -40,6 +88,7 @@ fn laya_picks_candidate_matching_goal() {
         candidates: vec![candidate("Delete"), candidate("Save")],
         last_error: None,
         step: 1,
+        last_act: None,
     };
     let d = engine.decide(&ctx).expect("decision");
     match d {
@@ -64,6 +113,7 @@ fn laya_route_when_no_candidates() {
         candidates: vec![],
         last_error: None,
         step: 1,
+        last_act: None,
     };
     let d = engine.decide(&ctx).expect("decision");
     match d {
@@ -93,6 +143,7 @@ fn low_confidence_pick_abstains() {
         candidates: vec![candidate("Save")],
         last_error: None,
         step: 1,
+        last_act: None,
     };
     match engine.decide(&ctx).expect("decision") {
         Decision::Route { route, rationale } => {
@@ -118,6 +169,7 @@ fn confident_pick_acts() {
         candidates: vec![candidate("Save")],
         last_error: None,
         step: 1,
+        last_act: None,
     };
     match engine.decide(&ctx).expect("decision") {
         Decision::Act {
@@ -140,6 +192,7 @@ fn missing_confidence_is_not_gated() {
         candidates: vec![candidate("Delete"), candidate("Save")],
         last_error: None,
         step: 1,
+        last_act: None,
     };
     match engine.decide(&ctx).expect("decision") {
         Decision::Act {
@@ -193,6 +246,7 @@ for line in sys.stdin:
         candidates: vec![candidate("X")],
         last_error: None,
         step: 1,
+        last_act: None,
     };
     // cat echoes the request back — not a valid response object.
     match engine.decide(&ctx) {
@@ -217,6 +271,7 @@ fn crashed_worker_is_respawned_and_call_retried() {
         candidates: vec![candidate("Save")],
         last_error: None,
         step: 1,
+        last_act: None,
     };
     for i in 0..3 {
         match engine.decide(&ctx) {
@@ -255,6 +310,7 @@ fn stale_response_is_dropped_not_consumed_positionally() {
         candidates: vec![candidate("Save")],
         last_error: None,
         step: 1,
+        last_act: None,
     };
     match engine.decide(&ctx) {
         Ok(Decision::Act {
@@ -262,6 +318,67 @@ fn stale_response_is_dropped_not_consumed_positionally() {
         }) => assert_eq!(candidate_index, Some(0)),
         other => panic!("stale line desynced the stream, got {other:?}"),
     }
+}
+
+#[test]
+fn action_effect_true_escalates_and_false_allows_the_same_action() {
+    let true_engine = typed_fixture(r#"{"action_effect":true}"#, None);
+    assert!(matches!(
+        true_engine
+            .decide(&repeated_action_context(WorldDelta::Unchanged))
+            .unwrap(),
+        Decision::Route {
+            route: Route::EscalateHuman,
+            rationale,
+        } if rationale.contains("previous act took effect")
+    ));
+
+    let false_engine = typed_fixture(r#"{"action_effect":false}"#, None);
+    assert!(matches!(
+        false_engine
+            .decide(&repeated_action_context(WorldDelta::Unknown))
+            .unwrap(),
+        Decision::Act {
+            action: Action::Click { target: Target::Semantic(SemanticTarget { name: Some(name), .. }), .. },
+            candidate_index: Some(0),
+            ..
+        } if name == "Enviar"
+    ));
+}
+
+#[test]
+fn goal_complete_true_escalates_and_false_allows_the_action() {
+    let true_engine = typed_fixture(r#"{"goal_complete":true}"#, None);
+    assert!(matches!(
+        true_engine
+            .decide(&repeated_action_context(WorldDelta::Changed))
+            .unwrap(),
+        Decision::Route {
+            route: Route::EscalateHuman,
+            rationale,
+        } if rationale.contains("goal looks complete")
+    ));
+
+    let false_engine = typed_fixture(r#"{"goal_complete":false}"#, None);
+    assert!(matches!(
+        false_engine
+            .decide(&repeated_action_context(WorldDelta::Changed))
+            .unwrap(),
+        Decision::Act {
+            candidate_index: Some(0),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn missing_action_effect_answer_is_a_decision_engine_error() {
+    let engine = typed_fixture("{}", Some("action_effect"));
+    assert!(matches!(
+        engine.decide(&repeated_action_context(WorldDelta::Unchanged)),
+        Err(DecisionError::Engine { message, .. })
+            if message.contains("action_effect")
+    ));
 }
 
 #[test]
@@ -284,6 +401,7 @@ fn worker_cmd_with_quoted_path_spawns() {
         candidates: vec![candidate("X")],
         last_error: None,
         step: 1,
+        last_act: None,
     };
     assert!(matches!(engine.decide(&ctx), Ok(Decision::Act { .. })));
 }
@@ -314,6 +432,7 @@ fn health_reports_ready_for_live_worker_and_down_for_dead() {
         candidates: vec![candidate("x")],
         last_error: None,
         step: 1,
+        last_act: None,
     });
     // consume the one answer; worker exits after
     std::thread::sleep(Duration::from_millis(150));
@@ -415,6 +534,7 @@ fn twins_ctx() -> DecisionContext {
         candidates: vec![twin(0, "Factura marzo"), twin(1, "Factura abril")],
         last_error: None,
         step: 1,
+        last_act: None,
     }
 }
 
@@ -427,6 +547,7 @@ fn modal_ctx() -> DecisionContext {
         candidates: vec![c],
         last_error: None,
         step: 1,
+        last_act: None,
     }
 }
 
