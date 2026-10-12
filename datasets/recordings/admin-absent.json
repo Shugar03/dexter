@@ -1,0 +1,19 @@
+{
+  "scenario": "admin-absent",
+  "goal": "abrir el panel de administración",
+  "outcome": "abstained",
+  "done_when": {
+    "type": "element_exists",
+    "target": {
+      "role": "window",
+      "name": null,
+      "name_contains": "Admin",
+      "value_contains": null,
+      "identifier": null,
+      "enabled": null,
+      "index": null
+    }
+  },
+  "steps": [],
+  "trailing_observes": 1
+}

@@ -1281,6 +1281,7 @@ dependencies = [
  "dexter-laya",
  "dexter-policy",
  "dexter-sim",
+ "dexter-verify",
  "dexter-world-model",
  "serde",
  "serde_json",
