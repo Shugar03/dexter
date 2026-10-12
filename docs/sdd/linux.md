@@ -127,10 +127,8 @@ tested on every host. Mirrors the Windows UIA observe slice.
   not loaded in that process, every frame refused) — `not found`
   against the observation is not definitive, and verification degrades
   to UNCERTAIN as everywhere else.
-- `scope.screenshot` → `Unsupported` (no capture backend; dropping the
-  request silently would be a simulated success). `scope.vision` has no
-  provider: the request adds one `collection_errors` so the degraded
-  perception is visible.
+- Screenshot and OCR behavior is specified in the X11 capture and
+  Tesseract slice below.
 - Linux action behavior is specified in the AT-SPI2 act slice below.
 
 ### Verification
@@ -172,3 +170,25 @@ are rejected unless `ActContext.allow_coordinates` is explicitly set;
 even then they return `Unsupported` because XTest is deferred. Targeted
 scrolling is unsupported because `Component.ScrollTo` only reveals an
 element and cannot apply a delta. `background_input` remains false.
+
+## X11 capture + Tesseract OCR (Fase 7 slice)
+
+Linux screenshots use X11 `GetImage` on the root window and crop the
+selected AT-SPI window frame. A Wayland session is refused, including
+XWayland: its root image cannot capture native Wayland windows. The root
+is treated as one monitor with scale 1.0; AT-SPI screen extents under
+X11 are assumed to be root pixels. HiDPI `GDK_SCALE > 1` is untested.
+Regions not fully covered by the root image fail closed.
+
+`capabilities().screenshots` is true only when the session is not
+Wayland and an X connection reports a non-empty root. Only 24/32-bit
+TrueColor pixel layouts supported by the capture implementation are
+accepted; other formats return `Unsupported`.
+
+The Linux `dexter-vision` provider invokes the local `tesseract` CLI
+(`--psm 11`, TSV output, default English). It is available only when
+`tesseract --version` exits successfully; `DEXTER_TESSERACT_LANG`
+selects an alternate language. A missing provider degrades a requested
+vision pass through `collection_errors`. OCR tokens become inert,
+evidence-only elements with `source: Ocr`; they are not actionable
+accessibility targets.
