@@ -1,0 +1,56 @@
+{
+  "scenario": "dead-end-save",
+  "goal": "guardar el documento",
+  "outcome": "completed",
+  "done_when": {
+    "type": "element_exists",
+    "target": {
+      "role": "static_text",
+      "name": null,
+      "name_contains": "guardado",
+      "value_contains": null,
+      "identifier": null,
+      "enabled": null,
+      "index": null
+    }
+  },
+  "steps": [
+    {
+      "action": {
+        "type": "click",
+        "target": {
+          "role": "button",
+          "name": "Guardar documento",
+          "name_contains": null,
+          "value_contains": null,
+          "identifier": null,
+          "enabled": null,
+          "index": null
+        },
+        "button": "left"
+      },
+      "app": null,
+      "observes_before": 1,
+      "result": "failed"
+    },
+    {
+      "action": {
+        "type": "click",
+        "target": {
+          "role": "button",
+          "name": "Guardar",
+          "name_contains": null,
+          "value_contains": null,
+          "identifier": null,
+          "enabled": null,
+          "index": null
+        },
+        "button": "left"
+      },
+      "app": null,
+      "observes_before": 1,
+      "result": "done"
+    }
+  ],
+  "trailing_observes": 1
+}

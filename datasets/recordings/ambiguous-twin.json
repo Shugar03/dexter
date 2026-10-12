@@ -1,0 +1,19 @@
+{
+  "scenario": "ambiguous-twin",
+  "goal": "eliminar la factura de abril",
+  "outcome": "abstained",
+  "done_when": {
+    "type": "element_exists",
+    "target": {
+      "role": "static_text",
+      "name": null,
+      "name_contains": "abril eliminada",
+      "value_contains": null,
+      "identifier": null,
+      "enabled": null,
+      "index": null
+    }
+  },
+  "steps": [],
+  "trailing_observes": 1
+}

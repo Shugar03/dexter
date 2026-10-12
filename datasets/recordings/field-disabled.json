@@ -1,0 +1,19 @@
+{
+  "scenario": "field-disabled",
+  "goal": "renombrar el archivo",
+  "outcome": "abstained",
+  "done_when": {
+    "type": "element_exists",
+    "target": {
+      "role": "static_text",
+      "name": null,
+      "name_contains": "renombrado",
+      "value_contains": null,
+      "identifier": null,
+      "enabled": null,
+      "index": null
+    }
+  },
+  "steps": [],
+  "trailing_observes": 1
+}

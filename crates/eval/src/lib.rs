@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod calibrate;
 pub mod harvest;
+pub mod recording;
 pub mod scenario;
 
 /// The labeled correct answer for one decision point.

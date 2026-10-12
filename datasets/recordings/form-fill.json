@@ -1,0 +1,56 @@
+{
+  "scenario": "form-fill",
+  "goal": "escribir 'informe final' en el asunto, luego enviar",
+  "outcome": "completed",
+  "done_when": {
+    "type": "element_exists",
+    "target": {
+      "role": "static_text",
+      "name": null,
+      "name_contains": "enviado",
+      "value_contains": null,
+      "identifier": null,
+      "enabled": null,
+      "index": null
+    }
+  },
+  "steps": [
+    {
+      "action": {
+        "type": "set_value",
+        "target": {
+          "role": "text_field",
+          "name": "Asunto",
+          "name_contains": null,
+          "value_contains": null,
+          "identifier": null,
+          "enabled": null,
+          "index": null
+        },
+        "value": "informe final"
+      },
+      "app": null,
+      "observes_before": 1,
+      "result": "done"
+    },
+    {
+      "action": {
+        "type": "click",
+        "target": {
+          "role": "button",
+          "name": "Enviar",
+          "name_contains": null,
+          "value_contains": null,
+          "identifier": null,
+          "enabled": null,
+          "index": null
+        },
+        "button": "left"
+      },
+      "app": null,
+      "observes_before": 2,
+      "result": "done"
+    }
+  ],
+  "trailing_observes": 1
+}

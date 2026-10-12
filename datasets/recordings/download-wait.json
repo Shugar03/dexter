@@ -1,0 +1,22 @@
+{
+  "scenario": "download-wait",
+  "goal": "esperar a que termine la descarga",
+  "outcome": "completed",
+  "done_when": {
+    "type": "element_value",
+    "target": {
+      "role": "progress_indicator",
+      "name": null,
+      "name_contains": null,
+      "value_contains": null,
+      "identifier": null,
+      "enabled": null,
+      "index": null
+    },
+    "predicate": {
+      "contains": "100"
+    }
+  },
+  "steps": [],
+  "trailing_observes": 2
+}

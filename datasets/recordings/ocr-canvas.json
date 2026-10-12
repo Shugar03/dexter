@@ -1,0 +1,38 @@
+{
+  "scenario": "ocr-canvas",
+  "goal": "jugar una partida",
+  "outcome": "completed",
+  "done_when": {
+    "type": "element_exists",
+    "target": {
+      "role": "static_text",
+      "name": null,
+      "name_contains": "iniciada",
+      "value_contains": null,
+      "identifier": null,
+      "enabled": null,
+      "index": null
+    }
+  },
+  "steps": [
+    {
+      "action": {
+        "type": "click",
+        "target": {
+          "role": "button",
+          "name": "Jugar",
+          "name_contains": null,
+          "value_contains": null,
+          "identifier": null,
+          "enabled": null,
+          "index": null
+        },
+        "button": "left"
+      },
+      "app": null,
+      "observes_before": 1,
+      "result": "done"
+    }
+  ],
+  "trailing_observes": 1
+}

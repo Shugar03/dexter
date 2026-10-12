@@ -14,6 +14,7 @@ dexter-engine.workspace = true
 dexter-laya.workspace = true
 dexter-policy.workspace = true
 dexter-sim.workspace = true
+dexter-verify.workspace = true
 dexter-world-model.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

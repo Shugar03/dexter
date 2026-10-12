@@ -377,3 +377,6 @@ same bounded-borrow: scoped observe → no `window` elements →
 teardown scripts therefore self-heal — a `dexter click` inside a prep
 wakes the app itself instead of failing `target not found` against a
 windowless menubar tree.
+
+For action-trace fixtures and sim replay, see
+[scenario recording](recording.md).

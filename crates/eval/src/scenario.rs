@@ -278,6 +278,8 @@ pub struct ScenarioRun {
     /// The run's journal — the raw material for `--export` rows and
     /// `--journal-out` dumps.
     pub events: Vec<Event>,
+    /// Number of journal events dropped after the in-memory cap was hit.
+    pub journal_dropped: u64,
 }
 
 /// Run one scenario once through the real closed loop, on the
@@ -327,32 +329,19 @@ pub fn run_scenario_with<D: ComputerDriver>(
             done_when: (i == last).then(|| spec.task.done_when.clone()),
         })
         .collect();
+    let mut run_config = sim_run_config();
+    run_config.app = spec.live.as_ref().map(|l| AppSelector::parse(&l.app));
+    run_config.post_act_settle = spec
+        .live
+        .as_ref()
+        .map(|l| Duration::from_millis(l.settle_ms))
+        .unwrap_or(Duration::ZERO);
     let outcome = engine.run_plan(
         &subgoals,
         generator,
         decider,
         &TaskConfig {
-            run: RunConfig {
-                // Live-app scenarios scope the observation to the
-                // declared app; sim/browser see everything.
-                app: spec.live.as_ref().map(|l| AppSelector::parse(&l.app)),
-                max_attempts: 1,
-                verify_delay: Duration::from_millis(5),
-                // Live apps propagate AX state asynchronously — reuse the
-                // [live] settle after each act so done_when doesn't judge
-                // a stale world.
-                post_act_settle: spec
-                    .live
-                    .as_ref()
-                    .map(|l| Duration::from_millis(l.settle_ms))
-                    .unwrap_or(Duration::ZERO),
-                allow_coordinates: false,
-                // The suite author is the operator approving the run —
-                // same contract as `dexter run --approve-all`. Approval
-                // events still journal, so `approvals` stays honest.
-                approve_all: true,
-                observe_max_elements: 4_000,
-            },
+            run: run_config,
             max_steps: spec.task.max_steps,
             max_duration: spec.task.max_secs.map(Duration::from_secs),
             cancel: None,
@@ -386,11 +375,24 @@ pub fn run_scenario_with<D: ComputerDriver>(
         approvals: 0,
         physical_acts: 0,
         events: Vec::new(),
+        journal_dropped: engine.journal_handle().lock().unwrap().dropped,
     };
     let events = engine.events();
     measure(&events, &mut run);
     run.events = events;
     run
+}
+
+pub(crate) fn sim_run_config() -> RunConfig {
+    RunConfig {
+        app: None,
+        max_attempts: 1,
+        verify_delay: Duration::from_millis(5),
+        post_act_settle: Duration::ZERO,
+        allow_coordinates: false,
+        approve_all: true,
+        observe_max_elements: 4_000,
+    }
 }
 
 /// Derive metrics from the event stream. The loop is single-threaded so
