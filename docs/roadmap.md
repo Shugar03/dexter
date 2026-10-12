@@ -323,9 +323,19 @@ Seeded 2026-10-11 from the slices the last PRs flagged as remaining
   refuses to blindly repeat a no-effect act. Sim scenarios
   `no-effect-submit`, `goal-complete-mismatch` + recordings.
   Remaining: per-question accuracy on real data.
-- [ ] `[windows]` act remainder — context-menu patterns and
+- [x] `[windows]` act remainder — context-menu patterns and
   `background_input`, keeping SendInput behind `allow_coordinates`.
-  (Etapa 4; remaining from PR #57)
+  (Etapa 4; remaining from PR #57) —
+  [PR #75](https://github.com/Shugar03/dexter/pull/75), 2026-10-12:
+  right-click climbs a semantic ladder — posted `WM_CONTEXTMENU`
+  (`lParam=-1`, Shift+F10's message; menu built by the target's own
+  loop, no cursor/focus/input effects) then `ShowContextMenu` for
+  HWND-less fragments — succeeding only when a menu window actually
+  materializes in the pid; menu items resolve through ordinary
+  `Target::Semantic` picks. `background_input` stays `false`
+  (whole-driver honesty; per-path proof in live tests).
+  Remaining: none for this slice — SendInput pointer clicks stay
+  behind `allow_coordinates` as designed.
 
 ## Fase 8 — operator surface + decision measurement
 
