@@ -327,6 +327,39 @@ Seeded 2026-10-11 from the slices the last PRs flagged as remaining
   `background_input`, keeping SendInput behind `allow_coordinates`.
   (Etapa 4; remaining from PR #57)
 
+## Fase 8 — operator surface + decision measurement
+
+Seeded 2026-10-12 from the slices the last PRs flagged as remaining
+(#69, #70, #72, #73, laya-questions SDD) plus ROADMAP.md Etapas 1, 3,
+5 and 6.
+
+- [ ] Per-question-type Laya accuracy — extend `dexter-eval` so typed
+  questions (`blocking_modal`, `disambiguate`, `action_effect`,
+  `goal_complete`) get gold labels and per-type coverage/accuracy in
+  `docs/eval-numbers.md`, reported honestly next to `pick`. (Etapa 3
+  — criterio de salida; remaining from PR #73)
+- [ ] Modal dismissal as a generated candidate — when `blocking_modal`
+  is answered true and the dialog offers a dismiss control matching a
+  polarity-safe label ("Más tarde", "Cerrar"), generate it as a
+  candidate instead of always escalating; policy still evaluated per
+  act; pinned by `modal-blocking` variants. (Etapa 3; remaining from
+  laya-questions SDD)
+- [ ] Desktop approvals view — `apps/dexter-desktop` shows pending
+  `Approve`-routed steps from the journal and lets the human approve
+  or deny through the same approval channel the CLI uses; no new
+  bypass, deny is the default on close. (Etapa 6; remaining from
+  PR #69)
+- [ ] `[linux]` XTest physical input backend — click/type at
+  coordinates only behind `ctx.allow_coordinates` + `defaults.physical`,
+  plus window focus and targeted scroll via AT-SPI. (Etapa 5;
+  remaining from PR #70)
+- [ ] `[macos]` CLI `dexter record` / `dexter replay` verbs over
+  `dexter_eval::recording`, replay still through `Engine::run_step`
+  with policy re-evaluated. (Etapa 1; remaining from PR #72)
+- [ ] Desktop session list + replay view — list journals, open one,
+  step through its recording read-only. (Etapa 6; remaining from
+  PR #69)
+
 ## Cleanup backlog (low severity, pick when convenient)
 
 - Done in PR #16: `secure_text_field` editable, `parse_goal` real
