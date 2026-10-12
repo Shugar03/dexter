@@ -573,7 +573,7 @@ impl<D: ComputerDriver> Engine<D> {
         cfg: &TaskConfig,
         task_started: Instant,
     ) -> TaskOutcome {
-        use dexter_decision::{Decision, DecisionContext, GenHistory, Route};
+        use dexter_decision::{Decision, DecisionContext, GenHistory, LastAct, Route, WorldDelta};
         let started = task_started;
         let mut last_error: Option<String> = None;
         let mut hist = GenHistory::default();
@@ -582,6 +582,7 @@ impl<D: ComputerDriver> Engine<D> {
         // last mutating act was decided on. If the next observation
         // differs, the act moved the world — the subgoal is done.
         let mut pending_sig: Option<u64> = None;
+        let mut last_successful_act: Option<(Action, u64, bool)> = None;
         let scope = ObservationScope {
             app: cfg.run.app.clone(),
             max_elements: cfg.run.observe_max_elements,
@@ -667,6 +668,19 @@ impl<D: ComputerDriver> Engine<D> {
                 }
             }
 
+            let last_act =
+                last_successful_act
+                    .as_ref()
+                    .map(|(action, signature, was_incomplete)| LastAct {
+                        action: action.clone(),
+                        delta: if *was_incomplete || observation_incomplete(&obs) {
+                            WorldDelta::Unknown
+                        } else if world_signature(&obs) != *signature {
+                            WorldDelta::Changed
+                        } else {
+                            WorldDelta::Unchanged
+                        },
+                    });
             hist.last_error = last_error.clone();
             let candidates = generator.generate(&obs, goal, &hist);
             let ctx = DecisionContext {
@@ -677,6 +691,7 @@ impl<D: ComputerDriver> Engine<D> {
                 candidates,
                 last_error: last_error.clone(),
                 step,
+                last_act,
             };
             // The full decision context is journaled — this is what makes
             // a trace replayable offline (eval harness re-feeds it to any
@@ -843,6 +858,11 @@ impl<D: ComputerDriver> Engine<D> {
                 ladder.record(&action, succeeded);
                 if succeeded {
                     last_error = None;
+                    last_successful_act = Some((
+                        action.clone(),
+                        world_signature(&obs),
+                        observation_incomplete(&obs),
+                    ));
                     // Auto-completion bookkeeping: a successful mutating
                     // act claims the subgoal — the next observation
                     // decides whether the world actually moved.
@@ -851,6 +871,7 @@ impl<D: ComputerDriver> Engine<D> {
                     }
                 } else {
                     last_error = Some(format!("{status:?}"));
+                    last_successful_act = None;
                 }
                 // Let a real app's state propagate before the next
                 // observe judges done_when — live UI is async.
@@ -1052,6 +1073,10 @@ fn is_mutating(action: &Action) -> bool {
             | Action::Key { .. }
             | Action::Navigate { .. }
     )
+}
+
+fn observation_incomplete(obs: &Observation) -> bool {
+    obs.elements_truncated || obs.ax_limited || obs.collection_errors > 0
 }
 
 /// Order-independent fingerprint of what the world contains — element

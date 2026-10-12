@@ -17,11 +17,12 @@
 
 use dexter_core::Action;
 use dexter_decision::questions::{
-    ambiguous_group, typed_questions, BLOCKING_MODAL_ID, DISAMBIGUATE_ID,
+    ambiguous_group, repeats_last_act, typed_questions, ACTION_EFFECT_ID, BLOCKING_MODAL_ID,
+    DISAMBIGUATE_ID, GOAL_COMPLETE_ID,
 };
 use dexter_decision::{
     Answer, CandidateAction, Decision, DecisionContext, DecisionEngine, DecisionError,
-    EngineHealth, Question, Route,
+    EngineHealth, Question, Route, WorldDelta,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
@@ -489,6 +490,30 @@ impl DecisionEngine for LayaEngine {
             .filter(|a| !a.is_empty())
             .ok_or_else(|| self.err("worker returned ok but no answers".into()))?;
         let (idx, confidence) = self.choice(&answers, "pick")?;
+        let action_effect = match ctx.last_act.as_ref().map(|last| last.delta) {
+            Some(WorldDelta::Unchanged | WorldDelta::Unknown) => {
+                Some(self.boolean(&answers, ACTION_EFFECT_ID)?)
+            }
+            _ => None,
+        };
+        let goal_complete = if ctx
+            .last_act
+            .as_ref()
+            .is_some_and(|last| last.delta == WorldDelta::Changed)
+        {
+            Some(self.boolean(&answers, GOAL_COMPLETE_ID)?)
+        } else {
+            None
+        };
+
+        if goal_complete == Some(true) {
+            return Ok(Decision::Route {
+                route: Route::EscalateHuman,
+                rationale:
+                    "laya: goal looks complete but done_when does not verify — not acting further"
+                        .into(),
+            });
+        }
 
         // Calibrated abstention: when the model says its pick is unlikely
         // to be right, prefer the honest route over a shot in the dark.
@@ -518,6 +543,14 @@ impl DecisionEngine for LayaEngine {
                     return Ok(r);
                 }
                 how = "disambiguated to";
+            }
+            if repeats_last_act(ctx, chosen) && action_effect == Some(true) {
+                return Ok(Decision::Route {
+                    route: Route::EscalateHuman,
+                    rationale:
+                        "laya: previous act took effect without an observable change — repeating it would duplicate it"
+                            .into(),
+                });
             }
             let c = &ctx.candidates[chosen];
             if let Some(modal) = &c.behind_modal {

@@ -3,11 +3,12 @@
 
 use dexter_core::{Action, Element, ElementId, MouseButton, Observation, SemanticTarget, Target};
 use dexter_decision::questions::{
-    ambiguous_group, typed_questions, BLOCKING_MODAL_ID, DISAMBIGUATE_ID,
+    ambiguous_group, repeats_last_act, typed_questions, ACTION_EFFECT_ID, BLOCKING_MODAL_ID,
+    DISAMBIGUATE_ID, GOAL_COMPLETE_ID,
 };
 use dexter_decision::{
     CandidateAction, CandidateGenerator, Decision, DecisionContext, DecisionEngine, GenHistory,
-    HeuristicGenerator, Question, Route, RuleBased,
+    HeuristicGenerator, LastAct, Question, Route, RuleBased, WorldDelta,
 };
 
 fn click(name: &str, index: Option<usize>) -> Action {
@@ -38,6 +39,7 @@ fn ctx(candidates: Vec<CandidateAction>) -> DecisionContext {
         candidates,
         last_error: None,
         step: 1,
+        last_act: None,
     }
 }
 
@@ -220,4 +222,138 @@ fn generator_gives_twins_their_row_context() {
         "{}",
         cands[1].rationale
     );
+}
+
+#[test]
+fn no_last_act_adds_no_effect_or_completion_questions() {
+    let qs = typed_questions(&ctx(vec![cand("Enviar", None, 0.9)]));
+    assert!(
+        qs.iter().all(|q| !matches!(
+            q,
+            Question::Bool { id, .. }
+                if id == ACTION_EFFECT_ID || id == GOAL_COMPLETE_ID
+        )),
+        "{qs:?}"
+    );
+}
+
+#[test]
+fn unchanged_last_act_asks_if_repeating_would_duplicate_it() {
+    let mut context = ctx(vec![cand("Enviar", None, 0.9)]);
+    context.last_act = Some(LastAct {
+        action: context.candidates[0].action.clone(),
+        delta: WorldDelta::Unchanged,
+    });
+    let qs = typed_questions(&context);
+    assert_eq!(qs.len(), 1);
+    match &qs[0] {
+        Question::Bool { id, prompt } => {
+            assert_eq!(id, ACTION_EFFECT_ID);
+            assert!(prompt.contains("Enviar"), "{prompt}");
+            assert!(prompt.contains("reported success"), "{prompt}");
+            assert!(prompt.contains("no change"), "{prompt}");
+        }
+        other => panic!("expected action-effect bool, got {other:?}"),
+    }
+}
+
+#[test]
+fn unknown_delta_asks_action_effect_and_discloses_incomplete_perception() {
+    let mut context = ctx(vec![cand("Enviar", None, 0.9)]);
+    context.last_act = Some(LastAct {
+        action: context.candidates[0].action.clone(),
+        delta: WorldDelta::Unknown,
+    });
+    let qs = typed_questions(&context);
+    assert_eq!(qs.len(), 1);
+    match &qs[0] {
+        Question::Bool { id, prompt } => {
+            assert_eq!(id, ACTION_EFFECT_ID);
+            assert!(prompt.contains("incomplete"), "{prompt}");
+        }
+        other => panic!("expected action-effect bool, got {other:?}"),
+    }
+}
+
+#[test]
+fn changed_delta_asks_only_whether_the_goal_is_complete() {
+    let mut context = ctx(vec![cand("Enviar", None, 0.9)]);
+    context.last_act = Some(LastAct {
+        action: context.candidates[0].action.clone(),
+        delta: WorldDelta::Changed,
+    });
+    let qs = typed_questions(&context);
+    assert_eq!(qs.len(), 1);
+    assert!(matches!(
+        &qs[0],
+        Question::Bool { id, prompt }
+            if id == GOAL_COMPLETE_ID && prompt.contains("[GOAL]") && prompt.contains("world changed")
+    ));
+}
+
+#[test]
+fn repeats_last_act_requires_same_candidate_and_uncertain_or_unchanged_delta() {
+    let action = click("Enviar", None);
+    let mut context = ctx(vec![cand("Enviar", None, 0.9), cand("Guardar", None, 0.8)]);
+    context.last_act = Some(LastAct {
+        action,
+        delta: WorldDelta::Unchanged,
+    });
+    assert!(repeats_last_act(&context, 0));
+    assert!(!repeats_last_act(&context, 1));
+    assert!(!repeats_last_act(&context, 2));
+
+    context.last_act.as_mut().unwrap().delta = WorldDelta::Unknown;
+    assert!(repeats_last_act(&context, 0));
+    context.last_act.as_mut().unwrap().delta = WorldDelta::Changed;
+    assert!(!repeats_last_act(&context, 0));
+    context.last_act = None;
+    assert!(!repeats_last_act(&context, 0));
+}
+
+#[test]
+fn rule_based_abstains_on_repeats_when_delta_is_unchanged_or_unknown() {
+    for delta in [WorldDelta::Unchanged, WorldDelta::Unknown] {
+        let mut context = ctx(vec![cand("Enviar", None, 0.9)]);
+        context.last_act = Some(LastAct {
+            action: context.candidates[0].action.clone(),
+            delta,
+        });
+        match RuleBased::default().decide(&context).unwrap() {
+            Decision::Route {
+                route: Route::Abstain,
+                rationale,
+            } => assert!(rationale.contains("not repeating blindly"), "{rationale}"),
+            other => panic!("{delta:?} repeat must abstain, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn rule_based_acts_on_same_candidate_after_change_and_on_a_different_candidate() {
+    let mut changed = ctx(vec![cand("Enviar", None, 0.9)]);
+    changed.last_act = Some(LastAct {
+        action: changed.candidates[0].action.clone(),
+        delta: WorldDelta::Changed,
+    });
+    assert!(matches!(
+        RuleBased::default().decide(&changed).unwrap(),
+        Decision::Act {
+            candidate_index: Some(0),
+            ..
+        }
+    ));
+
+    let mut different = ctx(vec![cand("Guardar", None, 0.9)]);
+    different.last_act = Some(LastAct {
+        action: click("Enviar", None),
+        delta: WorldDelta::Unchanged,
+    });
+    assert!(matches!(
+        RuleBased::default().decide(&different).unwrap(),
+        Decision::Act {
+            candidate_index: Some(0),
+            ..
+        }
+    ));
 }

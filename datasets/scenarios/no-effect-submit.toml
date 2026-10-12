@@ -1,0 +1,33 @@
+# no-effect-submit — a successful submit press changes nothing observable.
+# After one press, the rule-based engine must stop rather than repeat it.
+[scenario]
+id = "no-effect-submit"
+goal = "enviar el mensaje"
+optimal_steps = 1
+app = "Correo"
+
+[task]
+done_when = { type = "element_exists", target = { role = "static_text", name_contains = "enviado" } }
+expected = "abstained"
+max_steps = 6
+
+[[world.element]]
+id = 1
+role = "window"
+name = "Nuevo mensaje"
+
+[[world.element]]
+id = 2
+parent = 1
+depth = 1
+role = "text_field"
+name = "Contenido"
+value = "Hola, ¿cómo estás?"
+
+[[world.element]]
+id = 3
+parent = 1
+depth = 1
+role = "button"
+name = "Enviar"
+actions = ["press"]

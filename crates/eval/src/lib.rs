@@ -304,6 +304,7 @@ pub fn replay_item(
         candidates,
         last_error: None,
         step,
+        last_act: None,
     };
 
     let covered = gold_covered(&item.gold, &ctx, obs);

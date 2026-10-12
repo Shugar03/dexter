@@ -41,6 +41,7 @@ fn ctx() -> DecisionContext {
         ],
         last_error: None,
         step: 1,
+        last_act: None,
     }
 }
 

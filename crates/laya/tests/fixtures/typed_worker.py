@@ -1,15 +1,21 @@
-"""Protocol stub for typed questions: answers `pick` and `disambiguate`
-choices and the `blocking_modal` bool with values taken from argv.
+"""Protocol stub for typed questions: answers choices and bools.
 
 Usage: typed_worker.py <pick_index> <blocking:0|1> <disambiguate_index> [confidence]
+
+TYPED_BOOLS may override bool answers by question id; otherwise bools
+use the existing blocking argv value. TYPED_OMIT_BOOL can omit named
+bool answers to test fail-closed protocol handling.
 """
 import json
+import os
 import sys
 
 PICK = int(sys.argv[1])
 BLOCKING = sys.argv[2] == "1"
 DISAMBIG = int(sys.argv[3])
 CONF = float(sys.argv[4]) if len(sys.argv) > 4 else 0.9
+BOOL_OVERRIDES = json.loads(os.environ.get("TYPED_BOOLS", "{}"))
+OMIT_BOOLS = set(filter(None, os.environ.get("TYPED_OMIT_BOOL", "").split(",")))
 
 for line in sys.stdin:
     req = json.loads(line)
@@ -23,7 +29,14 @@ for line in sys.stdin:
     answers = []
     for q in req.get("params", {}).get("questions", []):
         if q["type"] == "bool":
-            answers.append({"type": "bool", "id": q["id"], "value": BLOCKING})
+            if q["id"] not in OMIT_BOOLS:
+                answers.append(
+                    {
+                        "type": "bool",
+                        "id": q["id"],
+                        "value": BOOL_OVERRIDES.get(q["id"], BLOCKING),
+                    }
+                )
         else:
             idx = DISAMBIG if q["id"] == "disambiguate" else PICK
             answers.append(

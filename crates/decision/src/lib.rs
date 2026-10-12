@@ -68,6 +68,20 @@ pub struct CandidateAction {
     pub behind_modal: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldDelta {
+    Changed,
+    Unchanged,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LastAct {
+    pub action: Action,
+    pub delta: WorldDelta,
+}
+
 /// Everything a decision engine needs for one step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecisionContext {
@@ -81,6 +95,8 @@ pub struct DecisionContext {
     pub last_error: Option<String>,
     /// 1-based step counter within the task.
     pub step: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_act: Option<LastAct>,
 }
 
 /// The engine's verdict for one step.
@@ -1328,6 +1344,16 @@ impl DecisionEngine for RuleBased {
                     route: Route::Abstain,
                     rationale: format!(
                         "top candidate is behind modal \"{m}\" — not pressing through it"
+                    ),
+                });
+            }
+            if questions::repeats_last_act(ctx, 0) {
+                let previous = ctx.last_act.as_ref().expect("repeat has a previous act");
+                return Ok(Decision::Route {
+                    route: Route::Abstain,
+                    rationale: format!(
+                        "previous act {:?} reported success but changed nothing observable — not repeating blindly",
+                        previous.action
                     ),
                 });
             }

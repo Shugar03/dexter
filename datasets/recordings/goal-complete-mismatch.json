@@ -1,0 +1,56 @@
+{
+  "scenario": "goal-complete-mismatch",
+  "goal": "enviar el mensaje",
+  "outcome": "abstained",
+  "done_when": {
+    "type": "element_exists",
+    "target": {
+      "role": "static_text",
+      "name": null,
+      "name_contains": "enviado",
+      "value_contains": null,
+      "identifier": null,
+      "enabled": null,
+      "index": null
+    }
+  },
+  "steps": [
+    {
+      "action": {
+        "type": "click",
+        "target": {
+          "role": "button",
+          "name": "Enviar",
+          "name_contains": null,
+          "value_contains": null,
+          "identifier": null,
+          "enabled": null,
+          "index": null
+        },
+        "button": "left"
+      },
+      "app": null,
+      "observes_before": 1,
+      "result": "done"
+    },
+    {
+      "action": {
+        "type": "click",
+        "target": {
+          "role": "button",
+          "name": "Enviar otro mensaje",
+          "name_contains": null,
+          "value_contains": null,
+          "identifier": null,
+          "enabled": null,
+          "index": null
+        },
+        "button": "left"
+      },
+      "app": null,
+      "observes_before": 1,
+      "result": "done"
+    }
+  ],
+  "trailing_observes": 1
+}

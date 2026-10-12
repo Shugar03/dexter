@@ -1364,6 +1364,7 @@ fn eval_export(datasets: &[String], out: &str) -> Result<()> {
                 candidates,
                 last_error: None,
                 step: 1,
+                last_act: None,
             };
             let (state, q) = dexter_laya::build_question(&ctx);
             let options = match &q {
