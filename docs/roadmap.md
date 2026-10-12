@@ -300,10 +300,17 @@ Seeded 2026-10-11 from the slices the last PRs flagged as remaining
   succeeds; OCR elements stay inert (`StaleReference` on act). Live
   X11 fixture tests ran here. Remaining: XWayland/Wayland capture
   (portal), HiDPI `GDK_SCALE>1` mapping.
-- [ ] Scenario recording/replay — record a live `run_goal` journal
+- [x] Scenario recording/replay — record a live `run_goal` journal
   into a replayable scenario fixture and replay it through the single
   `Engine::run_step` path with the sim driver. (Etapa 1 — event log
-  completo + recording/replay)
+  completo + recording/replay) —
+  [PR #72](https://github.com/Shugar03/dexter/pull/72), 2026-10-11:
+  `dexter_eval::recording` turns a journal (in-memory or strict JSONL)
+  into an executed-action trace with loop-observe counts; replay
+  re-runs each action through `Engine::run_step` (policy re-evaluated)
+  and checks `done_when`. Truncated/dropped/malformed journals refuse
+  to record. 15 sim fixtures in `datasets/recordings/`. Remaining:
+  CLI `record`/`replay` verbs, replaying live (non-sim) journals.
 - [ ] Laya "did the action take effect?" + goal-completion questions —
   typed `Question`s through the decision layer, pinned by sim
   scenarios, like the modal/ambiguity questions (PR #51). (Etapa 3 —
