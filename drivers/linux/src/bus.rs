@@ -36,7 +36,7 @@ const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
 /// `AtspiCoordType::Screen`.
 const COORD_SCREEN: u32 = 0;
 const MAX_VALUE_CHARS: usize = 500;
-const MAX_ACTIONS: i32 = 8;
+pub(crate) const MAX_ACTIONS: i32 = 8;
 
 fn platform(ctx: &str, e: impl std::fmt::Display) -> DriverError {
     DriverError::Platform(format!("atspi: {ctx}: {e}"))
@@ -46,7 +46,7 @@ fn platform(ctx: &str, e: impl std::fmt::Display) -> DriverError {
 /// its address, then dial it. Fails (honestly, as `Platform`) when
 /// there is no session bus or no `at-spi-bus-launcher` — the state a
 /// headless CI box or a tty login is in.
-fn connect() -> Result<Connection, DriverError> {
+pub(crate) fn connect() -> Result<Connection, DriverError> {
     let session = Connection::session().map_err(|e| platform("session bus", e))?;
     let launcher = Proxy::new(&session, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus")
         .map_err(|e| platform("org.a11y.Bus proxy", e))?;
@@ -105,12 +105,12 @@ impl Acc {
         self.proxy(conn, IFACE_ACCESSIBLE)?.call("GetRole", &())
     }
 
-    fn states(&self, conn: &Connection) -> zbus::Result<States> {
+    pub(crate) fn states(&self, conn: &Connection) -> zbus::Result<States> {
         let words: Vec<u32> = self.proxy(conn, IFACE_ACCESSIBLE)?.call("GetState", &())?;
         Ok(States::from_words(&words))
     }
 
-    fn interfaces(&self, conn: &Connection) -> zbus::Result<Vec<String>> {
+    pub(crate) fn interfaces(&self, conn: &Connection) -> zbus::Result<Vec<String>> {
         self.proxy(conn, IFACE_ACCESSIBLE)?
             .call("GetInterfaces", &())
     }
@@ -120,16 +120,35 @@ impl Acc {
             .call("GetExtents", &(COORD_SCREEN,))
     }
 
-    fn n_actions(&self, conn: &Connection) -> zbus::Result<i32> {
+    pub(crate) fn n_actions(&self, conn: &Connection) -> zbus::Result<i32> {
         self.proxy(conn, IFACE_ACTION)?.get_property("NActions")
     }
 
-    fn action_name(&self, conn: &Connection, index: i32) -> zbus::Result<String> {
+    pub(crate) fn action_name(&self, conn: &Connection, index: i32) -> zbus::Result<String> {
         self.proxy(conn, IFACE_ACTION)?.call("GetName", &(index,))
     }
 
-    fn current_value(&self, conn: &Connection) -> zbus::Result<f64> {
+    pub(crate) fn current_value(&self, conn: &Connection) -> zbus::Result<f64> {
         self.proxy(conn, IFACE_VALUE)?.get_property("CurrentValue")
+    }
+
+    pub(crate) fn set_current_value(&self, conn: &Connection, value: f64) -> zbus::Result<()> {
+        Ok(self
+            .proxy(conn, IFACE_VALUE)?
+            .set_property("CurrentValue", value)?)
+    }
+
+    pub(crate) fn do_action(&self, conn: &Connection, index: i32) -> zbus::Result<bool> {
+        self.proxy(conn, IFACE_ACTION)?.call("DoAction", &(index,))
+    }
+
+    pub(crate) fn set_text_contents(&self, conn: &Connection, text: &str) -> zbus::Result<bool> {
+        self.proxy(conn, IFACE_EDITABLE_TEXT)?
+            .call("SetTextContents", &(text,))
+    }
+
+    pub(crate) fn grab_focus(&self, conn: &Connection) -> zbus::Result<bool> {
+        self.proxy(conn, IFACE_COMPONENT)?.call("GrabFocus", &())
     }
 
     fn text(&self, conn: &Connection, max_chars: i32) -> zbus::Result<String> {
@@ -299,14 +318,26 @@ pub fn resolve_pid(selector: &AppSelector, apps: &[App]) -> Result<i32, DriverEr
     }
 }
 
+pub(crate) fn resolve_app(selector: &AppSelector) -> Result<i32, DriverError> {
+    let conn = connect()?;
+    resolve_pid(selector, &applications(&conn)?)
+}
+
 struct Ctx<'c> {
     conn: &'c Connection,
     max_depth: u32,
     max_elements: usize,
     elements: Vec<Element>,
+    nodes: Vec<Acc>,
     truncated: bool,
     errors: u32,
     next_id: u64,
+}
+
+pub struct LiveWalk {
+    pub elements: Vec<Element>,
+    pub nodes: Vec<Acc>,
+    pub truncated: bool,
 }
 
 /// Record a failed read: `None` plus the node's failure flag.
@@ -422,6 +453,8 @@ fn walk(acc: &Acc, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx<'_>) {
         identifier: string_prop(&props, "AccessibleId"),
         source: ElementSource::Accessibility,
     });
+    ctx.nodes.push(acc.clone());
+    debug_assert_eq!(ctx.elements.len(), ctx.nodes.len());
 
     if depth >= ctx.max_depth || int_prop(&props, "ChildCount") == Some(0) {
         return;
@@ -439,6 +472,65 @@ fn walk(acc: &Acc, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx<'_>) {
             return;
         }
     }
+}
+
+fn walk_frames<'c>(
+    conn: &'c Connection,
+    frames: &[(Window, Acc)],
+    max_depth: u32,
+    max_elements: usize,
+) -> Ctx<'c> {
+    let mut ctx = Ctx {
+        conn,
+        max_depth,
+        max_elements,
+        elements: Vec::new(),
+        nodes: Vec::new(),
+        truncated: false,
+        errors: 0,
+        next_id: 1,
+    };
+    for (_, acc) in frames {
+        walk(acc, None, 0, &mut ctx);
+        if ctx.truncated {
+            break;
+        }
+    }
+    debug_assert_eq!(ctx.elements.len(), ctx.nodes.len());
+    ctx
+}
+
+fn frames_for_pid(conn: &Connection, apps: &[App], pid: i32) -> Vec<(Window, Acc)> {
+    apps.iter()
+        .filter(|app| app.pid == pid)
+        .flat_map(|app| frames_of(conn, app))
+        .collect()
+}
+
+pub fn walk_live(
+    pid: i32,
+    window: Option<u32>,
+    max_depth: u32,
+    max_elements: usize,
+) -> Result<LiveWalk, DriverError> {
+    let conn = connect()?;
+    let apps = applications(&conn)?;
+    resolve_pid(&AppSelector::Pid(pid), &apps)?;
+    let mut frames = frames_for_pid(&conn, &apps, pid);
+    if let Some(wid) = window {
+        if !frames.iter().any(|(w, _)| w.id == wid) {
+            return Err(DriverError::StaleReference(format!(
+                "window {wid} is no longer a frame of pid {pid} — re-observe"
+            )));
+        }
+        frames.retain(|(w, _)| w.id == wid);
+    }
+    let ctx = walk_frames(&conn, &frames, max_depth, max_elements);
+    Ok(LiveWalk {
+        elements: ctx.elements,
+        nodes: ctx.nodes,
+        truncated: ctx.truncated,
+    })
 }
 
 /// `LinuxDriver::observe`. Unscoped: windows only. App-scoped: resolve
@@ -460,7 +552,7 @@ pub fn observe(
     }
     let conn = connect()?;
     let apps = applications(&conn)?;
-    let mut frames = windows_on(&conn, &apps);
+    let all_frames = windows_on(&conn, &apps);
     let mut obs = Observation {
         id,
         timestamp: SystemTime::now(),
@@ -470,14 +562,17 @@ pub fn observe(
     };
 
     let Some(selector) = &scope.app else {
-        obs.windows = frames.into_iter().map(|(w, _)| w).collect();
+        obs.windows = all_frames.into_iter().map(|(w, _)| w).collect();
         obs.digest = dexter_world_model::digest(&obs, 250);
         return Ok(obs);
     };
 
     let pid = resolve_pid(selector, &apps)?;
     obs.pid = Some(pid);
-    frames.retain(|(w, _)| w.pid == pid);
+    let mut frames: Vec<_> = all_frames
+        .into_iter()
+        .filter(|(w, _)| w.pid == pid)
+        .collect();
     if let Some(wid) = scope.window {
         if !frames.iter().any(|(w, _)| w.id == wid) {
             return Err(DriverError::NotFound(format!(
@@ -487,21 +582,7 @@ pub fn observe(
         frames.retain(|(w, _)| w.id == wid);
     }
 
-    let mut ctx = Ctx {
-        conn: &conn,
-        max_depth: scope.max_depth,
-        max_elements: scope.max_elements,
-        elements: Vec::new(),
-        truncated: false,
-        errors: 0,
-        next_id: 1,
-    };
-    for (_, acc) in &frames {
-        walk(acc, None, 0, &mut ctx);
-        if ctx.truncated {
-            break;
-        }
-    }
+    let ctx = walk_frames(&conn, &frames, scope.max_depth, scope.max_elements);
     obs.windows = frames.into_iter().map(|(w, _)| w).collect();
     obs.elements = ctx.elements;
     obs.elements_truncated = ctx.truncated;

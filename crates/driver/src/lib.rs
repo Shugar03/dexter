@@ -3,6 +3,8 @@
 //! A driver never simulates success. If it cannot know an action happened,
 //! it reports that honestly via [`dexter_core::ActionStatus`].
 
+pub mod identity;
+
 use dexter_core::{Action, ActionResult, AppSelector, Observation, ObservationScope, Window};
 
 /// Errors a driver can surface. Mapped to `ActionStatus` at the action layer.

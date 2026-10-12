@@ -131,7 +131,7 @@ tested on every host. Mirrors the Windows UIA observe slice.
   request silently would be a simulated success). `scope.vision` has no
   provider: the request adds one `collection_errors` so the degraded
   perception is visible.
-- `act()` stays `Unsupported` — the next slice.
+- Linux action behavior is specified in the AT-SPI2 act slice below.
 
 ### Verification
 
@@ -147,3 +147,28 @@ truncation explicit, unknown app/pid/window fail closed, bundle ids
 unsupported. Without a bus the live tests skip on stderr rather than
 asserting against nothing; CI (macOS) compiles the crate off-Linux and
 keeps the skeleton contract tests.
+
+## AT-SPI2 act (Fase 7 slice)
+
+Linux actions resolve semantic and focused targets from a fresh
+app-scoped AT-SPI walk. `Target::Element` uses a bounded cache of the
+last eight app-scoped observations, re-walks the same pid/window scope,
+and checks the stored tree index with the shared
+`dexter_driver::identity` rules; missing, moved, or changed elements
+fail with `StaleReference`. Semantic ambiguity is preserved, and a
+truncated walk keeps not-found non-definitive.
+
+Left click uses `Action.DoAction` in the preference order click,
+activate, press, toggle, jump. `SetValue` writes a finite numeric value
+through `Value.CurrentValue`, otherwise uses writable
+`EditableText.SetTextContents`; `TypeText` uses the same editable-text
+path. Focus uses `Component.GrabFocus`. Disabled and read-only controls
+fail before mutation. AT-SPI calls report their actual bool result;
+missing interfaces and unsupported operations never simulate success.
+
+Physical input is not implemented: point clicks, key chords,
+untargeted scrolling, non-left clicks, and typing without EditableText
+are rejected unless `ActContext.allow_coordinates` is explicitly set;
+even then they return `Unsupported` because XTest is deferred. Targeted
+scrolling is unsupported because `Component.ScrollTo` only reveals an
+element and cannot apply a delta. `background_input` remains false.
