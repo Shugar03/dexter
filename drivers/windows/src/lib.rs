@@ -77,6 +77,14 @@ impl ComputerDriver for WindowsDriver {
                     false
                 }
             },
+            // Honest whole-driver false: SendInput paths exist for
+            // Point clicks, Key chords and the type fallback, and some
+            // providers activate their window inside pattern calls
+            // (SetValue focuses the OLEACC edit proxy first). Per-path
+            // honesty lives in actions.rs — under the default
+            // no-coordinates policy every reachable act (press
+            // patterns, posted WM_CONTEXTMENU) is proven by tests to
+            // leave the OS cursor and the foreground untouched.
             background_input: false,
         }
     }

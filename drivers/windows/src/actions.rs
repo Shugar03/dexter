@@ -14,19 +14,21 @@ use dexter_core::{
     Observation, ObservationId, ScrollDelta, Target,
 };
 use dexter_driver::{utf16_chunks, ActContext, DriverError};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Mutex;
-use std::time::Duration;
-use windows::core::{BSTR, HSTRING};
+use std::time::{Duration, Instant};
+use windows::core::{Interface, BSTR, HSTRING};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::Accessibility::{
-    ExpandCollapseState_Expanded, IUIAutomationElement, IUIAutomationExpandCollapsePattern,
-    IUIAutomationInvokePattern, IUIAutomationLegacyIAccessiblePattern,
-    IUIAutomationScrollItemPattern, IUIAutomationScrollPattern, IUIAutomationSelectionItemPattern,
-    IUIAutomationTogglePattern, IUIAutomationValuePattern, ScrollAmount,
-    ScrollAmount_LargeDecrement, ScrollAmount_LargeIncrement, ScrollAmount_NoAmount,
-    ScrollAmount_SmallDecrement, ScrollAmount_SmallIncrement, UIA_ExpandCollapsePatternId,
-    UIA_InvokePatternId, UIA_LegacyIAccessiblePatternId, UIA_ScrollItemPatternId,
-    UIA_ScrollPatternId, UIA_SelectionItemPatternId, UIA_TogglePatternId, UIA_ValuePatternId,
+    ExpandCollapseState_Expanded, IUIAutomationElement, IUIAutomationElement3,
+    IUIAutomationExpandCollapsePattern, IUIAutomationInvokePattern,
+    IUIAutomationLegacyIAccessiblePattern, IUIAutomationScrollItemPattern,
+    IUIAutomationScrollPattern, IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern,
+    IUIAutomationValuePattern, ScrollAmount, ScrollAmount_LargeDecrement,
+    ScrollAmount_LargeIncrement, ScrollAmount_NoAmount, ScrollAmount_SmallDecrement,
+    ScrollAmount_SmallIncrement, UIA_ExpandCollapsePatternId, UIA_InvokePatternId,
+    UIA_LegacyIAccessiblePatternId, UIA_ScrollItemPatternId, UIA_ScrollPatternId,
+    UIA_SelectionItemPatternId, UIA_TogglePatternId, UIA_ValuePatternId,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
@@ -36,8 +38,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, IsWindow, SetCursorPos, SetForegroundWindow,
-    SW_SHOWNORMAL,
+    GetForegroundWindow, GetWindowThreadProcessId, IsWindow, PostMessageW, SetCursorPos,
+    SetForegroundWindow, SW_SHOWNORMAL, WM_CONTEXTMENU,
 };
 
 use crate::msaa;
@@ -785,6 +787,107 @@ fn focus_window(window_id: u32, ctx: &ActContext) -> Result<ActionResult, Driver
     ))
 }
 
+/// A context menu is a new top-level window of the owning process
+/// (`#32768` on classic Win32, a popup class on UWP) — so a new
+/// top-level window of `pid` after the request is the honest proof a
+/// menu materialized. `Ok()`/`S_OK` from the summon alone proves
+/// nothing: providers can swallow `ShowContextMenu` and a posted
+/// `WM_CONTEXTMENU` can land on a handler that ignores it.
+fn menu_materialized(pid: i32, before: &HashSet<usize>) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(1_000);
+    loop {
+        let found = crate::win::hwnds()
+            .iter()
+            .any(|(h, p)| *p == pid && !before.contains(&(h.0 as usize)));
+        if found || Instant::now() > deadline {
+            return found;
+        }
+        std::thread::sleep(Duration::from_millis(60));
+    }
+}
+
+/// `PostMessageW(WM_CONTEXTMENU, lParam = -1)` — the keyboard-style
+/// invocation Win32 apps already answer (`Shift+F10` posts this exact
+/// message). The menu is created by the target's own message loop: no
+/// cursor move, no focus steal, no injected input — an honest
+/// background path. Returns whether a menu window materialized.
+fn post_context_menu(
+    hwnd: windows::Win32::Foundation::HWND,
+    pid: i32,
+    before: &HashSet<usize>,
+) -> Result<bool, DriverError> {
+    unsafe {
+        PostMessageW(
+            Some(hwnd),
+            WM_CONTEXTMENU,
+            WPARAM(hwnd.0 as usize),
+            LPARAM(-1),
+        )
+    }
+    .map_err(|e| DriverError::Platform(format!("WM_CONTEXTMENU post: {e}")))?;
+    Ok(menu_materialized(pid, before))
+}
+
+/// `IUIAutomationElement3::ShowContextMenu` — the documented verb,
+/// tried where no HWND exists to post to or the post produced
+/// nothing. Providers implement it unevenly (classic Win32 edits
+/// answer `S_OK` and show nothing; some focus the element first), so
+/// it is the fallback rung — the posted `WM_CONTEXTMENU` comes first
+/// wherever a real HWND exists.
+fn show_context_menu(
+    el: &IUIAutomationElement,
+    pid: i32,
+    before: &HashSet<usize>,
+) -> Result<bool, DriverError> {
+    let Ok(el3) = el.cast::<IUIAutomationElement3>() else {
+        return Ok(false);
+    };
+    unsafe { el3.ShowContextMenu() }.ok();
+    Ok(pid != 0 && menu_materialized(pid, before))
+}
+
+/// Right-click on a resolved element: the semantic context-menu
+/// ladder. The posted `WM_CONTEXTMENU` (`Shift+F10`'s own message) is
+/// the first rung wherever the element has a real HWND — the menu is
+/// created by the target's own message loop, so the cursor never
+/// moves, no input is injected, and focus stays where it was.
+/// `ShowContextMenu` covers HWND-less UIA fragments and providers the
+/// post can't reach. An HWND-less MSAA child has neither verb:
+/// `None` — the caller falls through to the honest
+/// fail-closed/coordinates path.
+fn open_context_menu(r: &Resolved) -> Result<Option<String>, DriverError> {
+    let before: HashSet<usize> = crate::win::hwnds()
+        .iter()
+        .map(|(h, _)| h.0 as usize)
+        .collect();
+    match &r.node {
+        LiveNode::Uia(el) => {
+            let pid = unsafe { el.CurrentProcessId() }.unwrap_or(0);
+            let hwnd = unsafe { el.CurrentNativeWindowHandle() }.unwrap_or_default();
+            if !hwnd.0.is_null() && pid != 0 && post_context_menu(hwnd, pid, &before)? {
+                return Ok(Some(format!("opened context menu on {}", r.detail)));
+            }
+            match show_context_menu(el, pid, &before)? {
+                true => Ok(Some(format!("opened context menu on {}", r.detail))),
+                false => Ok(None),
+            }
+        }
+        LiveNode::Msaa(m) => {
+            // MSAA itself has no context-menu verb — LegacyIAccessible's
+            // default action activates the item, not its menu. The
+            // posted message is the only semantic path, and it needs
+            // both the HWND to post to and the pid to verify against.
+            let (Some(hwnd), Some(pid)) = (msaa::hwnd_of(&m.acc), msaa::pid_of(&m.acc)) else {
+                return Ok(None);
+            };
+            match post_context_menu(hwnd, pid, &before)? {
+                true => Ok(Some(format!("opened context menu on {}", r.detail))),
+                false => Ok(None),
+            }
+        }
+    }
+}
+
 /// `ShellExecuteW("open", url)` restricted to document schemes — `open`
 /// on a path or exotic scheme executes programs, so `navigable_url` is a
 /// closed allowlist, not a heuristic.
@@ -882,13 +985,26 @@ pub fn act(
                 match button {
                     MouseButton::Left => press(&r),
                     _ => {
+                        // Semantic first on right-click: a posted
+                        // WM_CONTEXTMENU / ShowContextMenu opens the
+                        // menu without moving the cursor or stealing
+                        // focus. Only when no semantic path exists does
+                        // the physical tier get a turn.
+                        if matches!(button, MouseButton::Right) {
+                            if let Some(detail) = open_context_menu(&r)? {
+                                return Ok(ActionResult::success(
+                                    Mechanism::Accessibility,
+                                    Some(detail),
+                                ));
+                            }
+                        }
                         if !ctx.allow_coordinates {
-                            // No pattern reaches a context menu —
-                            // Unsupported, not a fake left-click.
+                            // No semantic path reached a context menu
+                            // here — Unsupported, not a fake left-click.
                             return Ok(ActionResult::failure(
                                 ActionStatus::Unsupported,
                                 Mechanism::Accessibility,
-                                "no UIA pattern reaches a context menu — enable coords for a pointer click",
+                                "no semantic path opened a context menu — enable coords for a pointer click",
                             ));
                         }
                         let Some((x, y)) = resolved_center(&r) else {

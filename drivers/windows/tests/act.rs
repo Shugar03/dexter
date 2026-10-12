@@ -11,7 +11,19 @@ use dexter_core::{
 use dexter_driver::{ActContext, ComputerDriver, DriverError};
 use dexter_windows::WindowsDriver;
 use std::process::{Child, Command};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+/// These tests all drive the same desktop: an open context menu
+/// dismisses when any window takes activation, and a raise in one
+/// test would race another's open menu. The lock keeps the shared
+/// desktop single-tenant — poisoning is ignored so a failed test
+/// can't cascade.
+static DESKTOP: Mutex<()> = Mutex::new(());
+
+fn desktop() -> MutexGuard<'static, ()> {
+    DESKTOP.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// `notepad.exe` is the stable built-in target: a plain Win32 app whose
 /// edit control exposes a writable `ValuePattern` and whose title bar
@@ -79,6 +91,7 @@ fn find_minimize(obs: &dexter_core::Observation) -> Option<&dexter_core::Element
 
 #[test]
 fn set_value_through_element_target_roundtrips() {
+    let _desktop = desktop();
     let driver = WindowsDriver::new();
     let Some(mut np) = Notepad::launch() else {
         return;
@@ -121,6 +134,7 @@ fn set_value_through_element_target_roundtrips() {
 
 #[test]
 fn press_via_element_target_invokes_minimize() {
+    let _desktop = desktop();
     let driver = WindowsDriver::new();
     let Some(mut np) = Notepad::launch() else {
         return;
@@ -176,6 +190,7 @@ fn press_via_element_target_invokes_minimize() {
 
 #[test]
 fn semantic_target_resolves_and_focuses() {
+    let _desktop = desktop();
     let driver = WindowsDriver::new();
     let Some(mut np) = Notepad::launch() else {
         return;
@@ -268,6 +283,7 @@ fn semantic_target_resolves_and_focuses() {
 
 #[test]
 fn typetext_writes_through_value_pattern() {
+    let _desktop = desktop();
     let driver = WindowsDriver::new();
     let Some(mut np) = Notepad::launch() else {
         return;
@@ -309,6 +325,7 @@ fn typetext_writes_through_value_pattern() {
 
 #[test]
 fn stale_reference_fails_closed() {
+    let _desktop = desktop();
     let driver = WindowsDriver::new();
     let Some(mut np) = Notepad::launch() else {
         return;
@@ -342,6 +359,7 @@ fn stale_reference_fails_closed() {
 
 #[test]
 fn physical_input_is_opt_in() {
+    let _desktop = desktop();
     let driver = WindowsDriver::new();
     // No coordinates flag: every physical-input path declines as data,
     // never a simulated click.
@@ -371,4 +389,255 @@ fn physical_input_is_opt_in() {
             other => panic!("expected Unsupported, got {other:?}"),
         }
     }
+}
+
+/// Top-level HWNDs owned by `pid` — a context menu is a new top-level
+/// window of the owning process (`#32768` on classic Win32, a popup
+/// class on UWP), so this set is the honest proof one materialized.
+fn window_hwnds_of(pid: i32) -> Vec<isize> {
+    dexter_windows::win::hwnds()
+        .into_iter()
+        .filter(|(_, p)| *p == pid)
+        .map(|(h, _)| h.0 as isize)
+        .collect()
+}
+
+/// The first top-level window of `pid` that `before` did not contain.
+fn wait_new_window(pid: i32, before: &[isize], secs: u64) -> Option<isize> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        if let Some(h) = window_hwnds_of(pid)
+            .into_iter()
+            .find(|h| !before.contains(h))
+        {
+            return Some(h);
+        }
+        if Instant::now() > deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn hwnd_alive(pid: i32, hwnd: isize) -> bool {
+    dexter_windows::win::hwnds()
+        .iter()
+        .any(|(h, p)| *p == pid && (h.0 as isize) == hwnd)
+}
+
+/// Pid owning the foreground window — the steal detector for acts
+/// that must run in the background.
+fn foreground_pid() -> Option<i32> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    let h = unsafe { GetForegroundWindow() };
+    if h.0.is_null() {
+        return None;
+    }
+    let mut p = 0u32;
+    unsafe { GetWindowThreadProcessId(h, Some(&mut p)) };
+    (p != 0).then_some(p as i32)
+}
+
+#[test]
+fn right_click_opens_context_menu_and_item_press_executes() {
+    let _desktop = desktop();
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let driver = WindowsDriver::new();
+    let Some(mut np) = Notepad::launch() else {
+        return;
+    };
+    let pid = np.0.id() as i32;
+    assert!(wait_for_window(&driver, pid), "notepad window appeared");
+
+    let scope = ObservationScope::for_app(AppSelector::Pid(pid));
+    let obs = driver.observe(&scope).expect("observe notepad");
+    let edit = find_editable(&obs).expect("edit surface");
+
+    // Fill the edit without touching focus: a posted WM_SETTEXT is
+    // marshaled across threads (system range), so "Select All" is a
+    // live item while the window stays in the background. (SetValue
+    // would activate notepad — the OLEACC edit proxy focuses first.)
+    let frame = obs
+        .windows
+        .iter()
+        .find(|w| w.pid == pid && w.on_screen)
+        .map(|w| w.id)
+        .expect("notepad frame window id");
+    let frame_hwnd = dexter_windows::win::hwnd_of(frame);
+    let edit_hwnd = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::FindWindowExW(
+            Some(frame_hwnd),
+            None,
+            windows::core::w!("Edit"),
+            None,
+        )
+    }
+    .expect("edit child hwnd");
+    let text = windows::core::HSTRING::from("context menu");
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            edit_hwnd,
+            windows::Win32::UI::WindowsAndMessaging::WM_SETTEXT,
+            Some(windows::Win32::Foundation::WPARAM(0)),
+            Some(windows::Win32::Foundation::LPARAM(text.as_ptr() as isize)),
+        )
+    };
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Background-input proof anchors: the semantic menu flow must move
+    // neither the OS cursor nor the foreground window.
+    let mut cursor = POINT::default();
+    unsafe { GetCursorPos(&mut cursor) }.expect("cursor pos");
+    let fg_before = foreground_pid();
+    let wins_before = window_hwnds_of(pid);
+
+    let res = driver
+        .act(
+            &Action::Click {
+                target: Target::Element {
+                    observation: obs.id,
+                    element: edit,
+                },
+                button: MouseButton::Right,
+            },
+            &ctx_for(pid),
+        )
+        .expect("right click resolves");
+    assert_eq!(res.status, ActionStatus::Success, "{res:?}");
+    // The open is a background act: whoever owned the foreground still
+    // does — a posted WM_CONTEXTMENU never activates its target.
+    assert_eq!(
+        foreground_pid(),
+        fg_before,
+        "context-menu open changed the foreground owner"
+    );
+
+    // A real menu materialized — not a pattern call that returned
+    // politely: a new top-level window must exist in notepad's pid.
+    let menu_hwnd =
+        wait_new_window(pid, &wins_before, 5).expect("no context menu window appeared for the pid");
+
+    // Its items are ordinary elements of the app's pid — the same
+    // observe machinery resolves them for a semantic pick.
+    let obs2 = driver.observe(&scope).expect("observe with menu open");
+    assert!(
+        obs2.elements.iter().any(|e| {
+            e.role.as_deref() == Some("menu_item")
+                && e.name
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase().contains("select all"))
+        }),
+        "menu item 'Select all' did not resolve in the open menu"
+    );
+
+    let res = driver
+        .act(
+            &Action::Click {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("menu_item".into()),
+                    name_contains: Some("select all".into()),
+                    ..SemanticTarget::default()
+                }),
+                button: MouseButton::Left,
+            },
+            &ctx_for(pid),
+        )
+        .expect("menu item press resolves");
+    assert_eq!(res.status, ActionStatus::Success, "{res:?}");
+
+    // A real item press dismisses its menu — the window must be gone.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let menu_gone = loop {
+        if !hwnd_alive(pid, menu_hwnd) {
+            break true;
+        }
+        if Instant::now() > deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(menu_gone, "context menu stayed open after item press");
+
+    let mut cursor_after = POINT::default();
+    unsafe { GetCursorPos(&mut cursor_after) }.expect("cursor pos");
+    assert_eq!(
+        (cursor_after.x, cursor_after.y),
+        (cursor.x, cursor.y),
+        "semantic context-menu flow moved the OS cursor"
+    );
+    // Executing a menu command can surface the app — Windows' own
+    // command dispatch raises the owner, whatever drove the pick — so
+    // the foreground is not asserted past the open. The open itself,
+    // above, is the act this slice adds and it is proven background.
+    let _ = np.0.kill();
+}
+
+#[test]
+fn right_click_without_menu_fails_closed() {
+    let _desktop = desktop();
+    let driver = WindowsDriver::new();
+    let Some(mut np) = Notepad::launch() else {
+        return;
+    };
+    let pid = np.0.id() as i32;
+    assert!(wait_for_window(&driver, pid), "notepad window appeared");
+
+    let scope = ObservationScope::for_app(AppSelector::Pid(pid));
+    let obs = driver.observe(&scope).expect("observe notepad");
+    // A status-bar text owns no window to post WM_CONTEXTMENU at and
+    // offers no menu pattern — without the coords flag the verdict is
+    // an honest Unsupported, not a pointer click.
+    let text = obs
+        .elements
+        .iter()
+        .find(|e| e.role.as_deref() == Some("static_text") && e.name.as_deref().is_some())
+        .expect("status bar text element")
+        .id;
+
+    let res = driver
+        .act(
+            &Action::Click {
+                target: Target::Element {
+                    observation: obs.id,
+                    element: text,
+                },
+                button: MouseButton::Right,
+            },
+            &ctx_for(pid),
+        )
+        .expect("right click resolves");
+    assert_eq!(res.status, ActionStatus::Unsupported, "{res:?}");
+    let _ = np.0.kill();
+}
+
+#[test]
+fn middle_click_has_no_semantic_path() {
+    let _desktop = desktop();
+    let driver = WindowsDriver::new();
+    let Some(mut np) = Notepad::launch() else {
+        return;
+    };
+    let pid = np.0.id() as i32;
+    assert!(wait_for_window(&driver, pid), "notepad window appeared");
+
+    let scope = ObservationScope::for_app(AppSelector::Pid(pid));
+    let obs = driver.observe(&scope).expect("observe notepad");
+    let edit = find_editable(&obs).expect("edit surface");
+
+    let res = driver
+        .act(
+            &Action::Click {
+                target: Target::Element {
+                    observation: obs.id,
+                    element: edit,
+                },
+                button: MouseButton::Middle,
+            },
+            &ctx_for(pid),
+        )
+        .expect("middle click resolves");
+    assert_eq!(res.status, ActionStatus::Unsupported, "{res:?}");
+    let _ = np.0.kill();
 }

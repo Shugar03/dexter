@@ -25,8 +25,17 @@ operation declines.
   (a display device context exists and at least one monitor reports a
   measurable raster), so the flag is only true where a capture would
   succeed — session-0 or displayless hosts report `false`.
-  `background_input` stays `false` (SendInput always targets the
-  foreground — there is no background input path).
+  `background_input` stays `false` — honest for the driver as a
+  whole: `SendInput` paths still exist (Point clicks, `Key` chords,
+  the `TypeText` fallback), and some providers activate their own
+  window inside a pattern call (`ValuePattern.SetValue` focuses the
+  OLEACC edit proxy before writing). Per-path honesty: under the
+  default no-coordinates policy every reachable act — pattern
+  presses, `Value` writes, posted `WM_CONTEXTMENU` — is proven by
+  tests to leave the OS cursor and the foreground owner untouched.
+  Executing a chosen menu command is the exception by semantics:
+  Windows' own dispatch surfaces the owner, whatever drove the pick,
+  so the pick is a normal `press`, not a hidden input path.
 - `windows()` returns every top-level `HWND` as a `Window`: `id` is the
   HWND truncated to `u32` (HWNDs are 32-bit in practice), `app` the
   process image stem (`notepad.exe` → `notepad`), `bundle_id` the
@@ -116,9 +125,27 @@ operation declines.
     `TogglePattern.Toggle` → `SelectionItemPattern.Select` →
     `ExpandCollapse` (`Expand` unless `Expanded`, then `Collapse`) →
     `LegacyIAccessiblePattern.DoDefaultAction`; none present →
-    `UNSUPPORTED`. Right/middle clicks have no pattern: `UNSUPPORTED`
-    with `Mechanism::Accessibility`, or a `SendInput` click at the
-    element's bounds center when `ctx.allow_coordinates`.
+    `UNSUPPORTED`. Right-click has its own ladder
+    (`open_context_menu`): a posted `WM_CONTEXTMENU` (`lParam = -1`,
+    `Shift+F10`'s own message) on the element's
+    `CurrentNativeWindowHandle`/`WindowFromAccessibleObject` HWND —
+    the menu materializes on the target's own message loop, so the
+    cursor never moves, no input is injected and the foreground owner
+    is unchanged (all asserted in the live test) — then
+    `IUIAutomationElement3::ShowContextMenu` for HWND-less elements
+    or posts that yield nothing. Success is reported only after a new
+    top-level window of the pid materializes (`EnumWindows` diff over
+    ~1s) — an `S_OK` alone is not a menu, providers swallow both
+    verbs. No semantic path and no coords → `UNSUPPORTED` with
+    `Mechanism::Accessibility`, the existing honest error; middle
+    click keeps it — there is no semantic middle verb. With
+    `ctx.allow_coordinates` the rungs fall through to the same
+    `SendInput` click at the element's bounds center as before. The
+    opened menu enumerates as a top-level window of the app (`#32768`
+    on classic Win32), so its `menu_item` elements resolve through
+    the same `Target::Semantic`/`Element` machinery and press
+    through the standard left-click ladder — a real pick dismisses
+    the menu, which the test verifies.
   - `SetValue`/`TypeText` write through `ValuePattern.SetValue` when
     `!CurrentIsReadOnly`; read-only reports `FAILED`, a missing pattern
     `UNSUPPORTED`. `TypeText` without a writable `Value` falls back to
