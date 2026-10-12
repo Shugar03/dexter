@@ -4,10 +4,16 @@
 //! and the AT-SPI role tables cover the roles desktop toolkits
 //! (GTK, Qt, Firefox/Chromium) actually expose.
 
+use dexter_core::AppSelector;
 #[cfg(not(target_os = "linux"))]
 use dexter_core::ObservationScope;
-use dexter_core::{Action, AppSelector, MouseButton, SemanticTarget, Target};
-use dexter_driver::{ActContext, ComputerDriver, DriverError};
+#[cfg(not(target_os = "linux"))]
+use dexter_core::{Action, MouseButton, SemanticTarget, Target};
+#[cfg(not(target_os = "linux"))]
+use dexter_driver::ActContext;
+use dexter_driver::ComputerDriver;
+#[cfg(not(target_os = "linux"))]
+use dexter_driver::DriverError;
 use dexter_linux::{atspi_role, atspi_role_name, LinuxDriver};
 
 #[test]
@@ -38,7 +44,8 @@ fn every_entrypoint_is_honestly_unsupported() {
     ));
 }
 
-/// `act()` has no backend on any platform yet — it declines everywhere.
+/// Off Linux, `act()` still declines honestly because there is no AT-SPI bus.
+#[cfg(not(target_os = "linux"))]
 #[test]
 fn act_is_honestly_unsupported() {
     let driver = LinuxDriver::new();

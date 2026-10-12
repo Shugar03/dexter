@@ -228,19 +228,3 @@ fn name_selector_resolves_registered_app() {
         );
     }
 }
-
-#[test]
-fn act_stays_unsupported() {
-    use dexter_core::{Action, MouseButton, SemanticTarget, Target};
-    use dexter_driver::ActContext;
-    let err = LinuxDriver::new()
-        .act(
-            &Action::Click {
-                target: Target::Semantic(SemanticTarget::default()),
-                button: MouseButton::Left,
-            },
-            &ActContext::default(),
-        )
-        .unwrap_err();
-    assert!(matches!(err, DriverError::Unsupported(_)));
-}

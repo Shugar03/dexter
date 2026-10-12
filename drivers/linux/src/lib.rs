@@ -6,36 +6,98 @@
 //! `Element`s (roles through the `atspi_role` tables, states through
 //! `atspi::States`), with the same `ax_limited` /
 //! `collection_errors` / `elements_truncated` honesty flags the AX, UIA
-//! and DOM walkers report. `act()` has no backend yet and declines.
+//! and DOM walkers report. `act()` uses live AT-SPI action, editable
+//! text/value, and focus interfaces; physical input stays unsupported.
 //! Off Linux the crate keeps the skeleton contract: no capability is
 //! claimed and every operation declines honestly.
 
+pub mod act_rules;
+#[cfg(target_os = "linux")]
+mod actions;
 pub mod atspi;
 #[cfg(target_os = "linux")]
 #[doc(hidden)] // exposed for integration tests — internal walk seam
 pub mod bus;
 
+#[cfg(target_os = "linux")]
+use dexter_core::Element;
+#[cfg(target_os = "linux")]
+use dexter_core::ObservationId;
 use dexter_core::{Action, ActionResult, Observation, ObservationScope, Window};
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
 #[cfg(target_os = "linux")]
+use std::collections::VecDeque;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::Mutex;
 
 #[cfg(not(target_os = "linux"))]
 fn unsupported() -> DriverError {
     DriverError::Unsupported("linux AT-SPI backend not available off linux".into())
 }
 
-fn act_unsupported() -> DriverError {
-    DriverError::Unsupported("linux AT-SPI act() not implemented — observe only".into())
-}
-
 /// Linux driver. See crate docs — on Linux the element tree is real
-/// whenever the a11y bus answers; actions, screenshots and background
-/// input are still honestly unsupported.
+/// whenever the a11y bus answers; AT-SPI actions are live while
+/// screenshots and background input remain unsupported.
 #[derive(Debug, Default)]
 pub struct LinuxDriver {
     #[cfg(target_os = "linux")]
     next_observation: AtomicU64,
+    #[cfg(target_os = "linux")]
+    obs_cache: ObsCache,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+pub(crate) struct ObsEntry {
+    pub pid: i32,
+    pub window: Option<u32>,
+    pub max_depth: u32,
+    pub max_elements: usize,
+    pub elements: Vec<Element>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default)]
+pub(crate) struct ObsCache {
+    inner: Mutex<VecDeque<(ObservationId, ObsEntry)>>,
+}
+
+#[cfg(target_os = "linux")]
+impl ObsCache {
+    fn store(
+        &self,
+        observation: ObservationId,
+        pid: i32,
+        window: Option<u32>,
+        max_depth: u32,
+        max_elements: usize,
+        elements: Vec<Element>,
+    ) {
+        let mut entries = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        entries.retain(|(id, _)| *id != observation);
+        entries.push_front((
+            observation,
+            ObsEntry {
+                pid,
+                window,
+                max_depth,
+                max_elements,
+                elements,
+            },
+        ));
+        entries.truncate(8);
+    }
+
+    pub(crate) fn get(&self, observation: ObservationId) -> Option<ObsEntry> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(id, _)| *id == observation)
+            .map(|(_, entry)| entry.clone())
+    }
 }
 
 impl LinuxDriver {
@@ -80,7 +142,18 @@ impl ComputerDriver for LinuxDriver {
         let result = {
             let id =
                 dexter_core::ObservationId(self.next_observation.fetch_add(1, Ordering::SeqCst));
-            bus::observe(id, scope)
+            let observation = bus::observe(id, scope)?;
+            if let Some(pid) = observation.pid {
+                self.obs_cache.store(
+                    observation.id,
+                    pid,
+                    scope.window,
+                    scope.max_depth,
+                    scope.max_elements,
+                    observation.elements.clone(),
+                );
+            }
+            Ok(observation)
         };
         #[cfg(not(target_os = "linux"))]
         let result = {
@@ -91,8 +164,31 @@ impl ComputerDriver for LinuxDriver {
     }
 
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
-        let _ = (action, ctx);
-        Err(act_unsupported())
+        #[cfg(target_os = "linux")]
+        let result = actions::act(action, ctx, &self.obs_cache);
+        #[cfg(not(target_os = "linux"))]
+        let result = {
+            let _ = (action, ctx);
+            Err(unsupported())
+        };
+        result
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod cache_tests {
+    use super::{ObsCache, ObservationId};
+
+    #[test]
+    fn observation_cache_keeps_only_the_last_eight_entries() {
+        let cache = ObsCache::default();
+        for id in 0..10 {
+            cache.store(ObservationId(id), id as i32, None, 40, 4_000, Vec::new());
+        }
+        assert!(cache.get(ObservationId(0)).is_none());
+        assert!(cache.get(ObservationId(1)).is_none());
+        assert_eq!(cache.get(ObservationId(2)).unwrap().pid, 2);
+        assert_eq!(cache.get(ObservationId(9)).unwrap().pid, 9);
     }
 }
 
