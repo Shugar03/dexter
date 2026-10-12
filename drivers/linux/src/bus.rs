@@ -533,23 +533,16 @@ pub fn walk_live(
     })
 }
 
-/// `LinuxDriver::observe`. Unscoped: windows only. App-scoped: resolve
-/// the pid, keep its windows (optionally one), walk each frame's tree.
-/// `ax_limited` is "windows exist but the walk produced nothing" — the
-/// signal that `not found` against this observation is not definitive.
-/// Screenshots have no Linux backend: a requested capture fails
-/// `Unsupported` rather than being silently dropped. Opt-in vision has
-/// no provider either; the request counts as one collection error so
-/// the degraded perception is visible, never an implicit success.
+/// `LinuxDriver::observe`. Unscoped observations list all windows;
+/// app-scoped observations resolve the pid, keep its windows (optionally
+/// one), and walk each frame's tree. `ax_limited` is "windows exist but
+/// the walk produced nothing" — the signal that `not found` against this
+/// observation is not definitive. Opt-in vision degrades through
+/// `collection_errors`; requested screenshot failures propagate.
 pub fn observe(
     id: dexter_core::ObservationId,
     scope: &ObservationScope,
 ) -> Result<Observation, DriverError> {
-    if scope.screenshot {
-        return Err(DriverError::Unsupported(
-            "linux screenshots not implemented".into(),
-        ));
-    }
     let conn = connect()?;
     let apps = applications(&conn)?;
     let all_frames = windows_on(&conn, &apps);
@@ -561,35 +554,42 @@ pub fn observe(
         ..Default::default()
     };
 
-    let Some(selector) = &scope.app else {
-        obs.windows = all_frames.into_iter().map(|(w, _)| w).collect();
-        obs.digest = dexter_world_model::digest(&obs, 250);
-        return Ok(obs);
-    };
-
-    let pid = resolve_pid(selector, &apps)?;
-    obs.pid = Some(pid);
-    let mut frames: Vec<_> = all_frames
-        .into_iter()
-        .filter(|(w, _)| w.pid == pid)
-        .collect();
-    if let Some(wid) = scope.window {
-        if !frames.iter().any(|(w, _)| w.id == wid) {
-            return Err(DriverError::NotFound(format!(
-                "window {wid} not in app pid {pid}"
-            )));
+    if let Some(selector) = &scope.app {
+        let pid = resolve_pid(selector, &apps)?;
+        obs.pid = Some(pid);
+        let mut frames: Vec<_> = all_frames
+            .into_iter()
+            .filter(|(window, _)| window.pid == pid)
+            .collect();
+        if let Some(wid) = scope.window {
+            if !frames.iter().any(|(window, _)| window.id == wid) {
+                return Err(DriverError::NotFound(format!(
+                    "window {wid} not in app pid {pid}"
+                )));
+            }
+            frames.retain(|(window, _)| window.id == wid);
         }
-        frames.retain(|(w, _)| w.id == wid);
+
+        let ctx = walk_frames(&conn, &frames, scope.max_depth, scope.max_elements);
+        obs.windows = frames.into_iter().map(|(window, _)| window).collect();
+        obs.elements = ctx.elements;
+        obs.elements_truncated = ctx.truncated;
+        obs.collection_errors = ctx.errors;
+        obs.ax_limited = !obs.windows.is_empty() && obs.elements.is_empty();
+    } else {
+        obs.windows = all_frames.into_iter().map(|(w, _)| w).collect();
     }
 
-    let ctx = walk_frames(&conn, &frames, scope.max_depth, scope.max_elements);
-    obs.windows = frames.into_iter().map(|(w, _)| w).collect();
-    obs.elements = ctx.elements;
-    obs.elements_truncated = ctx.truncated;
-    obs.collection_errors = ctx.errors;
-    obs.ax_limited = !obs.windows.is_empty() && obs.elements.is_empty();
-    if scope.vision {
-        obs.collection_errors += 1;
+    if scope.vision && (obs.ax_limited || obs.elements.is_empty() || scope.window.is_some()) {
+        crate::vision::augment(&mut obs, scope);
+    }
+    if scope.screenshot {
+        let path = scope.screenshot_path.as_ref().map_or_else(
+            || std::env::temp_dir().join(format!("dexter-obs-{}.png", obs.id.0)),
+            |path| std::path::PathBuf::from(path.as_str()),
+        );
+        crate::capture::capture_app_window(&obs.windows, &path)?;
+        obs.screenshot = Some(path.display().to_string());
     }
     obs.digest = dexter_world_model::digest(&obs, 250);
     Ok(obs)

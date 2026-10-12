@@ -37,7 +37,7 @@ fn capabilities_follow_the_bus() {
     // The element-tree claim is exactly "the a11y bus answers" — the
     // same probe `windows()` relies on, never a static true.
     assert_eq!(caps.element_tree, driver.windows().is_ok());
-    assert!(!caps.screenshots);
+    assert_eq!(caps.screenshots, dexter_linux::capture::available());
     assert!(!caps.background_input);
 }
 

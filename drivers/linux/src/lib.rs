@@ -7,7 +7,8 @@
 //! `atspi::States`), with the same `ax_limited` /
 //! `collection_errors` / `elements_truncated` honesty flags the AX, UIA
 //! and DOM walkers report. `act()` uses live AT-SPI action, editable
-//! text/value, and focus interfaces; physical input stays unsupported.
+//! text/value, and focus interfaces. On X11, screenshots use root-window
+//! capture and opt-in Tesseract OCR; physical input stays unsupported.
 //! Off Linux the crate keeps the skeleton contract: no capability is
 //! claimed and every operation declines honestly.
 
@@ -18,6 +19,12 @@ pub mod atspi;
 #[cfg(target_os = "linux")]
 #[doc(hidden)] // exposed for integration tests — internal walk seam
 pub mod bus;
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub mod capture;
+pub mod geometry;
+#[cfg(target_os = "linux")]
+mod vision;
 
 #[cfg(target_os = "linux")]
 use dexter_core::Element;
@@ -39,7 +46,8 @@ fn unsupported() -> DriverError {
 
 /// Linux driver. See crate docs — on Linux the element tree is real
 /// whenever the a11y bus answers; AT-SPI actions are live while
-/// screenshots and background input remain unsupported.
+/// screenshots are available on X11 and background input remains
+/// unsupported.
 #[derive(Debug, Default)]
 pub struct LinuxDriver {
     #[cfg(target_os = "linux")]
@@ -124,7 +132,16 @@ impl ComputerDriver for LinuxDriver {
                     false
                 }
             },
-            screenshots: false,
+            screenshots: {
+                #[cfg(target_os = "linux")]
+                {
+                    capture::available()
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    false
+                }
+            },
             background_input: false,
         }
     }

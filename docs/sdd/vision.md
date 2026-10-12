@@ -19,7 +19,8 @@ canvas-based UIs — are effectively invisible to Dexter. The spec's §8.3
 - `VisionError::{Unsupported, Failed}` — no provider → `Unsupported`;
   never fabricated elements.
 - `platform_provider()` — `Some(AppleVision)` on macOS, `Some(WinOcr)`
-  on Windows, `None` elsewhere.
+  on Windows, Linux Tesseract when its CLI is available, and `None`
+  otherwise.
 - `token_rect` / `tokens_to_elements` — pure mapping to Dexter screen
   points (top-left origin), handling Retina scale via
   `img_px / window_pt`. Bounds rounded to whole points.
@@ -31,6 +32,16 @@ canvas-based UIs — are effectively invisible to Dexter. The spec's §8.3
 through `VNImageRequestHandler::initWithData_options` via `objc2-vision`.
 Each observation contributes `topCandidates(1)` → `string`, `confidence`,
 `boundingBox`. Fully offline; no model downloads.
+
+### Linux Tesseract provider (`crates/vision/src/tesseract.rs`)
+
+Linux runs the local `tesseract` CLI in TSV mode; availability requires
+`tesseract --version` to succeed. The default language is English and
+`DEXTER_TESSERACT_LANG` overrides it. It refuses Wayland sessions rather
+than treating the XWayland root image as a complete desktop capture.
+X11 capture models the root as one scale-1 monitor (AT-SPI extents are
+assumed to be root pixels; HiDPI `GDK_SCALE > 1` is untested). OCR stays
+evidence-only: parsed words become inert `source: Ocr` elements.
 
 ### Trigger contract — opt-in only
 
@@ -110,6 +121,5 @@ OCR elements have no semantic actions and no live handle:
 
 ## Non-goals
 
-- No VLM / cloud vision, no silent fallback on rich AX trees, no
-  semantic actions for OCR elements, no OCR on Linux yet
-  (`platform_provider()` → `None` → `collection_errors` bump when asked).
+- No VLM / cloud vision, no silent fallback on rich AX trees, and no
+  semantic actions for OCR elements.

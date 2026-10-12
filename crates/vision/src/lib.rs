@@ -4,8 +4,8 @@
 //! Contract:
 //! - OCR is evidence, not agency. [`tokens_to_elements`] produces elements
 //!   with `source: ElementSource::Ocr`, a `text` role and **no actions** —
-//!   interacting with them resolves to coordinate (physical) input, which
-//!   stays policy-gated.
+//!   interacting with them is rejected rather than converting OCR evidence
+//!   into an accessibility action.
 //! - Everything runs on-device. Providers that cannot run must return
 //!   [`VisionError::Unsupported`], never fabricated elements.
 //! - Vision reports normalized bounding boxes with a **bottom-left**
@@ -14,6 +14,7 @@
 
 #[cfg(target_os = "macos")]
 mod apple;
+pub mod tesseract;
 #[cfg(windows)]
 mod win;
 
@@ -58,7 +59,7 @@ pub trait VisionProvider: Send + Sync {
 
 /// The on-device provider for this platform, when one exists.
 /// macOS returns the Apple Vision provider, Windows the built-in
-/// `Windows.Media.Ocr` engine; everything else returns `None`.
+/// `Windows.Media.Ocr` engine, and Linux Tesseract when its CLI is available.
 pub fn platform_provider() -> Option<Box<dyn VisionProvider>> {
     #[cfg(target_os = "macos")]
     {
@@ -68,7 +69,11 @@ pub fn platform_provider() -> Option<Box<dyn VisionProvider>> {
     {
         Some(Box::new(win::WinOcr))
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        tesseract::available().then(|| Box::new(tesseract::Tesseract) as Box<dyn VisionProvider>)
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         None
     }

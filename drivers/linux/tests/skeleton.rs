@@ -27,6 +27,9 @@ fn capabilities_admit_nothing_without_a_backend() {
     assert_eq!(caps.element_tree, driver.windows().is_ok());
     #[cfg(not(target_os = "linux"))]
     assert!(!caps.element_tree);
+    #[cfg(target_os = "linux")]
+    assert_eq!(caps.screenshots, dexter_linux::capture::available());
+    #[cfg(not(target_os = "linux"))]
     assert!(!caps.screenshots);
     assert!(!caps.background_input);
 }
