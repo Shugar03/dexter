@@ -289,11 +289,17 @@ Seeded 2026-10-11 from the slices the last PRs flagged as remaining
   fixture tests. Remaining: XTest backend (physical input still
   `Unsupported` even with coords), window focus, targeted scroll,
   `Navigate` — PR #70, 2026-10-11 (Etapa 5; remaining from PR #63)
-- [ ] `[linux]` X11 screenshot + OCR provider — `scope.screenshot`
+- [x] `[linux]` X11 screenshot + OCR provider — `scope.screenshot`
   capture of the window's frame, honest `capabilities().screenshots`,
   and a Linux `dexter_vision::platform_provider()` (e.g. Tesseract)
   that stays evidence-only like WinOcr. (Etapa 5; remaining from
-  PRs #59/#63)
+  PRs #59/#63) — [PR #71](https://github.com/Shugar03/dexter/pull/71),
+  2026-10-11: x11rb root `GetImage` crop of the window frame,
+  `screenshots = capture::available()` (refused under Wayland / no X
+  display), Tesseract CLI provider only when `tesseract --version`
+  succeeds; OCR elements stay inert (`StaleReference` on act). Live
+  X11 fixture tests ran here. Remaining: XWayland/Wayland capture
+  (portal), HiDPI `GDK_SCALE>1` mapping.
 - [ ] Scenario recording/replay — record a live `run_goal` journal
   into a replayable scenario fixture and replay it through the single
   `Engine::run_step` path with the sim driver. (Etapa 1 — event log
