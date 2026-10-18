@@ -77,6 +77,20 @@ fn modal_world() -> Observation {
     )
 }
 
+fn modal_no_dismiss_world() -> Observation {
+    let mut world = modal_world();
+    for element in &mut world.elements {
+        match element.id {
+            ElementId(3) => element.name = Some("Licencia caducada".into()),
+            ElementId(4) => element.name = Some("Renovar".into()),
+            ElementId(5) => element.name = Some("Aceptar".into()),
+            _ => {}
+        }
+    }
+    world.digest = dexter_world_model::digest(&world, 250);
+    world
+}
+
 fn twin_world() -> Observation {
     observation(
         "Tabla",
@@ -212,10 +226,19 @@ pub fn generate_questions() -> Vec<EvalItem> {
             "q-modal-unrelated",
             "guardar el documento",
             modal.clone(),
+            act_gold(4, "button", "Más tarde"),
+            None,
+            labeled(&["blocking_modal"]),
+            "update dialog offers a polarity-safe dismiss — dismissing beats escalating (modal-dismissal slice)",
+        ),
+        item(
+            "q-modal-no-dismiss",
+            "guardar el documento",
+            modal_no_dismiss_world(),
             route_gold(Route::EscalateHuman),
             None,
             labeled(&["blocking_modal"]),
-            "Unrelated update dialog covers the requested save action.",
+            "License dialog has no polarity-safe dismissal, so escalation remains the gold route.",
         ),
         item(
             "q-modal-relevant",

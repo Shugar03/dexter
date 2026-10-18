@@ -925,7 +925,11 @@ impl Ladder {
     ) -> Option<&'a dexter_decision::CandidateAction> {
         candidates
             .iter()
-            .filter(|c| c.behind_modal.is_none() && !self.dead.contains(&c.action))
+            .filter(|c| {
+                c.behind_modal.is_none()
+                    && c.dismisses_modal.is_none()
+                    && !self.dead.contains(&c.action)
+            })
             .fold(
                 None,
                 |best: Option<&dexter_decision::CandidateAction>, c| match best {
@@ -1123,4 +1127,48 @@ pub struct TaskConfig {
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Structural goal check — verified against every observation.
     pub done_when: ExpectedState,
+}
+
+#[cfg(test)]
+mod modal_dismissal_tests {
+    use super::Ladder;
+    use dexter_core::{Action, MouseButton, SemanticTarget, Target};
+    use dexter_decision::CandidateAction;
+
+    #[test]
+    fn recovery_alternative_skips_modal_dismissal_candidates() {
+        let dismissal = CandidateAction {
+            action: Action::Click {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("button".into()),
+                    name: Some("Más tarde".into()),
+                    ..Default::default()
+                }),
+                button: MouseButton::Left,
+            },
+            rationale: "dismiss update dialog".into(),
+            prior: 0.9,
+            behind_modal: None,
+            dismisses_modal: Some("Actualización disponible".into()),
+        };
+        let ordinary = CandidateAction {
+            action: Action::Click {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("button".into()),
+                    name: Some("Guardar".into()),
+                    ..Default::default()
+                }),
+                button: MouseButton::Left,
+            },
+            rationale: "save document".into(),
+            prior: 0.5,
+            behind_modal: None,
+            dismisses_modal: None,
+        };
+        let candidates = [ordinary.clone(), dismissal];
+        let alternative = Ladder::default()
+            .alternative(&candidates)
+            .expect("ordinary candidate remains");
+        assert_eq!(alternative.rationale, ordinary.rationale);
+    }
 }

@@ -136,6 +136,28 @@ fn remove_by_target_vanishes_an_element_on_tick() {
 }
 
 #[test]
+fn removing_a_container_also_removes_its_descendants() {
+    let mut parent = el(1, "dialog", "Licencia caducada");
+    parent.actions.clear();
+    let mut child = el(2, "button", "Aceptar");
+    child.parent = Some(ElementId(1));
+    let sim = SimDriver::new(vec![parent, child]);
+    sim.on_tick(Effect::Remove(by_name("Licencia caducada")));
+    sim.observe(&ObservationScope::default()).unwrap();
+    assert!(sim.elements().is_empty());
+
+    let mut parent = el(3, "panel", "Cerrar panel");
+    parent.actions = vec!["press".into()];
+    let mut child = el(4, "button", "Acción hija");
+    child.parent = Some(ElementId(3));
+    let sim = SimDriver::new(vec![parent, child]);
+    sim.on_press(by_name("Cerrar panel"), Effect::RemoveSelf);
+    sim.act(&click(by_name("Cerrar panel")), &ActContext::default())
+        .unwrap();
+    assert!(sim.elements().is_empty());
+}
+
+#[test]
 fn fail_rule_reports_failed_without_pressing() {
     // A `Fail` rule models a control the app rejects: the driver answers
     // `Failed` with the detail, records no press and applies nothing —

@@ -29,6 +29,7 @@ fn cand(name: &str, index: Option<usize>, prior: f32) -> CandidateAction {
         rationale: format!("button \"{name}\""),
         prior,
         behind_modal: None,
+        dismisses_modal: None,
     }
 }
 

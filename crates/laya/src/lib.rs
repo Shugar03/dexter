@@ -555,6 +555,30 @@ impl DecisionEngine for LayaEngine {
             let c = &ctx.candidates[chosen];
             if let Some(modal) = &c.behind_modal {
                 if self.boolean(&answers, BLOCKING_MODAL_ID)? {
+                    let dismissals: Vec<_> = ctx
+                        .candidates
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, candidate)| {
+                            candidate.dismisses_modal.as_deref() == Some(modal.as_str())
+                        })
+                        .collect();
+                    if let [(index, dismissal)] = dismissals.as_slice() {
+                        if repeats_last_act(ctx, *index) && action_effect == Some(true) {
+                            return Ok(Decision::Route {
+                                route: Route::EscalateHuman,
+                                rationale: "laya: previous act took effect without an observable change — repeating it would duplicate it".into(),
+                            });
+                        }
+                        return Ok(Decision::Act {
+                            action: dismissal.action.clone(),
+                            candidate_index: Some(*index),
+                            rationale: format!(
+                                "laya: modal \"{modal}\" blocks the goal — dismissing via candidate {index}: {}",
+                                dismissal.rationale
+                            ),
+                        });
+                    }
                     return Ok(Decision::Route {
                         route: Route::EscalateHuman,
                         rationale: format!(

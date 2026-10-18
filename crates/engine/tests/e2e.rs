@@ -1134,6 +1134,7 @@ fn run_goal_journals_last_successful_action_delta() {
                 rationale: "Enviar button".into(),
                 prior: 0.9,
                 behind_modal: None,
+                dismisses_modal: None,
             }]
         }
     }

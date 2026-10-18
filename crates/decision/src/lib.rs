@@ -66,7 +66,23 @@ pub struct CandidateAction {
     /// element sits behind, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behind_modal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismisses_modal: Option<String>,
 }
+
+// Exclude cancel/no/discard/skip/ok/consent labels because they can abort, discard, skip, or affirm work.
+pub const MODAL_DISMISS_LABELS: &[&str] = &[
+    "más tarde",
+    "ahora no",
+    "cerrar",
+    "no, gracias",
+    "recordármelo más tarde",
+    "later",
+    "not now",
+    "close",
+    "no thanks",
+    "remind me later",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -793,6 +809,7 @@ fn expr_next_candidate(
         ),
         prior: if stalled { 0.4 } else { 0.95 },
         behind_modal: None,
+        dismisses_modal: None,
     })
 }
 
@@ -1081,6 +1098,7 @@ impl CandidateGenerator for HeuristicGenerator {
                         ),
                         prior: 0.7,
                         behind_modal: None,
+                        dismisses_modal: None,
                     });
                 }
                 continue;
@@ -1160,6 +1178,7 @@ impl CandidateGenerator for HeuristicGenerator {
                         rationale: format!("{base}; editable + literal text in goal"),
                         prior,
                         behind_modal: None,
+                        dismisses_modal: None,
                     });
                     out.push(CandidateAction {
                         action: Action::TypeText {
@@ -1169,6 +1188,7 @@ impl CandidateGenerator for HeuristicGenerator {
                         rationale: format!("{base}; editable + literal text in goal"),
                         prior: prior * 0.92,
                         behind_modal: None,
+                        dismisses_modal: None,
                     });
                 } else {
                     out.push(CandidateAction {
@@ -1176,6 +1196,7 @@ impl CandidateGenerator for HeuristicGenerator {
                         rationale: format!("{base}; editable field, focus to prepare input"),
                         prior,
                         behind_modal: None,
+                        dismisses_modal: None,
                     });
                 }
             } else if pressable {
@@ -1187,6 +1208,7 @@ impl CandidateGenerator for HeuristicGenerator {
                     rationale: base,
                     prior,
                     behind_modal: None,
+                    dismisses_modal: None,
                 });
             } else if editable {
                 // Editable element matching a press-y goal ("submit the
@@ -1196,6 +1218,7 @@ impl CandidateGenerator for HeuristicGenerator {
                     rationale: format!("{base}; editable fallback"),
                     prior: prior * 0.85,
                     behind_modal: None,
+                    dismisses_modal: None,
                 });
             }
         }
@@ -1207,6 +1230,7 @@ impl CandidateGenerator for HeuristicGenerator {
             }
         }
         annotate_structure(&mut out, &obs.elements);
+        append_modal_dismissal(&mut out, &obs.elements);
         out.sort_by(|a, b| b.prior.total_cmp(&a.prior));
         out.truncate(self.max_candidates);
         out
@@ -1305,6 +1329,56 @@ fn annotate_structure(out: &mut [CandidateAction], elements: &[Element]) {
     }
 }
 
+fn append_modal_dismissal(out: &mut Vec<CandidateAction>, elements: &[Element]) {
+    let mut modals = elements.iter().filter(|element| is_modal(element));
+    let Some(modal) = modals.next() else {
+        return;
+    };
+    if modals.next().is_some() || !out.iter().any(|candidate| candidate.behind_modal.is_some()) {
+        return;
+    }
+
+    let matches: Vec<_> = elements
+        .iter()
+        .filter(|element| {
+            element.role.as_deref() == Some("button")
+                && element.enabled != Some(false)
+                && ancestors(element, elements)
+                    .iter()
+                    .any(|ancestor| ancestor.id == modal.id)
+                && element.label().is_some_and(modal_dismiss_label_matches)
+        })
+        .collect();
+    if matches.len() != 1 {
+        return;
+    }
+
+    let dismissal = matches[0];
+    if out.iter().any(|candidate| {
+        candidate_element(candidate, elements).is_some_and(|element| element.id == dismissal.id)
+    }) {
+        return;
+    }
+    let modal_label = modal.label().unwrap_or("untitled dialog").to_string();
+    let label = dismissal.label().unwrap_or_default();
+    out.push(CandidateAction {
+        action: Action::Click {
+            target: element_target(dismissal, elements),
+            button: MouseButton::Left,
+        },
+        rationale: format!("dismiss modal \"{modal_label}\" via \"{label}\""),
+        prior: 0.2,
+        behind_modal: None,
+        dismisses_modal: Some(modal_label),
+    });
+}
+
+fn modal_dismiss_label_matches(label: &str) -> bool {
+    let lowercase = label.to_lowercase();
+    let normalized = lowercase.trim().trim_end_matches(['.', '!', '…']);
+    MODAL_DISMISS_LABELS.contains(&normalized)
+}
+
 /// Deterministic baseline: execute the top candidate; when nothing is
 /// plausible, wait if the world looks busy, abstain otherwise; retry once
 /// after an error. Ships with the runtime so `run_task` works with zero
@@ -1345,6 +1419,12 @@ impl DecisionEngine for RuleBased {
                     rationale: format!(
                         "top candidate is behind modal \"{m}\" — not pressing through it"
                     ),
+                });
+            }
+            if first.dismisses_modal.is_some() {
+                return Ok(Decision::Route {
+                    route: Route::Abstain,
+                    rationale: "only a modal-dismissal candidate — dismissing a dialog is a typed Laya call, not a rule".into(),
                 });
             }
             if questions::repeats_last_act(ctx, 0) {
