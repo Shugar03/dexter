@@ -766,7 +766,7 @@ fn run() -> Result<()> {
             approve_all,
             coords,
             overlay,
-            approval_inbox,
+            ref approval_inbox,
         } => run_mcp(
             &cli,
             engine.into_driver(),
@@ -777,7 +777,7 @@ fn run() -> Result<()> {
                 approve_all,
                 allow_coords: coords,
                 presence: overlay,
-                approval_inbox: approval_inbox.map(std::path::PathBuf::from),
+                approval_inbox: approval_inbox.clone().map(std::path::PathBuf::from),
             },
         ),
     }
