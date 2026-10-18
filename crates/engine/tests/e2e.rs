@@ -4,6 +4,9 @@ use dexter_core::*;
 use dexter_engine::{Engine, RunConfig, Step, StepStatus};
 use dexter_policy::{ActionContext, Policy};
 use dexter_sim::{Effect, SimDriver};
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
 use std::time::Duration;
 
 fn el(id: u64, role: &str, name: &str) -> Element {
@@ -34,6 +37,226 @@ fn cfg() -> RunConfig {
         post_act_settle: Duration::ZERO,
         ..Default::default()
     }
+}
+
+fn approval_step() -> Step {
+    Step {
+        note: None,
+        action: Action::Click {
+            target: Target::Semantic(SemanticTarget {
+                name: Some("Guardar".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+        },
+        expect: None,
+        max_attempts: None,
+        app: None,
+    }
+}
+
+fn approval_engine() -> Engine<SimDriver> {
+    Engine::new(
+        SimDriver::new(vec![el(1, "button", "Guardar")]),
+        Policy::embedded(),
+        Duration::from_secs(60),
+    )
+}
+
+fn inbox_path(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "dexter-engine-approval-{label}-{}-{}",
+        std::process::id(),
+        INBOX_TEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
+static INBOX_TEST_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn inbox_line(fingerprint: &str, decision: &str) -> String {
+    serde_json::json!({
+        "fingerprint": fingerprint,
+        "decision": decision,
+        "ts_ms": 1,
+    })
+    .to_string()
+        + "\n"
+}
+
+fn has_policy_decision(engine: &Engine<SimDriver>, decision: &str) -> bool {
+    engine
+        .events()
+        .iter()
+        .any(|event| event.kind == EventKind::PolicyChecked && event.data["decision"] == decision)
+}
+
+#[test]
+fn approval_inbox_grant_runs_the_same_step() {
+    let inbox = inbox_path("grant");
+    let mut engine = approval_engine();
+    engine.set_approval_inbox(inbox.clone()).unwrap();
+    let step = approval_step();
+    let fingerprint = match engine.run_step(&step, &cfg()) {
+        StepStatus::NeedsApproval { fingerprint, .. } => fingerprint,
+        other => panic!("expected NeedsApproval, got {other:?}"),
+    };
+    fs::write(&inbox, inbox_line(&fingerprint, "grant")).unwrap();
+
+    assert!(engine.run_step(&step, &cfg()).done());
+    assert!(has_policy_decision(&engine, "granted"));
+    assert!(has_policy_decision(&engine, "approved"));
+    fs::remove_file(inbox).unwrap();
+}
+
+#[test]
+fn approval_inbox_deny_rejects_a_later_grant_line() {
+    let inbox = inbox_path("deny");
+    let mut engine = approval_engine();
+    engine.set_approval_inbox(inbox.clone()).unwrap();
+    let step = approval_step();
+    let fingerprint = match engine.run_step(&step, &cfg()) {
+        StepStatus::NeedsApproval { fingerprint, .. } => fingerprint,
+        other => panic!("expected NeedsApproval, got {other:?}"),
+    };
+    fs::write(
+        &inbox,
+        inbox_line(&fingerprint, "deny") + &inbox_line(&fingerprint, "grant"),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        engine.run_step(&step, &cfg()),
+        StepStatus::NeedsApproval { .. }
+    ));
+    assert!(has_policy_decision(&engine, "denied_by_human"));
+    assert!(has_policy_decision(&engine, "grant_rejected"));
+    fs::remove_file(inbox).unwrap();
+}
+
+#[test]
+fn approval_inbox_rejects_a_forged_fingerprint() {
+    let inbox = inbox_path("forged");
+    let mut engine = approval_engine();
+    engine.set_approval_inbox(inbox.clone()).unwrap();
+    fs::write(&inbox, inbox_line("forged", "grant")).unwrap();
+
+    assert!(matches!(
+        engine.run_step(&approval_step(), &cfg()),
+        StepStatus::NeedsApproval { .. }
+    ));
+    assert!(has_policy_decision(&engine, "grant_rejected"));
+    fs::remove_file(inbox).unwrap();
+}
+
+#[test]
+fn approval_inbox_journals_and_skips_malformed_lines() {
+    let inbox = inbox_path("malformed");
+    let mut engine = approval_engine();
+    engine.set_approval_inbox(inbox.clone()).unwrap();
+    fs::write(
+        &inbox,
+        "{not-json}\n{\"fingerprint\":\"x\",\"decision\":\"maybe\",\"ts_ms\":1}\n",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        engine.run_step(&approval_step(), &cfg()),
+        StepStatus::NeedsApproval { .. }
+    ));
+    assert!(engine.events().iter().any(|event| {
+        event.kind == EventKind::PolicyChecked
+            && event.data["decision"] == "grant_rejected"
+            && event.data["reason"] == "malformed inbox line"
+    }));
+    fs::remove_file(inbox).unwrap();
+}
+
+#[test]
+fn approval_inbox_waits_for_a_complete_line() {
+    let inbox = inbox_path("partial");
+    let mut engine = approval_engine();
+    engine.set_approval_inbox(inbox.clone()).unwrap();
+    let step = approval_step();
+    let fingerprint = match engine.run_step(&step, &cfg()) {
+        StepStatus::NeedsApproval { fingerprint, .. } => fingerprint,
+        other => panic!("expected NeedsApproval, got {other:?}"),
+    };
+    let line = inbox_line(&fingerprint, "grant");
+    fs::write(&inbox, line.trim_end()).unwrap();
+
+    assert!(matches!(
+        engine.run_step(&step, &cfg()),
+        StepStatus::NeedsApproval { .. }
+    ));
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&inbox)
+        .unwrap()
+        .write_all(b"\n")
+        .unwrap();
+    assert!(engine.run_step(&step, &cfg()).done());
+    fs::remove_file(inbox).unwrap();
+}
+
+#[test]
+fn approval_inbox_ignores_lines_written_before_attachment() {
+    let inbox = inbox_path("pre-attach");
+    let step = approval_step();
+    let fingerprint = dexter_policy::fingerprint(
+        &step.action,
+        &ActionContext {
+            app: None,
+            target_hint: None,
+        },
+    );
+    fs::write(&inbox, inbox_line(&fingerprint, "grant")).unwrap();
+    let mut engine = approval_engine();
+    engine.set_approval_inbox(inbox.clone()).unwrap();
+
+    assert!(matches!(
+        engine.run_step(&step, &cfg()),
+        StepStatus::NeedsApproval { .. }
+    ));
+    assert!(!has_policy_decision(&engine, "granted"));
+    fs::remove_file(inbox).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn insecure_approval_inbox_is_rejected_when_attached() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let inbox = inbox_path("insecure-attach");
+    fs::write(&inbox, "").unwrap();
+    fs::set_permissions(&inbox, fs::Permissions::from_mode(0o666)).unwrap();
+    let mut engine = approval_engine();
+
+    assert!(engine.set_approval_inbox(inbox.clone()).is_err());
+    fs::remove_file(inbox).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn approval_inbox_rechecks_permissions_on_each_drain() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let inbox = inbox_path("insecure-drain");
+    fs::write(&inbox, "").unwrap();
+    fs::set_permissions(&inbox, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut engine = approval_engine();
+    engine.set_approval_inbox(inbox.clone()).unwrap();
+    assert!(matches!(
+        engine.run_step(&approval_step(), &cfg()),
+        StepStatus::NeedsApproval { .. }
+    ));
+    fs::set_permissions(&inbox, fs::Permissions::from_mode(0o666)).unwrap();
+
+    assert!(matches!(
+        engine.run_step(&approval_step(), &cfg()),
+        StepStatus::NeedsApproval { .. }
+    ));
+    assert!(has_policy_decision(&engine, "inbox_rejected"));
+    fs::remove_file(inbox).unwrap();
 }
 
 #[test]

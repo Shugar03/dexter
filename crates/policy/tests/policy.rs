@@ -311,6 +311,26 @@ fn grant_requires_a_live_pending_request() {
 }
 
 #[test]
+fn deny_removes_a_live_pending_request() {
+    let mut store = ApprovalStore::new(Duration::from_secs(60));
+    let fp = dexter_policy::fingerprint(&click(), &ctx(None));
+
+    store.request(&fp);
+    assert!(store.deny(&fp));
+    assert!(
+        !store.grant(&fp),
+        "a denied request cannot be granted later"
+    );
+}
+
+#[test]
+fn deny_of_an_unknown_fingerprint_fails() {
+    let mut store = ApprovalStore::new(Duration::from_secs(60));
+
+    assert!(!store.deny("unknown"));
+}
+
+#[test]
 fn pending_request_expires() {
     let mut store = ApprovalStore::new(Duration::from_millis(0));
     let fp = dexter_policy::fingerprint(&click(), &ctx(None));

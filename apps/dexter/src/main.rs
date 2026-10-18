@@ -185,6 +185,12 @@ enum Command {
         /// cursor flies on every dexter_act/dexter_task the agent runs.
         #[arg(long)]
         overlay: bool,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Operator: accept approve/deny decisions written by `dexter-desktop --approvals` to this file (answers live needs_approval requests only)"
+        )]
+        approval_inbox: Option<String>,
     },
     /// Open a URL — browser driver navigates its session; macOS hands it
     /// to LaunchServices. Policy-gated like any mutation.
@@ -370,6 +376,12 @@ struct TaskArgs {
     /// Approve every policy-required action (you approve the goal).
     #[arg(long)]
     approve_all: bool,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Operator: accept approve/deny decisions written by `dexter-desktop --approvals` to this file (answers live needs_approval requests only)"
+    )]
+    approval_inbox: Option<String>,
     /// Write the event journal (JSONL) to this path.
     #[arg(long)]
     events: Option<String>,
@@ -687,7 +699,13 @@ fn run() -> Result<()> {
             events,
             presence_wanted(overlay, no_overlay),
         ),
-        Command::Task { goal, args } => run_task(&mut engine, &goal, args),
+        Command::Task { goal, args } => {
+            configure_approval_inbox(
+                &mut engine,
+                args.approval_inbox.as_deref().map(std::path::Path::new),
+            )?;
+            run_task(&mut engine, &goal, args)
+        }
         Command::Eval { cmd } => match cmd {
             EvalCommand::Run {
                 dataset,
@@ -748,6 +766,7 @@ fn run() -> Result<()> {
             approve_all,
             coords,
             overlay,
+            approval_inbox,
         } => run_mcp(
             &cli,
             engine.into_driver(),
@@ -758,9 +777,22 @@ fn run() -> Result<()> {
                 approve_all,
                 allow_coords: coords,
                 presence: overlay,
+                approval_inbox: approval_inbox.map(std::path::PathBuf::from),
             },
         ),
     }
+}
+
+fn configure_approval_inbox<D: ComputerDriver>(
+    engine: &mut Engine<D>,
+    path: Option<&std::path::Path>,
+) -> Result<()> {
+    if let Some(path) = path {
+        engine
+            .set_approval_inbox(path.to_path_buf())
+            .map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
 }
 
 fn run_mcp(
@@ -2079,5 +2111,50 @@ mod tests {
         assert!(lines
             .iter()
             .any(|l| l.contains("Privacy & Security > Screen Recording")));
+    }
+
+    #[test]
+    fn task_and_mcp_parse_the_approval_inbox_flag() {
+        let task = Cli::try_parse_from([
+            "dexter",
+            "task",
+            "guardar",
+            "--done",
+            "{}",
+            "--approval-inbox",
+            "inbox.jsonl",
+        ])
+        .expect("task parse");
+        let Command::Task { args, .. } = task.cmd else {
+            panic!("expected task");
+        };
+        assert_eq!(args.approval_inbox.as_deref(), Some("inbox.jsonl"));
+
+        let mcp = Cli::try_parse_from(["dexter", "mcp", "--approval-inbox", "mcp-inbox.jsonl"])
+            .expect("mcp parse");
+        let Command::Mcp { approval_inbox, .. } = mcp.cmd else {
+            panic!("expected mcp");
+        };
+        assert_eq!(approval_inbox.as_deref(), Some("mcp-inbox.jsonl"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn task_approval_inbox_setup_fails_closed_for_insecure_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path =
+            std::env::temp_dir().join(format!("dexter-cli-insecure-inbox-{}", std::process::id()));
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let mut engine = Engine::new(
+            dexter_sim::SimDriver::new(vec![]),
+            Policy::embedded(),
+            Duration::from_secs(60),
+        );
+
+        let error = configure_approval_inbox(&mut engine, Some(&path)).unwrap_err();
+        assert!(error.to_string().contains("writable"));
+        std::fs::remove_file(path).unwrap();
     }
 }

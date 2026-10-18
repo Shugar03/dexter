@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Read-only Tauri desktop shell for Dexter journal and policy state"
+description = "Tauri desktop journal, policy, and approval inbox for Dexter"
 
 [lib]
 name = "dexter_desktop"
@@ -19,3 +19,7 @@ tauri = { version = "2", features = [] }
 
 [build-dependencies]
 tauri-build = "2"
+
+[dev-dependencies]
+dexter-engine.workspace = true
+dexter-sim.workspace = true

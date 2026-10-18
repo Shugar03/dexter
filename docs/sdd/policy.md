@@ -41,6 +41,15 @@ del target. La política no resuelve elementos — evalúa intención.
    externo (humano interactivo o `--yes` explícito del caller). Los grants
    de operador (listas `grants` de escenarios) usan `pre_grant` — un
    camino separado que nunca debe exponerse a superficies del agente.
+8. El inbox opcional del engine es sólo un transporte al mismo flujo de
+   aprobación viva: `set_approval_inbox(path)` empieza al final del
+   archivo existente, ignora bytes anteriores y drena líneas JSONL
+   completas al inicio de `run_step`, antes de evaluar policy. En Unix,
+   el archivo se rechaza si es group/world-writable tanto al adjuntarlo
+   como al drenarlo. `grant` llama `approve_pending`; `deny` consume la
+   solicitud viva sin concederla. Líneas malformadas se registran como
+   rechazadas. Sin configuración no hay inbox; nunca se pre-autoriza ni
+   se consume un grant desde el lector.
 
 ## Formato TOML
 

@@ -17,6 +17,7 @@ use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, Json, ServerHandler};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -41,8 +42,15 @@ pub struct DexterRuntime {
 }
 
 impl DexterRuntime {
-    pub fn new(policy: Policy, driver: Box<dyn ComputerDriver>, config: ServerConfig) -> Self {
+    pub fn new(
+        policy: Policy,
+        driver: Box<dyn ComputerDriver>,
+        config: ServerConfig,
+    ) -> Result<Self, String> {
         let mut engine = Engine::new(driver, policy, Duration::from_secs(300));
+        if let Some(path) = &config.approval_inbox {
+            engine.set_approval_inbox(path.clone())?;
+        }
         // Operator opted into coordinates: open the physical tier unless
         // the policy file explicitly denies it.
         if config.allow_coords {
@@ -50,7 +58,7 @@ impl DexterRuntime {
         }
         let journal = engine.journal_handle();
         let caps = engine.driver().capabilities();
-        Self {
+        Ok(Self {
             engine: Mutex::new(engine),
             generator: HeuristicGenerator::default(),
             decider: Box::new(dexter_decision::RuleBased::default()),
@@ -58,7 +66,7 @@ impl DexterRuntime {
             journal,
             task_cancel: Mutex::new(None),
             caps,
-        }
+        })
     }
 
     /// Swap the decider `dexter_task` uses (spawned once, kept warm).
@@ -68,7 +76,7 @@ impl DexterRuntime {
     }
 }
 
-fn run_cfg(app: Option<String>, cfg: ServerConfig) -> RunConfig {
+fn run_cfg(app: Option<String>, cfg: &ServerConfig) -> RunConfig {
     RunConfig {
         app: app.as_deref().map(AppSelector::parse),
         max_attempts: 3,
@@ -102,7 +110,7 @@ pub struct ObserveParams {
 /// Server-level trust configuration — set by the operator at startup,
 /// never by the agent per call. This is what keeps `needs_approval`
 /// meaningful: the model can't raise its own privileges mid-session.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ServerConfig {
     /// Treat every RequireApproval as granted up front.
     pub approve_all: bool,
@@ -111,6 +119,8 @@ pub struct ServerConfig {
     /// Show the presence overlay while tools act — the operator sees
     /// the cursor fly on every dexter_act/dexter_task.
     pub presence: bool,
+    /// File-based approval inbox shared with dexter-desktop.
+    pub approval_inbox: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -199,14 +209,24 @@ impl DexterMcp {
         decider: Option<Box<dyn DecisionEngine>>,
         config: ServerConfig,
     ) -> Self {
-        let mut runtime = DexterRuntime::new(policy, driver, config);
+        Self::try_with_decider(policy, driver, decider, config)
+            .expect("MCP approval inbox configuration must be valid")
+    }
+
+    pub fn try_with_decider(
+        policy: Policy,
+        driver: Box<dyn ComputerDriver>,
+        decider: Option<Box<dyn DecisionEngine>>,
+        config: ServerConfig,
+    ) -> Result<Self, String> {
+        let mut runtime = DexterRuntime::new(policy, driver, config)?;
         if let Some(d) = decider {
             runtime = runtime.with_decider(d);
         }
-        Self {
+        Ok(Self {
             runtime: Arc::new(runtime),
             tool_router: Self::tool_router(),
-        }
+        })
     }
 
     /// Observe the current world: window list + element count + text
@@ -418,7 +438,7 @@ impl DexterMcp {
             max_attempts: Some(3),
             app: params.app.as_deref().map(AppSelector::parse),
         };
-        let cfg = run_cfg(params.app.clone(), self.runtime.config);
+        let cfg = run_cfg(params.app.clone(), &self.runtime.config);
         let presence = self.runtime.config.presence;
         let runtime = self.runtime.clone();
         let status = tokio::task::spawn_blocking(move || {
@@ -580,7 +600,7 @@ impl DexterMcp {
                 &runtime.generator,
                 runtime.decider.as_ref(),
                 &TaskConfig {
-                    run: run_cfg(params.app.clone(), runtime.config),
+                    run: run_cfg(params.app.clone(), &runtime.config),
                     max_steps,
                     max_duration: max_secs.map(Duration::from_secs),
                     cancel: Some(token),
@@ -783,7 +803,8 @@ pub async fn serve_stdio(
     config: ServerConfig,
 ) -> anyhow::Result<()> {
     use rmcp::service::ServiceExt;
-    let server = DexterMcp::with_decider(policy, driver, decider, config);
+    let server =
+        DexterMcp::try_with_decider(policy, driver, decider, config).map_err(anyhow::Error::msg)?;
     let running = server.serve(rmcp::transport::stdio()).await?;
     running.waiting().await?;
     Ok(())
