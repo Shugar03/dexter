@@ -1,5 +1,5 @@
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dexter_core::{
     Action, ActionResult, ActionStatus, Element, ElementId, ElementSource, Mechanism, Observation,
@@ -11,6 +11,7 @@ use zbus::blocking::Connection;
 use crate::act_rules::{numeric_value, press_action_index};
 use crate::atspi::States;
 use crate::bus::{self, Acc, LiveWalk, MAX_ACTIONS};
+use crate::xtest::{self, InputOutcome};
 use crate::ObsCache;
 
 const ACTION_WALK_DEPTH: u32 = 40;
@@ -186,6 +187,50 @@ fn physical_input(ctx: &ActContext) -> ActionResult {
     ActionResult::failure(ActionStatus::Unsupported, Mechanism::Coordinates, detail)
 }
 
+fn input_action<T>(
+    input: Result<InputOutcome<T>, DriverError>,
+    detail: impl FnOnce(T) -> String,
+) -> Result<ActionResult, DriverError> {
+    match input? {
+        InputOutcome::Complete(value) => Ok(ActionResult::success(
+            Mechanism::Coordinates,
+            Some(detail(value)),
+        )),
+        InputOutcome::Unsupported(reason) => Ok(ActionResult::failure(
+            ActionStatus::Unsupported,
+            Mechanism::Coordinates,
+            reason,
+        )),
+    }
+}
+
+fn foreground_required(
+    ctx: &ActContext,
+    detail: &str,
+) -> Result<Option<ActionResult>, DriverError> {
+    let Some(selector) = ctx.app.as_ref() else {
+        return Ok(None);
+    };
+    let pid = bus::resolve_app(selector)?;
+    let windows = bus::list_windows()?;
+    let conn = bus::connect()?;
+    for (window, node) in windows {
+        if window.pid == pid
+            && node
+                .states(&conn)
+                .map_err(|error| platform("Accessible.GetState", error))?
+                .has(States::ACTIVE)
+        {
+            return Ok(None);
+        }
+    }
+    Ok(Some(ActionResult::failure(
+        ActionStatus::ForegroundRequired,
+        Mechanism::Coordinates,
+        detail,
+    )))
+}
+
 fn interfaces(node: &Acc, conn: &Connection) -> Result<Vec<String>, DriverError> {
     node.interfaces(conn)
         .map_err(|error| platform("Accessible.GetInterfaces", error))
@@ -319,7 +364,42 @@ fn type_text(
     let conn = bus::connect()?;
     let interfaces = interfaces(&resolved.node, &conn)?;
     if !interfaces.iter().any(|name| name == IFACE_EDITABLE_TEXT) {
-        return Ok(physical_input(ctx));
+        if !ctx.allow_coordinates {
+            return Ok(physical_input(ctx));
+        }
+        if !interfaces.iter().any(|name| name == IFACE_COMPONENT) {
+            return Ok(ActionResult::failure(
+                ActionStatus::Failed,
+                Mechanism::Accessibility,
+                format!("{} cannot receive focus", resolved.detail()),
+            ));
+        }
+        let grabbed = resolved
+            .node
+            .grab_focus(&conn)
+            .map_err(|error| platform("Component.GrabFocus", error))?;
+        let focused = grabbed
+            && resolved
+                .node
+                .states(&conn)
+                .map_err(|error| platform("Accessible.GetState", error))?
+                .has(States::FOCUSED);
+        if !focused {
+            return Ok(ActionResult::failure(
+                ActionStatus::Failed,
+                Mechanism::Accessibility,
+                format!("{} would not take keyboard focus", resolved.detail()),
+            ));
+        }
+        if let Some(verdict) = foreground_required(
+            ctx,
+            "keyboard input goes to the foreground window — target app is not foreground",
+        )? {
+            return Ok(verdict);
+        }
+        return input_action(xtest::type_text(text), |count| {
+            format!("typed {count} chars via XTest")
+        });
     }
     set_editable_text(&resolved, text, &conn)
 }
@@ -331,7 +411,14 @@ fn click(
     cache: &ObsCache,
 ) -> Result<ActionResult, DriverError> {
     match target {
-        Target::Point { .. } => return Ok(physical_input(ctx)),
+        Target::Point { x, y } => {
+            if !ctx.allow_coordinates {
+                return Ok(physical_input(ctx));
+            }
+            return input_action(xtest::click(*x, *y, button), |_| {
+                format!("clicked {} at ({x},{y})", button_name(button))
+            });
+        }
         Target::Window { .. } => {
             return Ok(ActionResult::failure(
                 ActionStatus::Unsupported,
@@ -355,18 +442,102 @@ fn click(
             "no AT-SPI action reaches a context menu — enable coords for a pointer click",
         ));
     }
-    Ok(physical_input(ctx))
+    let Some(bounds) = resolved.element.bounds else {
+        return Ok(ActionResult::failure(
+            ActionStatus::Unsupported,
+            Mechanism::Coordinates,
+            format!("{} reports no bounds to click", resolved.detail()),
+        ));
+    };
+    let x = bounds.x + bounds.w / 2.0;
+    let y = bounds.y + bounds.h / 2.0;
+    input_action(xtest::click(x, y, button), |_| {
+        format!("clicked {} at ({x},{y})", button_name(button))
+    })
+}
+
+fn button_name(button: dexter_core::MouseButton) -> &'static str {
+    match button {
+        dexter_core::MouseButton::Left => "left",
+        dexter_core::MouseButton::Right => "right",
+        dexter_core::MouseButton::Middle => "middle",
+    }
+}
+
+fn focus_window(window_id: u32, ctx: &ActContext) -> Result<ActionResult, DriverError> {
+    let pid = ctx.app.as_ref().map(bus::resolve_app).transpose()?;
+    let windows = bus::list_windows()?;
+    let Some((frame, node)) = windows
+        .into_iter()
+        .find(|(window, _)| window.id == window_id && pid.is_none_or(|pid| window.pid == pid))
+    else {
+        return Err(DriverError::NotFound(format!(
+            "window {window_id} not found"
+        )));
+    };
+    let conn = bus::connect()?;
+    let interfaces = interfaces(&node, &conn)?;
+    let grabbed = interfaces.iter().any(|name| name == IFACE_COMPONENT)
+        && node.grab_focus(&conn).unwrap_or(false);
+    if grabbed && wait_for_active(&node, &conn, Duration::from_millis(500))? {
+        return Ok(ActionResult::success(
+            Mechanism::Accessibility,
+            Some(format!("activated window {window_id}")),
+        ));
+    }
+    let failure = |status, mechanism, detail| ActionResult::failure(status, mechanism, detail);
+    match crate::ewmh::request_activation(&frame)? {
+        crate::ewmh::ActivationRequest::Unsupported(reason) => {
+            return Ok(failure(
+                ActionStatus::Unsupported,
+                Mechanism::NativeAutomation,
+                reason,
+            ));
+        }
+        crate::ewmh::ActivationRequest::NoMatch => {
+            return Ok(failure(
+                ActionStatus::Failed,
+                Mechanism::NativeAutomation,
+                format!("no X11 client window matches window {window_id}"),
+            ));
+        }
+        crate::ewmh::ActivationRequest::Sent => {}
+    }
+    if wait_for_active(&node, &conn, Duration::from_secs(1))? {
+        return Ok(ActionResult::success(
+            Mechanism::NativeAutomation,
+            Some(format!(
+                "activated window {window_id} via _NET_ACTIVE_WINDOW"
+            )),
+        ));
+    }
+    Ok(failure(
+        ActionStatus::Failed,
+        Mechanism::NativeAutomation,
+        format!("window manager did not activate window {window_id}"),
+    ))
+}
+
+fn wait_for_active(node: &Acc, conn: &Connection, timeout: Duration) -> Result<bool, DriverError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if node
+            .states(conn)
+            .map_err(|error| platform("Accessible.GetState", error))?
+            .has(States::ACTIVE)
+        {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn focus(target: &Target, ctx: &ActContext, cache: &ObsCache) -> Result<ActionResult, DriverError> {
     match target {
-        Target::Window { .. } => {
-            return Ok(ActionResult::failure(
-                ActionStatus::Unsupported,
-                Mechanism::Accessibility,
-                "window focus not implemented on linux",
-            ));
-        }
+        Target::Window { window_id } => return focus_window(*window_id, ctx),
         Target::Point { .. } => {
             return Ok(ActionResult::failure(
                 ActionStatus::Unsupported,
@@ -406,6 +577,166 @@ fn focus(target: &Target, ctx: &ActContext, cache: &ObsCache) -> Result<ActionRe
     ))
 }
 
+struct Scrollbar {
+    node: Acc,
+    vertical: bool,
+    horizontal: bool,
+}
+
+struct ScrollUpdate {
+    node: Acc,
+    before: f64,
+    after: f64,
+}
+
+fn scrollbars(resolved: &Resolved, conn: &Connection) -> Result<Vec<Scrollbar>, DriverError> {
+    let role = resolved
+        .element
+        .role
+        .as_deref()
+        .or(resolved.element.raw_role.as_deref())
+        .unwrap_or_default();
+    let candidates = if role == "scroll_bar" {
+        vec![resolved.node.clone()]
+    } else {
+        resolved
+            .node
+            .children(conn)
+            .map_err(|error| platform("Accessible.GetChildren", error))?
+    };
+    let mut bars = Vec::new();
+    for node in candidates {
+        let role = crate::atspi_role_name(
+            node.role(conn)
+                .map_err(|error| platform("Accessible.GetRole", error))?,
+        )
+        .and_then(crate::atspi_role);
+        if role != Some("scroll_bar")
+            || !interfaces(&node, conn)?
+                .iter()
+                .any(|name| name == IFACE_VALUE)
+        {
+            continue;
+        }
+        let states = node
+            .states(conn)
+            .map_err(|error| platform("Accessible.GetState", error))?;
+        if !states.has(States::SHOWING) || !states.has(States::VISIBLE) {
+            continue;
+        }
+        bars.push(Scrollbar {
+            node,
+            vertical: states.has(States::VERTICAL),
+            horizontal: states.has(States::HORIZONTAL),
+        });
+    }
+    Ok(bars)
+}
+
+fn scroll(
+    target: &Target,
+    dx: f64,
+    dy: f64,
+    ctx: &ActContext,
+    cache: &ObsCache,
+) -> Result<ActionResult, DriverError> {
+    let resolved = resolve_target(target, ctx, cache)?;
+    let conn = bus::connect()?;
+    let bars = scrollbars(&resolved, &conn)?;
+    if bars.is_empty() {
+        return Ok(ActionResult::failure(
+            ActionStatus::Unsupported,
+            Mechanism::Accessibility,
+            format!("{} exposes no Value scroll bars", resolved.detail()),
+        ));
+    }
+    if !dx.is_finite() || !dy.is_finite() {
+        return Ok(ActionResult::failure(
+            ActionStatus::Unsupported,
+            Mechanism::Accessibility,
+            "scroll delta must be finite",
+        ));
+    }
+
+    let mut updates = Vec::new();
+    for (delta, horizontal) in [(dx, true), (dy, false)] {
+        if delta == 0.0 {
+            continue;
+        }
+        let bar = bars.iter().find(|bar| {
+            if horizontal {
+                bar.horizontal
+            } else {
+                bar.vertical
+            }
+        });
+        let Some(bar) = bar else {
+            let orientation = if horizontal { "horizontal" } else { "vertical" };
+            return Ok(ActionResult::failure(
+                ActionStatus::Unsupported,
+                Mechanism::Accessibility,
+                format!("{} has no {orientation} scroll bar", resolved.detail()),
+            ));
+        };
+        let before = bar
+            .node
+            .current_value(&conn)
+            .map_err(|error| platform("Value.CurrentValue", error))?;
+        let (min, max) = bar
+            .node
+            .value_range(&conn)
+            .map_err(|error| platform("Value range", error))?;
+        if !before.is_finite() || !min.is_finite() || !max.is_finite() || min > max {
+            return Err(DriverError::Platform(
+                "atspi: invalid scrollbar Value range".into(),
+            ));
+        }
+        updates.push(ScrollUpdate {
+            node: bar.node.clone(),
+            before,
+            after: xtest::clamp_scroll_value(before, delta, min, max),
+        });
+    }
+    if updates.is_empty() {
+        return Ok(ActionResult::success(
+            Mechanism::Accessibility,
+            Some(format!("scrolled {} by ({dx},{dy})", resolved.detail())),
+        ));
+    }
+    if updates.iter().all(|update| update.before == update.after) {
+        return Ok(ActionResult::failure(
+            ActionStatus::Failed,
+            Mechanism::Accessibility,
+            "already at scroll limit",
+        ));
+    }
+    for update in &updates {
+        update
+            .node
+            .set_current_value(&conn, update.after)
+            .map_err(|error| platform("Value.CurrentValue", error))?;
+    }
+    let mut changed = false;
+    for update in updates {
+        let after = update
+            .node
+            .current_value(&conn)
+            .map_err(|error| platform("Value.CurrentValue", error))?;
+        changed |= after != update.before;
+    }
+    if !changed {
+        return Ok(ActionResult::failure(
+            ActionStatus::Failed,
+            Mechanism::Accessibility,
+            "scroll value did not change",
+        ));
+    }
+    Ok(ActionResult::success(
+        Mechanism::Accessibility,
+        Some(format!("scrolled {} by ({dx},{dy})", resolved.detail())),
+    ))
+}
+
 pub fn act(
     action: &Action,
     ctx: &ActContext,
@@ -429,15 +760,35 @@ pub fn act(
         )),
         Action::Click { target, button } => click(target, *button, ctx, cache),
         Action::TypeText { text, target } => type_text(text, target.as_ref(), ctx, cache),
-        Action::Key { .. } => Ok(physical_input(ctx)),
+        Action::Key { chord } => {
+            if !ctx.allow_coordinates {
+                return Ok(physical_input(ctx));
+            }
+            if let Some(verdict) = foreground_required(
+                ctx,
+                "key chords go to the foreground window — target app is not foreground",
+            )? {
+                return Ok(verdict);
+            }
+            input_action(xtest::key_chord(chord), |_| {
+                "sent key chord via XTest".into()
+            })
+        }
         Action::Scroll {
-            target: Some(_), ..
-        } => Ok(ActionResult::failure(
-            ActionStatus::Unsupported,
-            Mechanism::Accessibility,
-            "AT-SPI scroll not implemented — Component.ScrollTo only reveals, it doesn't scroll by a delta",
-        )),
-        Action::Scroll { target: None, .. } => Ok(physical_input(ctx)),
+            delta,
+            target: Some(target),
+        } => scroll(target, delta.dx, delta.dy, ctx, cache),
+        Action::Scroll {
+            delta,
+            target: None,
+        } => {
+            if !ctx.allow_coordinates {
+                return Ok(physical_input(ctx));
+            }
+            input_action(xtest::scroll(delta.dx, delta.dy), |_| {
+                "scrolled via XTest".into()
+            })
+        }
         Action::Focus { target } => focus(target, ctx, cache),
         Action::SetValue { target, value } => {
             let resolved = resolve_target(target, ctx, cache)?;

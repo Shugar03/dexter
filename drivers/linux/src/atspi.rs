@@ -22,6 +22,7 @@ impl States {
     pub const EXPANDABLE: u32 = 9;
     pub const FOCUSABLE: u32 = 11;
     pub const FOCUSED: u32 = 12;
+    pub const HORIZONTAL: u32 = 14;
     pub const ICONIFIED: u32 = 15;
     pub const MODAL: u32 = 16;
     pub const PRESSED: u32 = 20;
@@ -30,6 +31,7 @@ impl States {
     pub const SENSITIVE: u32 = 24;
     pub const SHOWING: u32 = 25;
     pub const VISIBLE: u32 = 30;
+    pub const VERTICAL: u32 = 29;
     pub const INDETERMINATE: u32 = 32;
     pub const CHECKABLE: u32 = 41;
     pub const READ_ONLY: u32 = 43;

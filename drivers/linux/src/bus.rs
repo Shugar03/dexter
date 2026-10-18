@@ -86,7 +86,7 @@ impl Acc {
             .build()
     }
 
-    fn children(&self, conn: &Connection) -> zbus::Result<Vec<Acc>> {
+    pub(crate) fn children(&self, conn: &Connection) -> zbus::Result<Vec<Acc>> {
         let p = self.proxy(conn, IFACE_ACCESSIBLE)?;
         let raw: Vec<(String, OwnedObjectPath)> = p.call("GetChildren", &())?;
         Ok(raw
@@ -101,7 +101,7 @@ impl Acc {
         p.call("GetAll", &(IFACE_ACCESSIBLE,))
     }
 
-    fn role(&self, conn: &Connection) -> zbus::Result<u32> {
+    pub(crate) fn role(&self, conn: &Connection) -> zbus::Result<u32> {
         self.proxy(conn, IFACE_ACCESSIBLE)?.call("GetRole", &())
     }
 
@@ -130,6 +130,14 @@ impl Acc {
 
     pub(crate) fn current_value(&self, conn: &Connection) -> zbus::Result<f64> {
         self.proxy(conn, IFACE_VALUE)?.get_property("CurrentValue")
+    }
+
+    pub(crate) fn value_range(&self, conn: &Connection) -> zbus::Result<(f64, f64)> {
+        let proxy = self.proxy(conn, IFACE_VALUE)?;
+        Ok((
+            proxy.get_property("MinimumValue")?,
+            proxy.get_property("MaximumValue")?,
+        ))
     }
 
     pub(crate) fn set_current_value(&self, conn: &Connection, value: f64) -> zbus::Result<()> {
