@@ -350,12 +350,18 @@ Seeded 2026-10-12 from the slices the last PRs flagged as remaining
   `EvalItem.expect_questions` / `last_act`, `EvalReport.questions`
   (`QuestionStats` per id), 10-item `datasets/questions`, numbers in
   `docs/eval-numbers.md`. Remaining: label real (non-synthetic) items.
-- [ ] Modal dismissal as a generated candidate — when `blocking_modal`
+- [x] Modal dismissal as a generated candidate — when `blocking_modal`
   is answered true and the dialog offers a dismiss control matching a
   polarity-safe label ("Más tarde", "Cerrar"), generate it as a
   candidate instead of always escalating; policy still evaluated per
   act; pinned by `modal-blocking` variants. (Etapa 3; remaining from
-  laya-questions SDD)
+  laya-questions SDD) —
+  [PR #78](https://github.com/Shugar03/dexter/pull/78), 2026-10-18:
+  `CandidateAction.dismisses_modal`, exact-match `MODAL_DISMISS_LABELS`
+  (cancel/no/discard/skip/ok excluded), only with one modal, one safe
+  button and something behind it; Laya dismisses on `blocking_modal`,
+  RuleBased and the ladder never do. `modal-blocking` completes in 2;
+  new `modal-no-dismiss` escalates.
 - [ ] Desktop approvals view — `apps/dexter-desktop` shows pending
   `Approve`-routed steps from the journal and lets the human approve
   or deny through the same approval channel the CLI uses; no new
