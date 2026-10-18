@@ -67,6 +67,7 @@
       .approval-reason { overflow-wrap: anywhere; }
       .approval-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; color: #9ba9bb; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
       .approval-fingerprint { overflow-wrap: anywhere; }
+      .approval-action { font-weight: 600; }
       .approval-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
       .approval-controls button {
         padding: 7px 11px;
@@ -253,7 +254,10 @@
           const age = document.createElement("span");
           age.textContent = formatAge(approval.ts_ms);
           meta.append(fingerprint, age);
-          details.append(reason, meta);
+          const action = document.createElement("div");
+          action.className = "approval-action";
+          action.textContent = describeFingerprint(approval.fingerprint);
+          details.append(action, reason, meta);
           row.appendChild(details);
 
           if (!disabled) {
@@ -281,6 +285,20 @@
             row.appendChild(controls);
           }
           list.appendChild(row);
+        }
+      }
+
+      function describeFingerprint(fingerprint) {
+        try {
+          const [action, app] = JSON.parse(fingerprint);
+          const target = action.target || {};
+          const label = target.name ?? target.name_contains ?? target.identifier;
+          const parts = [action.type, target.role, label ? `"${label}"` : null];
+          if (typeof action.text === "string") parts.push(`text "${action.text}"`);
+          if (app) parts.push(`in ${typeof app === "string" ? app : JSON.stringify(app)}`);
+          return parts.filter(Boolean).join(" ");
+        } catch {
+          return fingerprint;
         }
       }
 
