@@ -367,10 +367,10 @@ Seeded 2026-10-12 from the slices the last PRs flagged as remaining
   or deny through the same approval channel the CLI uses; no new
   bypass, deny is the default on close. (Etapa 6; remaining from
   PR #69) — [PR #79](https://github.com/Shugar03/dexter/pull/79), 2026-10-18
-- [ ] `[linux]` XTest physical input backend — click/type at
+- [x] `[linux]` XTest physical input backend — click/type at
   coordinates only behind `ctx.allow_coordinates` + `defaults.physical`,
   plus window focus and targeted scroll via AT-SPI. (Etapa 5;
-  remaining from PR #70)
+  remaining from PR #70) — [PR #80](https://github.com/Shugar03/dexter/pull/80), 2026-10-18
 - [ ] `[macos]` CLI `dexter record` / `dexter replay` verbs over
   `dexter_eval::recording`, replay still through `Engine::run_step`
   with policy re-evaluated. (Etapa 1; remaining from PR #72)
