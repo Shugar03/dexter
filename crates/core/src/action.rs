@@ -112,6 +112,35 @@ impl Action {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn point_click_key_and_untargeted_scroll_are_physical() {
+        let actions = [
+            Action::Click {
+                target: Target::Point { x: 1.0, y: 2.0 },
+                button: MouseButton::Left,
+            },
+            Action::Key {
+                chord: KeyChord {
+                    key: "a".into(),
+                    modifiers: Vec::new(),
+                },
+            },
+            Action::Scroll {
+                delta: ScrollDelta { dx: 0.0, dy: 40.0 },
+                target: None,
+            },
+        ];
+
+        for action in actions {
+            assert_eq!(action.intrusiveness(), Intrusiveness::Physical);
+        }
+    }
+}
+
 /// A single physical/semantic action against the computer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

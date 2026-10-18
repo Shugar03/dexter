@@ -36,7 +36,7 @@ impl PixelFormat {
     }
 }
 
-fn wayland_active() -> bool {
+pub(crate) fn wayland_active() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty())
 }
 

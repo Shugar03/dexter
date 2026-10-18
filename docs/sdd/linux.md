@@ -164,12 +164,73 @@ path. Focus uses `Component.GrabFocus`. Disabled and read-only controls
 fail before mutation. AT-SPI calls report their actual bool result;
 missing interfaces and unsupported operations never simulate success.
 
-Physical input is not implemented: point clicks, key chords,
-untargeted scrolling, non-left clicks, and typing without EditableText
-are rejected unless `ActContext.allow_coordinates` is explicitly set;
-even then they return `Unsupported` because XTest is deferred. Targeted
-scrolling is unsupported because `Component.ScrollTo` only reveals an
-element and cannot apply a delta. `background_input` remains false.
+## XTest physical input + AT-SPI focus/scroll (Fase 8 slice)
+
+Physical input is opt-in through `ActContext.allow_coordinates`.
+`Click(Point)`, `Key`, and untargeted `Scroll` remain
+`Intrusiveness::Physical`, so the engine's existing physical policy
+(`defaults.physical`) gates them; this driver adds no policy defaults or
+capability flags. `TypeText` uses XTest only as a fallback when the
+target has no `EditableText`, and is gated by `allow_coordinates` in the
+same way as the Windows keyboard fallback. Semantic clicks and editable
+text continue to use AT-SPI. `background_input` remains false.
+
+The XTest backend refuses Wayland sessions: XTest through XWayland
+cannot reach native Wayland windows. Coordinates are root-window pixels,
+scale 1.0 as in X11 capture; HiDPI is untested. It reports success only
+after the X server processes the queued requests; X errors are platform
+errors, never simulated success.
+
+- A point click moves to `(x, y)` and presses/releases button 1 (left),
+  3 (right), or 2 (middle). A non-left semantic/element click uses the
+  element bounds center and is unsupported when bounds are unavailable.
+- Key chords use explicit canonical key names (`a`–`z`, `0`–`9`,
+  `return`, `tab`, `escape`, `space`, `backspace`, `delete`, arrows,
+  `home`, `end`, `pageup`, `pagedown`, `f1`–`f12`) and modifiers
+  `cmd`/`ctrl`/`alt`/`shift`. Keysyms resolve through the current X keymap;
+  unknown names or missing keycodes are unsupported without sending
+  events. When an app scope is supplied, one of that pid's AT-SPI frames
+  must be `ACTIVE` before keyboard input.
+- The non-EditableText `TypeText` fallback first calls
+  `Component.GrabFocus` and verifies `FOCUSED`, then checks app
+  foreground. It pre-resolves every character against the current
+  keymap before typing: Latin-1 keysyms are direct, other Unicode uses
+  the X Unicode keysym form, and level 1 requires Shift. If any
+  character is unavailable, the whole text is unsupported and nothing
+  is typed. Keycodes are never rebound; characters absent from the
+  current keymap fail closed.
+- Untargeted scroll rounds each axis in 40-pixel notches. Positive
+  `dy` uses wheel button 5, negative `dy` button 4; positive `dx` uses
+  button 7, negative `dx` button 6. A zero-notch request succeeds
+  without events.
+- `Focus(Window)` resolves the AT-SPI frame by `window_id` (restricted
+  to the requested app when present), then tries `Component.GrabFocus`.
+  If it returns true and the frame becomes `ACTIVE` within about 500 ms,
+  the action succeeds. Otherwise, on X11 with an EWMH-capable window
+  manager, it matches a client window using the frame's PID, AT-SPI
+  `Name`, and screen extents. Client geometry is compared both directly
+  and after expansion by `_NET_FRAME_EXTENTS` (zeroes when absent); each
+  rect field must match within ±8 px. It then requests
+  `_NET_ACTIVE_WINDOW`. AT-SPI
+  remains the source of window identity and activation verification;
+  EWMH only requests activation. The frame must become `ACTIVE` within
+  about 1 s for success. This fallback is needed because GTK3 frames can
+  return false from `GrabFocus`. Wayland, no window manager, or no
+  `_NET_ACTIVE_WINDOW` support is unsupported; no match is failed and
+  multiple matches are ambiguous. Window activation is visual, moves no
+  cursor, and is not gated by coordinates.
+- Targeted scrolling resolves the element with the normal stale and
+  ambiguity rules. It uses the target itself when it is a Value-capable
+  scroll bar, otherwise its direct Value-capable scroll-bar children
+  that are both `SHOWING` and `VISIBLE`. `VERTICAL` and `HORIZONTAL`
+  states select axes. Before any write, all requested axes must have a
+  bar; each value is clamped from
+  `CurrentValue + delta` to `MinimumValue..=MaximumValue`. GTK
+  adjustments use pixels; other toolkits may use different units.
+  No bar/orientation is unsupported, values already at the requested
+  limit fail with `"already at scroll limit"`, and success requires a
+  changed `CurrentValue` after writing. `Component.ScrollTo` alone does
+  not count because it only reveals content.
 
 ## X11 capture + Tesseract OCR (Fase 7 slice)
 

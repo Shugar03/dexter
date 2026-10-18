@@ -7,10 +7,10 @@
 //! `atspi::States`), with the same `ax_limited` /
 //! `collection_errors` / `elements_truncated` honesty flags the AX, UIA
 //! and DOM walkers report. `act()` uses live AT-SPI action, editable
-//! text/value, and focus interfaces. On X11, screenshots use root-window
-//! capture and opt-in Tesseract OCR; physical input stays unsupported.
-//! Off Linux the crate keeps the skeleton contract: no capability is
-//! claimed and every operation declines honestly.
+//! text/value and focus interfaces, with opt-in XTest physical input and
+//! EWMH window activation on X11. Screenshots use root-window capture and
+//! opt-in Tesseract OCR. Off Linux the crate keeps the skeleton contract:
+//! no capability is claimed and every operation declines honestly.
 
 pub mod act_rules;
 #[cfg(target_os = "linux")]
@@ -22,9 +22,12 @@ pub mod bus;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub mod capture;
+#[cfg(target_os = "linux")]
+mod ewmh;
 pub mod geometry;
 #[cfg(target_os = "linux")]
 mod vision;
+pub mod xtest;
 
 #[cfg(target_os = "linux")]
 use dexter_core::Element;
