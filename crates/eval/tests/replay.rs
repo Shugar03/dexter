@@ -31,6 +31,8 @@ fn item(id: &str, goal: &str, observation: Observation, gold: Gold) -> EvalItem 
         goal: goal.into(),
         observation,
         gold,
+        last_act: None,
+        expect_questions: None,
         source: "test".into(),
         meta: Default::default(),
     }

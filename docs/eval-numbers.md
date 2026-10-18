@@ -251,6 +251,57 @@ not enough signal for a 26.5M head to generalize. What shipped is the
 tooling (worker provider, trainer, split helpers) plus these measured
 numbers; revisit with ~10× per-surface rows.
 
+## Typed questions (per type)
+
+Measured with `cargo run -p dexter-eval --example question_eval`:
+
+| engine | items | coverage | act accuracy | route accuracy | false acts | false routes |
+|---|---:|---:|---:|---:|---:|---:|
+| RuleBased::default() | 10 | 5/5 (100%) | 4/5 (80%) | 1/5 (20%) | 1 | 1 |
+| Cascade[RuleBased, Laya dev] | 10 | 5/5 (100%) | 5/5 (100%) | 3/5 (60%) | 2 | 0 |
+| Laya dev | 10 | 5/5 (100%) | 4/5 (80%) | 4/5 (80%) | 1 | 1 |
+
+**RuleBased::default()**
+
+| question | labeled | detected | detector recall | spurious | asked | correct | accuracy | false_acts | false_routes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| blocking_modal | 1 | 1 | 100% | 0 | 1 | 0 | 0% | 0 | 0 |
+| disambiguate | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 0 | 1 |
+| action_effect | 2 | 2 | 100% | 0 | 2 | 0 | 0% | 0 | 0 |
+| goal_complete | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 1 | 0 |
+
+**Cascade[RuleBased, Laya dev]**
+
+| question | labeled | detected | detector recall | spurious | asked | correct | accuracy | false_acts | false_routes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| blocking_modal | 1 | 1 | 100% | 0 | 1 | 1 | 100% | 0 | 0 |
+| disambiguate | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 1 | 0 |
+| action_effect | 2 | 2 | 100% | 0 | 2 | 2 | 100% | 0 | 0 |
+| goal_complete | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 1 | 0 |
+
+**Laya dev**
+
+| question | labeled | detected | detector recall | spurious | asked | correct | accuracy | false_acts | false_routes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| blocking_modal | 1 | 1 | 100% | 0 | 1 | 1 | 100% | 0 | 0 |
+| disambiguate | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 1 | 0 |
+| action_effect | 2 | 2 | 100% | 0 | 2 | 2 | 100% | 0 | 0 |
+| goal_complete | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 0 | 1 |
+
+RuleBased on the existing unlabeled datasets still records detector
+asks:
+
+| dataset | items | blocking_modal | disambiguate | action_effect | goal_complete |
+|---|---:|---:|---:|---:|---:|
+| sim | 11 | 0 | 0 | 0 | 0 |
+| browser | 36 | 0 | 0 | 0 | 0 |
+
+The ten question items are teacher-authored and synthetic. `datasets/sim`
+and `datasets/browser` have no `expect_questions` labels; their detector
+counts remain zero while `asked` is still measured. The dev worker
+answers every Bool question `true`. The per-type sample size `n` is tiny,
+so these are descriptive measurements, not quality gates.
+
 ## Reading the numbers
 
 - **Outcome ≠ success**: `abstained` is a pass where the world
