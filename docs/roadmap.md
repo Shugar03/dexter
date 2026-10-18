@@ -362,11 +362,11 @@ Seeded 2026-10-12 from the slices the last PRs flagged as remaining
   button and something behind it; Laya dismisses on `blocking_modal`,
   RuleBased and the ladder never do. `modal-blocking` completes in 2;
   new `modal-no-dismiss` escalates.
-- [ ] Desktop approvals view — `apps/dexter-desktop` shows pending
+- [x] Desktop approvals view — `apps/dexter-desktop` shows pending
   `Approve`-routed steps from the journal and lets the human approve
   or deny through the same approval channel the CLI uses; no new
   bypass, deny is the default on close. (Etapa 6; remaining from
-  PR #69)
+  PR #69) — [PR #79](https://github.com/Shugar03/dexter/pull/79), 2026-10-18
 - [ ] `[linux]` XTest physical input backend — click/type at
   coordinates only behind `ctx.allow_coordinates` + `defaults.physical`,
   plus window focus and targeted scroll via AT-SPI. (Etapa 5;
