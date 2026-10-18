@@ -29,7 +29,7 @@ pub enum Effect {
     SpawnMany(Vec<Element>),
     /// Set the pressed element's value.
     SetValue(String),
-    /// Remove the pressed element (e.g. a button that dismisses a dialog).
+    /// Remove the pressed element and its descendants.
     RemoveSelf,
     /// Set the value of the first element matching the target.
     SetValueOf(SemanticTarget, String),
@@ -245,6 +245,23 @@ impl SimDriver {
             .map(|e| e.id)
     }
 
+    fn remove_subtree(s: &mut SimState, root: ElementId) {
+        let mut removed = std::collections::HashSet::from([root]);
+        let mut pending = VecDeque::from([root]);
+        while let Some(parent) = pending.pop_front() {
+            for child in s
+                .elements
+                .iter()
+                .filter(|element| element.parent == Some(parent))
+            {
+                if removed.insert(child.id) {
+                    pending.push_back(child.id);
+                }
+            }
+        }
+        s.elements.retain(|element| !removed.contains(&element.id));
+    }
+
     /// Apply one effect against the world. `pressed` is the element the
     /// rule fired on — `SetValue`/`RemoveSelf` act on it; `*Of` effects
     /// resolve their own target.
@@ -270,7 +287,7 @@ impl SimDriver {
                 }
             }
             Effect::RemoveSelf => {
-                s.elements.retain(|e| e.id != pressed);
+                Self::remove_subtree(s, pressed);
             }
             Effect::SetValueOf(target, v) => {
                 Self::mutate_first(&mut s.elements, target, |e| e.value = Some(v.clone()));
@@ -280,7 +297,7 @@ impl SimDriver {
             }
             Effect::Remove(target) => {
                 if let Some(id) = Self::first_match(&s.elements, target) {
-                    s.elements.retain(|e| e.id != id);
+                    Self::remove_subtree(s, id);
                 }
             }
             Effect::CycleValueOf(target, values) => {

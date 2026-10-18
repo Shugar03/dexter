@@ -257,15 +257,15 @@ Measured with `cargo run -p dexter-eval --example question_eval`:
 
 | engine | items | coverage | act accuracy | route accuracy | false acts | false routes |
 |---|---:|---:|---:|---:|---:|---:|
-| RuleBased::default() | 10 | 5/5 (100%) | 4/5 (80%) | 1/5 (20%) | 1 | 1 |
-| Cascade[RuleBased, Laya dev] | 10 | 5/5 (100%) | 5/5 (100%) | 3/5 (60%) | 2 | 0 |
-| Laya dev | 10 | 5/5 (100%) | 4/5 (80%) | 4/5 (80%) | 1 | 1 |
+| RuleBased::default() | 11 | 6/6 (100%) | 4/6 (67%) | 1/5 (20%) | 1 | 2 |
+| Cascade[RuleBased, Laya dev] | 11 | 6/6 (100%) | 6/6 (100%) | 3/5 (60%) | 2 | 0 |
+| Laya dev | 11 | 6/6 (100%) | 5/6 (83%) | 4/5 (80%) | 1 | 1 |
 
 **RuleBased::default()**
 
 | question | labeled | detected | detector recall | spurious | asked | correct | accuracy | false_acts | false_routes |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| blocking_modal | 1 | 1 | 100% | 0 | 1 | 0 | 0% | 0 | 0 |
+| blocking_modal | 2 | 2 | 100% | 0 | 2 | 0 | 0% | 0 | 1 |
 | disambiguate | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 0 | 1 |
 | action_effect | 2 | 2 | 100% | 0 | 2 | 0 | 0% | 0 | 0 |
 | goal_complete | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 1 | 0 |
@@ -274,7 +274,7 @@ Measured with `cargo run -p dexter-eval --example question_eval`:
 
 | question | labeled | detected | detector recall | spurious | asked | correct | accuracy | false_acts | false_routes |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| blocking_modal | 1 | 1 | 100% | 0 | 1 | 1 | 100% | 0 | 0 |
+| blocking_modal | 2 | 2 | 100% | 0 | 2 | 2 | 100% | 0 | 0 |
 | disambiguate | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 1 | 0 |
 | action_effect | 2 | 2 | 100% | 0 | 2 | 2 | 100% | 0 | 0 |
 | goal_complete | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 1 | 0 |
@@ -283,7 +283,7 @@ Measured with `cargo run -p dexter-eval --example question_eval`:
 
 | question | labeled | detected | detector recall | spurious | asked | correct | accuracy | false_acts | false_routes |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| blocking_modal | 1 | 1 | 100% | 0 | 1 | 1 | 100% | 0 | 0 |
+| blocking_modal | 2 | 2 | 100% | 0 | 2 | 2 | 100% | 0 | 0 |
 | disambiguate | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 1 | 0 |
 | action_effect | 2 | 2 | 100% | 0 | 2 | 2 | 100% | 0 | 0 |
 | goal_complete | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 0 | 1 |
@@ -296,7 +296,7 @@ asks:
 | sim | 11 | 0 | 0 | 0 | 0 |
 | browser | 36 | 0 | 0 | 0 | 0 |
 
-The ten question items are teacher-authored and synthetic. `datasets/sim`
+The eleven question items are teacher-authored and synthetic. `datasets/sim`
 and `datasets/browser` have no `expect_questions` labels; their detector
 counts remain zero while `asked` is still measured. The dev worker
 answers every Bool question `true`. The per-type sample size `n` is tiny,

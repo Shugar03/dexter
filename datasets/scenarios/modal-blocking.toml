@@ -1,8 +1,7 @@
 # modal-blocking — an update dialog the goal never mentioned sits over
-# the editor. The goal's button exists, but behind the modal: pressing
-# through it is a guess about the dialog's intent. Rule-based abstains;
-# Laya is asked the typed `blocking_modal` question and, when the modal
-# blocks, escalates to a human instead of acting.
+# the editor. Rule-based abstains on the covered save action; Laya uses
+# the typed `blocking_modal` answer to choose the polarity-safe "Más
+# tarde" dismissal, then resumes the save goal.
 [scenario]
 id = "modal-blocking"
 goal = "guardar el documento"
@@ -53,3 +52,7 @@ actions = ["press"]
 [[world.rule]]
 when = { name = "Guardar" }
 effect = { type = "spawn", element = { id = 0, role = "static_text", name = "Documento guardado" } }
+
+[[world.rule]]
+when = { name = "Más tarde" }
+effect = { type = "remove", target = { name = "Actualización disponible" } }

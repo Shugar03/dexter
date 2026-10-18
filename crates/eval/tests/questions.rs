@@ -326,7 +326,7 @@ fn question_items_load_and_unchanged_or_unknown_last_actions_are_candidates() {
         .join("../../datasets/questions/items.jsonl");
     let text = std::fs::read_to_string(path).expect("question dataset exists");
     let items = load_jsonl(&text).unwrap();
-    assert_eq!(items.len(), 10);
+    assert_eq!(items.len(), 11);
     let generator = HeuristicGenerator::default();
     for item in &items {
         let Some(last_act) = &item.last_act else {

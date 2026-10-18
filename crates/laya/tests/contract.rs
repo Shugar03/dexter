@@ -32,6 +32,7 @@ fn candidate(name: &str) -> CandidateAction {
         rationale: format!("button \"{name}\" matches goal"),
         prior: 0.8,
         behind_modal: None,
+        dismisses_modal: None,
     }
 }
 
@@ -524,6 +525,7 @@ fn twin(index: usize, row: &str) -> CandidateAction {
         ),
         prior: 0.75,
         behind_modal: None,
+        dismisses_modal: None,
     }
 }
 
@@ -551,6 +553,14 @@ fn modal_ctx() -> DecisionContext {
     }
 }
 
+fn modal_dismiss_ctx() -> DecisionContext {
+    let mut ctx = modal_ctx();
+    let mut dismissal = candidate("Más tarde");
+    dismissal.dismisses_modal = Some("Actualización disponible".into());
+    ctx.candidates.push(dismissal);
+    ctx
+}
+
 #[test]
 fn blocking_modal_escalates_to_a_human() {
     let engine = typed_engine(0, true, 0, 0.9);
@@ -574,6 +584,76 @@ fn non_blocking_modal_lets_the_pick_act() {
             candidate_index, ..
         } => assert_eq!(candidate_index, Some(0)),
         other => panic!("expected Act, got {other:?}"),
+    }
+}
+
+#[test]
+fn blocking_modal_acts_on_the_matching_dismissal_candidate() {
+    let engine = typed_engine(0, true, 0, 0.9);
+    match engine
+        .decide(&modal_dismiss_ctx())
+        .expect("dismissal decision")
+    {
+        Decision::Act {
+            candidate_index,
+            rationale,
+            ..
+        } => {
+            assert_eq!(candidate_index, Some(1));
+            assert!(
+                rationale.contains("Actualización disponible"),
+                "{rationale}"
+            );
+        }
+        other => panic!("safe modal dismissal should act, got {other:?}"),
+    }
+}
+
+#[test]
+fn non_blocking_modal_keeps_the_original_pick() {
+    let engine = typed_engine(0, false, 0, 0.9);
+    match engine
+        .decide(&modal_dismiss_ctx())
+        .expect("non-blocking decision")
+    {
+        Decision::Act {
+            candidate_index, ..
+        } => assert_eq!(candidate_index, Some(0)),
+        other => panic!("non-blocking modal should preserve the pick, got {other:?}"),
+    }
+}
+
+#[test]
+fn repeated_modal_dismissal_escalates_when_it_already_took_effect() {
+    let mut ctx = modal_dismiss_ctx();
+    ctx.last_act = Some(LastAct {
+        action: ctx.candidates[1].action.clone(),
+        delta: WorldDelta::Unchanged,
+    });
+    let engine = typed_fixture(r#"{"action_effect":true,"blocking_modal":true}"#, None);
+    match engine.decide(&ctx).expect("repeat decision") {
+        Decision::Route { route, rationale } => {
+            assert_eq!(route, Route::EscalateHuman);
+            assert!(
+                rationale.contains("previous act took effect"),
+                "{rationale}"
+            );
+        }
+        other => panic!("repeated dismissal must escalate, got {other:?}"),
+    }
+}
+
+#[test]
+fn dev_worker_dismisses_a_blocking_modal_when_safe_candidate_exists() {
+    let engine = LayaEngine::spawn(&worker_cmd(), Duration::from_secs(10)).expect("worker spawns");
+    match engine
+        .decide(&modal_dismiss_ctx())
+        .expect("dev dismissal decision")
+    {
+        Decision::Act {
+            candidate_index, ..
+        } => assert_eq!(candidate_index, Some(1)),
+        other => panic!("dev worker should choose the safe dismissal, got {other:?}"),
     }
 }
 

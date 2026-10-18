@@ -505,14 +505,25 @@ fn cascade_resolves_ambiguous_twin_via_laya() {
     assert_eq!(run.steps, 1);
 }
 
-/// An unrelated dialog over the goal's button: Laya's typed
-/// blocking-modal answer escalates to a human instead of pressing
-/// through it.
+/// An unrelated update dialog offers a safe dismissal: Laya dismisses it
+/// and then saves, while the rule-based cascade remains fail-closed.
 #[test]
-fn cascade_escalates_on_blocking_modal_via_laya() {
+fn cascade_dismisses_blocking_modal_via_laya() {
     let spec = dataset_spec("modal-blocking");
     let run = run_scenario(&spec, &HeuristicGenerator::default(), &laya_dev_cascade());
-    assert_eq!(run.outcome, "escalated", "steps={}", run.steps);
+    assert_eq!(run.outcome, "completed", "steps={}", run.steps);
+    let actions = executed_actions(&run);
+    assert_eq!(actions.len(), 2);
+    assert_clicked_label(&actions[0], "Más tarde");
+    assert_clicked_label(&actions[1], "Guardar");
+}
+
+#[test]
+fn cascade_escalates_on_modal_without_safe_dismiss() {
+    let spec = dataset_spec("modal-no-dismiss");
+    let run = run_scenario(&spec, &HeuristicGenerator::default(), &laya_dev_cascade());
+    assert_eq!(run.outcome, "escalated");
+    assert!(executed_actions(&run).is_empty());
 }
 
 #[test]

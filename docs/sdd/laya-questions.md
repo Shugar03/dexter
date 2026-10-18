@@ -49,8 +49,11 @@ question id:
    chooses the member; `none` → `Abstain`; its confidence is gated by
    `min_confidence` too.
 3. The chosen candidate is behind a modal → `blocking_modal` decides:
-   `true` → `Route::EscalateHuman` naming the modal (dismissing a dialog
-   the goal didn't mention is a human call); `false` → act.
+   `true` → act on the sole matching modal-dismissal candidate, if there
+   is exactly one; otherwise `Route::EscalateHuman` naming the modal.
+   Repeating the last successful action with `action_effect = true`
+   still escalates rather than duplicating it. `false` → act on the
+   chosen candidate.
 
 ## Invariants
 
@@ -63,12 +66,36 @@ question id:
   `DecisionError::Engine`, never a silent default.
 - **Policy stays outside** — whatever Laya picks is still gated.
 
-## Out of scope
+## Modal dismissal
 
-The sim driver does not reject presses behind a modal (real-OS
-semantics vary by toolkit); scenario outcomes rest on the decision
-layer's verdicts. Modal dismissal as a generated candidate is a later
-slice.
+Dismissal candidates are structural, generated only when there is
+exactly one `dialog` or `sheet`, at least one ordinary candidate behind
+it, and exactly one matching button that is enabled or has no enabled
+state in that modal's descendant tree. Zero or multiple matches fail closed. If the generator already
+offers that element for the goal, it is not tagged or duplicated. The
+synthetic candidate uses the normal button target builder, has prior
+`0.2`, and records the modal label in `dismisses_modal`.
+
+The exact-label allowlist is `más tarde`, `ahora no`, `cerrar`,
+`no, gracias`, `recordármelo más tarde`, `later`, `not now`, `close`,
+`no thanks`, and `remind me later`, after lowercasing, trimming, and
+stripping trailing `.`, `!`, or `…`. Matching is exact, never substring.
+`cancelar`/`cancel` may abort the user's in-flight operation; `no` may
+discard changes; `descartar`/`discard` and `omitir`/`skip` are not
+safe dismissals; `aceptar`/`ok`/`sí` express consent.
+
+`RuleBased` abstains when the top candidate is a dismissal candidate,
+and the recovery ladder excludes dismissal candidates. Only Laya may
+choose one after `blocking_modal = true`; it acts only if exactly one
+candidate names the same modal, otherwise it escalates. The last-act
+repeat guard applies to the selected dismissal too: when it repeats an
+unchanged/unknown prior action and `action_effect = true`, Laya
+escalates. The shared `Engine::run_step` still applies policy to every
+act; dismissal does not bypass approval or policy checks.
+
+The sim driver removes a dismissed modal together with its descendants,
+but real-OS modal behavior still varies by toolkit. Scenario outcomes
+pin decision behavior, not universal native dialog semantics.
 
 ## Action effect and goal completion
 
@@ -97,8 +124,9 @@ Tests: `crates/decision/tests/questions.rs` pins delta questions and the
 repeat guard; engine tests pin `None`, `Unchanged`, `Changed`, and
 incomplete-perception `Unknown`; `crates/laya/tests/contract.rs` pins
 typed answers and protocol failures. The `no-effect-submit` and
-`goal-complete-mismatch` sim scenarios in
-`crates/eval/tests/scenario.rs` pin rule-based and cascade behavior.
+`goal-complete-mismatch` sim scenarios pin rule-based and Laya behavior;
+`modal-blocking` and `modal-no-dismiss` pin safe dismissal and
+fail-closed escalation.
 
 ## Tests
 
@@ -112,7 +140,8 @@ typed answers and protocol failures. The `no-effect-submit` and
   `datasets/scenarios/ambiguous-twin.toml` — rule-based abstains on
   both (suite gate); `crates/eval/tests/scenario.rs` runs them through
   `Cascade[rule-based, laya(dev)]`: twin completes on the right row in
-  one step, modal escalates.
+  one step, modal dismisses then saves in two acts. `modal-no-dismiss`
+  pins escalation when no safe control is available.
 
 ## Measuring per-type quality
 
@@ -143,6 +172,6 @@ Unlabeled items count toward `asked` and its decision outcomes, but are
 excluded from `labeled`, `detected`, and `spurious`: without a detector
 label, an asked question cannot be classified as expected or spurious.
 
-The initial question dataset has only ten teacher-authored synthetic
+The initial question dataset has only eleven teacher-authored synthetic
 items, so its per-type measurements have tiny `n` and are descriptive,
 not quality gates.

@@ -2,7 +2,10 @@
 //! variety, coverage-based ranking, focused/delta/repeat signals.
 
 use dexter_core::{Action, Element, ElementId, MouseButton, Observation, Target};
-use dexter_decision::{CandidateGenerator, GenHistory, HeuristicGenerator};
+use dexter_decision::{
+    CandidateGenerator, Decision, DecisionContext, DecisionEngine, GenHistory, HeuristicGenerator,
+    Route, RuleBased,
+};
 
 fn el(id: u64, role: &str, name: &str, actions: &[&str]) -> Element {
     Element {
@@ -216,6 +219,183 @@ fn verb_only_goal_matches_by_verb() {
     ]);
     let cands = gen().generate(&o, "pay", &empty());
     assert_eq!(cands.len(), 1);
+}
+
+fn modal_obs(labels: &[(&str, bool)], dialogs: usize) -> Observation {
+    let mut elements = vec![
+        el(1, "window", "Editor de texto", &[]),
+        el(2, "button", "Guardar", &["press"]),
+    ];
+    for dialog in 0..dialogs {
+        let dialog_id = 3 + dialog as u64 * 10;
+        elements.push(Element {
+            id: ElementId(dialog_id),
+            parent: Some(ElementId(1)),
+            role: Some("dialog".into()),
+            name: Some(if dialog == 0 {
+                "Actualización disponible".into()
+            } else {
+                "Otro diálogo".into()
+            }),
+            ..Default::default()
+        });
+        if dialog == 0 {
+            for (index, (label, enabled)) in labels.iter().enumerate() {
+                elements.push(Element {
+                    enabled: Some(*enabled),
+                    parent: Some(ElementId(dialog_id)),
+                    ..el(4 + index as u64, "button", label, &["press"])
+                });
+            }
+        }
+    }
+    obs(elements)
+}
+
+fn button_name(candidate: &dexter_decision::CandidateAction) -> Option<&str> {
+    match &candidate.action {
+        Action::Click {
+            target: Target::Semantic(st),
+            ..
+        } => st.name.as_deref(),
+        _ => None,
+    }
+}
+
+#[test]
+fn modal_blocking_generates_one_safe_dismissal_candidate() {
+    let candidates = gen().generate(
+        &modal_obs(&[("Más tarde", true), ("Instalar ahora", true)], 1),
+        "guardar el documento",
+        &empty(),
+    );
+    let dismissal = candidates
+        .iter()
+        .find(|candidate| button_name(candidate) == Some("Más tarde"))
+        .expect("safe modal dismissal candidate");
+    assert_eq!(dismissal.prior, 0.2);
+    assert_eq!(dismissal.behind_modal, None);
+    assert_eq!(
+        dismissal.dismisses_modal.as_deref(),
+        Some("Actualización disponible")
+    );
+    assert_eq!(
+        dismissal.rationale,
+        "dismiss modal \"Actualización disponible\" via \"Más tarde\""
+    );
+    assert_eq!(
+        candidates
+            .iter()
+            .filter(|candidate| button_name(candidate) == Some("Más tarde"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn modal_dismissal_requires_a_behind_modal_candidate_and_one_safe_match() {
+    let relevant = gen().generate(
+        &modal_obs(&[("Más tarde", true), ("Instalar ahora", true)], 1),
+        "instalar la actualización ahora",
+        &empty(),
+    );
+    assert!(relevant
+        .iter()
+        .all(|candidate| button_name(candidate) != Some("Más tarde")));
+
+    for labels in [
+        vec![("Más tarde", true), ("Cerrar", true)],
+        vec![("Cerrar", true), ("Cerrar", true)],
+        vec![("Más tarde", false)],
+        vec![("Cancelar", true)],
+        vec![("No", true)],
+    ] {
+        let candidates = gen().generate(&modal_obs(&labels, 1), "guardar el documento", &empty());
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| button_name(candidate) != Some("Más tarde")
+                    && button_name(candidate) != Some("Cerrar")),
+            "labels {labels:?} generated a dismissal: {candidates:?}"
+        );
+    }
+
+    let two_dialogs = gen().generate(
+        &modal_obs(&[("Más tarde", true)], 2),
+        "guardar el documento",
+        &empty(),
+    );
+    assert!(two_dialogs
+        .iter()
+        .all(|candidate| button_name(candidate) != Some("Más tarde")));
+}
+
+#[test]
+fn modal_dismissal_strips_trailing_punctuation() {
+    let candidates = gen().generate(
+        &modal_obs(&[("Cerrar.", true)], 1),
+        "guardar el documento",
+        &empty(),
+    );
+    let dismissal = candidates
+        .iter()
+        .find(|candidate| button_name(candidate) == Some("Cerrar."))
+        .expect("punctuation-normalized label is generated");
+    assert_eq!(
+        dismissal.dismisses_modal.as_deref(),
+        Some("Actualización disponible")
+    );
+}
+
+#[test]
+fn modal_dismissal_does_not_retag_a_goal_candidate() {
+    let candidates = gen().generate(
+        &modal_obs(&[("Más tarde", true)], 1),
+        "guardar más tarde",
+        &empty(),
+    );
+    let dismissals: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| button_name(candidate) == Some("Más tarde"))
+        .collect();
+    assert_eq!(dismissals.len(), 1);
+    assert_eq!(dismissals[0].dismisses_modal, None);
+}
+
+#[test]
+fn rule_based_abstains_on_a_modal_dismissal_candidate() {
+    let candidate = dexter_decision::CandidateAction {
+        action: Action::Click {
+            target: Target::Semantic(dexter_core::SemanticTarget {
+                role: Some("button".into()),
+                name: Some("Más tarde".into()),
+                ..Default::default()
+            }),
+            button: MouseButton::Left,
+        },
+        rationale: "dismiss modal".into(),
+        prior: 0.2,
+        behind_modal: None,
+        dismisses_modal: Some("Actualización disponible".into()),
+    };
+    let ctx = DecisionContext {
+        goal: "guardar el documento".into(),
+        state_digest: "dialog Actualización disponible".into(),
+        candidates: vec![candidate],
+        last_error: None,
+        step: 1,
+        last_act: None,
+    };
+    let decision = RuleBased { act_threshold: 0.0 }
+        .decide(&ctx)
+        .expect("decision");
+    assert_eq!(
+        decision,
+        Decision::Route {
+            route: Route::Abstain,
+            rationale: "only a modal-dismissal candidate — dismissing a dialog is a typed Laya call, not a rule".into(),
+        }
+    );
 }
 
 #[test]
