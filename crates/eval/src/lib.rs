@@ -20,12 +20,15 @@
 
 use dexter_core::{Action, ElementId, Observation, SemanticTarget, Target};
 use dexter_decision::{
-    CandidateGenerator, Decision, DecisionContext, DecisionEngine, GenHistory, Route,
+    questions::typed_questions, CandidateGenerator, Decision, DecisionContext, DecisionEngine,
+    GenHistory, Question, Route,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub mod calibrate;
 pub mod harvest;
+pub mod questions_dataset;
 pub mod recording;
 pub mod scenario;
 
@@ -56,6 +59,10 @@ pub struct EvalItem {
     /// generator versions.
     pub observation: Observation,
     pub gold: Gold,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_act: Option<dexter_decision::LastAct>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_questions: Option<Vec<String>>,
     /// Provenance: "scenario", "data-url", "sim", "manual".
     pub source: String,
     #[serde(default)]
@@ -147,6 +154,35 @@ pub struct ItemVerdict {
     /// Engine whose verdict stood (a cascade's answering tier); `None`
     /// when the engine errored.
     pub tier: Option<String>,
+    /// Typed questions raised by the structural detector.
+    pub asked: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct QuestionStats {
+    pub labeled: usize,
+    pub detected: usize,
+    pub spurious: usize,
+    pub asked: usize,
+    pub correct: usize,
+    pub false_acts: usize,
+    pub false_routes: usize,
+}
+
+impl QuestionStats {
+    pub fn detector_recall(&self) -> f64 {
+        if self.labeled == 0 {
+            return 0.0;
+        }
+        self.detected as f64 / self.labeled as f64
+    }
+
+    pub fn accuracy(&self) -> f64 {
+        if self.asked == 0 {
+            return 0.0;
+        }
+        self.correct as f64 / self.asked as f64
+    }
 }
 
 /// Aggregate metrics for one (generator, engine) pair over a dataset.
@@ -171,6 +207,8 @@ pub struct EvalReport {
     /// Engine acted when gold was a route (over-action — the dangerous
     /// direction: acting when it shouldn't).
     pub false_acts: usize,
+    /// Typed-question detector and decision metrics by question ID.
+    pub questions: BTreeMap<String, QuestionStats>,
     pub verdicts: Vec<ItemVerdict>,
 }
 
@@ -304,8 +342,18 @@ pub fn replay_item(
         candidates,
         last_error: None,
         step,
-        last_act: None,
+        last_act: item.last_act.clone(),
     };
+    let mut asked: Vec<String> = typed_questions(&ctx)
+        .into_iter()
+        .map(|question| match question {
+            Question::Choice { id, .. }
+            | Question::Score { id, .. }
+            | Question::Bool { id, .. } => id,
+        })
+        .collect();
+    asked.sort();
+    asked.dedup();
 
     let covered = gold_covered(&item.gold, &ctx, obs);
     let traced = engine.decide_traced(&ctx)?;
@@ -353,6 +401,7 @@ pub fn replay_item(
         decision,
         note,
         tier,
+        asked,
     })
 }
 
@@ -363,6 +412,14 @@ pub fn run_eval(
     engine: &dyn DecisionEngine,
 ) -> EvalReport {
     let mut report = EvalReport::default();
+    for id in [
+        dexter_decision::questions::BLOCKING_MODAL_ID,
+        dexter_decision::questions::DISAMBIGUATE_ID,
+        dexter_decision::questions::ACTION_EFFECT_ID,
+        dexter_decision::questions::GOAL_COMPLETE_ID,
+    ] {
+        report.questions.insert(id.into(), QuestionStats::default());
+    }
     for (i, item) in items.iter().enumerate() {
         report.items += 1;
         let verdict = match replay_item(item, generator, engine, i as u32 + 1) {
@@ -377,8 +434,37 @@ pub fn run_eval(
                 },
                 note: format!("engine error: {e}"),
                 tier: None,
+                asked: vec![],
             },
         };
+        for (id, stats) in &mut report.questions {
+            let was_asked = verdict.asked.iter().any(|asked| asked == id);
+            let was_labeled = item
+                .expect_questions
+                .as_ref()
+                .is_some_and(|expected| expected.iter().any(|expected| expected == id));
+            if was_labeled {
+                stats.labeled += 1;
+                if was_asked {
+                    stats.detected += 1;
+                }
+            } else if was_asked && item.expect_questions.is_some() {
+                stats.spurious += 1;
+            }
+            if was_asked {
+                stats.asked += 1;
+                if verdict.correct == Some(true) {
+                    stats.correct += 1;
+                }
+                match (&item.gold, &verdict.decision) {
+                    (Gold::Route { .. }, Decision::Act { .. }) => stats.false_acts += 1,
+                    (Gold::Act { .. } | Gold::AnyOf { .. }, Decision::Route { .. }) => {
+                        stats.false_routes += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
         let is_route_gold = matches!(item.gold, Gold::Route { .. });
         if is_route_gold {
             report.route_items += 1;

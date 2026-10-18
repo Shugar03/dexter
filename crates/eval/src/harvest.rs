@@ -148,6 +148,8 @@ pub fn harvest(
             goal: page.goal.clone(),
             observation: obs,
             gold,
+            last_act: None,
+            expect_questions: None,
             source: "harvest".into(),
             meta: serde_json::json!({"url": url, "app": page.app}),
         });

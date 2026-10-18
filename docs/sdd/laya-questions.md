@@ -113,3 +113,36 @@ typed answers and protocol failures. The `no-effect-submit` and
   both (suite gate); `crates/eval/tests/scenario.rs` runs them through
   `Cascade[rule-based, laya(dev)]`: twin completes on the right row in
   one step, modal escalates.
+
+## Measuring per-type quality
+
+Each eval item may set `expect_questions` to `Some([...])`, the gold
+question IDs the structural detector should raise; `Some([])` means no
+typed question is expected. `None` means the item is unlabeled for
+question detection. `last_act` supplies the prior action and world delta
+needed to detect `action_effect` or `goal_complete`. Replay records the
+sorted, deduplicated IDs returned by `typed_questions`, independently of
+which decision engine answers.
+
+`QuestionStats` reports, per question ID:
+
+- `labeled`: labeled items whose `expect_questions` contains this ID.
+- `detected`: labeled items expecting this ID where it was asked.
+- `spurious`: asked items labeled with `Some(...)` that does not contain
+  this ID.
+- `asked`: all items where the detector asked this ID, including
+  unlabeled items.
+- `correct`: asked items whose decision matches the gold answer.
+- `false_acts`: asked items with a gold route where the engine acted.
+- `false_routes`: asked items with a gold action (`Act` or `AnyOf`)
+  where the engine routed.
+
+Detector recall is `detected / labeled`; decision accuracy is
+`correct / asked`. Either is zero when its denominator is zero.
+Unlabeled items count toward `asked` and its decision outcomes, but are
+excluded from `labeled`, `detected`, and `spurious`: without a detector
+label, an asked question cannot be classified as expected or spurious.
+
+The initial question dataset has only ten teacher-authored synthetic
+items, so its per-type measurements have tiny `n` and are descriptive,
+not quality gates.
