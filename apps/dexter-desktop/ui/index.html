@@ -54,18 +54,55 @@
       #events time, #events .kind { color: #9aacca; }
       #events .summary { overflow-wrap: anywhere; color: #d1dae6; }
       .empty { color: #7f8da1; font-size: 13px; }
+      .approvals { grid-column: 1 / -1; }
+      #pending-approvals { display: flex; flex-direction: column; gap: 9px; padding: 0; margin: 0; list-style: none; }
+      #pending-approvals li {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px 18px;
+        padding: 12px;
+        border-radius: 8px;
+        background: #111721;
+      }
+      .approval-reason { overflow-wrap: anywhere; }
+      .approval-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; color: #9ba9bb; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+      .approval-fingerprint { overflow-wrap: anywhere; }
+      .approval-action { font-weight: 600; }
+      .approval-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+      .approval-controls button {
+        padding: 7px 11px;
+        border: 1px solid #43536a;
+        border-radius: 6px;
+        background: #202b3b;
+        color: #e7edf5;
+        font: inherit;
+        cursor: pointer;
+      }
+      .approval-controls button:hover:not(:disabled) { background: #2b3a50; }
+      .approval-controls button:disabled { cursor: not-allowed; opacity: .55; }
+      .approval-status { color: #aebbd0; font-size: 12px; }
       @media (max-width: 800px) {
         body { padding: 16px; }
         main { grid-template-columns: 1fr; }
+        .approvals { grid-column: auto; }
+        #pending-approvals li { grid-template-columns: 1fr; }
+        .approval-controls { justify-content: flex-start; }
       }
     </style>
   </head>
   <body>
     <header>
       <h1>Dexter</h1>
-      <p>Read-only runtime journal and policy state</p>
+      <p>Runtime journal, policy, and pending approvals</p>
     </header>
     <main>
+      <section class="approvals" aria-labelledby="approvals-heading">
+        <h2 id="approvals-heading">Pending approvals</h2>
+        <p id="approval-channel-state" class="state">Waiting for snapshot…</p>
+        <p id="approval-note" class="state"></p>
+        <p id="approval-error" class="error"></p>
+        <ul id="pending-approvals"></ul>
+      </section>
       <section aria-labelledby="policy-heading">
         <h2 id="policy-heading">Policy</h2>
         <p id="policy-state" class="state">Loading policy…</p>
@@ -176,10 +213,110 @@
         }
       }
 
+      function formatAge(tsMs) {
+        const seconds = Math.max(0, Math.floor((Date.now() - tsMs) / 1000));
+        if (seconds < 60) return `${seconds}s ago`;
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return `${minutes}m ago`;
+        return `${Math.floor(minutes / 60)}h ago`;
+      }
+
+      function renderApprovals(channel, pending) {
+        const disabled = channel.state === "disabled";
+        byId("approval-channel-state").textContent =
+          channel.state === "enabled" ? `Enabled · ${channel.path}` : "Disabled";
+        byId("approval-note").textContent = disabled
+          ? "Read-only: start with --approvals <path> and run dexter with --approval-inbox <same path>"
+          : "";
+        const list = byId("pending-approvals");
+        list.replaceChildren();
+        if (pending.length === 0) {
+          const empty = document.createElement("li");
+          empty.className = "empty";
+          empty.textContent = "No pending approvals";
+          list.appendChild(empty);
+          return;
+        }
+        for (const approval of pending) {
+          const row = document.createElement("li");
+          const details = document.createElement("div");
+          const reason = document.createElement("div");
+          reason.className = "approval-reason";
+          reason.textContent = approval.reason || "Approval required";
+          const meta = document.createElement("div");
+          meta.className = "approval-meta";
+          const fingerprint = document.createElement("span");
+          fingerprint.className = "approval-fingerprint";
+          fingerprint.title = approval.fingerprint;
+          fingerprint.textContent = approval.fingerprint.length > 24
+            ? `${approval.fingerprint.slice(0, 12)}…${approval.fingerprint.slice(-8)}`
+            : approval.fingerprint;
+          const age = document.createElement("span");
+          age.textContent = formatAge(approval.ts_ms);
+          meta.append(fingerprint, age);
+          const action = document.createElement("div");
+          action.className = "approval-action";
+          action.textContent = describeFingerprint(approval.fingerprint);
+          details.append(action, reason, meta);
+          row.appendChild(details);
+
+          if (!disabled) {
+            const controls = document.createElement("div");
+            controls.className = "approval-controls";
+            const approve = document.createElement("button");
+            approve.type = "button";
+            approve.textContent = "Approve";
+            approve.disabled = Boolean(approval.sent);
+            approve.addEventListener("click", () => sendDecision("approve", approval.fingerprint));
+            const deny = document.createElement("button");
+            deny.type = "button";
+            deny.textContent = "Deny";
+            deny.disabled = Boolean(approval.sent);
+            deny.addEventListener("click", () => sendDecision("deny", approval.fingerprint));
+            controls.append(approve, deny);
+            if (approval.sent) {
+              const status = document.createElement("span");
+              status.className = "approval-status";
+              status.textContent = approval.sent === "grant"
+                ? "grant sent — waiting for engine"
+                : "deny sent";
+              controls.appendChild(status);
+            }
+            row.appendChild(controls);
+          }
+          list.appendChild(row);
+        }
+      }
+
+      function describeFingerprint(fingerprint) {
+        try {
+          const [action, app] = JSON.parse(fingerprint);
+          const target = action.target || {};
+          const label = target.name ?? target.name_contains ?? target.identifier;
+          const parts = [action.type, target.role, label ? `"${label}"` : null];
+          if (typeof action.text === "string") parts.push(`text "${action.text}"`);
+          if (app) parts.push(`in ${typeof app === "string" ? app : JSON.stringify(app)}`);
+          return parts.filter(Boolean).join(" ");
+        } catch {
+          return fingerprint;
+        }
+      }
+
+      async function sendDecision(command, fingerprint) {
+        byId("approval-error").textContent = "";
+        try {
+          await invoke(command, { fingerprint });
+          await poll();
+        } catch (error) {
+          byId("approval-error").textContent = String(error);
+        }
+      }
+
       async function poll() {
         try {
           const snapshot = await invoke("snapshot");
           renderPolicy(snapshot.policy);
+          renderApprovals(snapshot.approvals, snapshot.pending);
           renderJournal(snapshot.journal, snapshot.events);
         } catch (error) {
           byId("journal-state").textContent = "Snapshot unavailable";

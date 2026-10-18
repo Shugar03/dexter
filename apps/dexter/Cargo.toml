@@ -30,3 +30,6 @@ toml.workspace = true
 anyhow.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+dexter-sim.workspace = true

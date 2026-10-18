@@ -21,6 +21,9 @@ use dexter_core::{
 use dexter_driver::{ActContext, ComputerDriver, DriverError};
 use dexter_policy::{ActionContext, ApprovalStore, Policy, PolicyDecision};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub mod presence;
@@ -133,6 +136,112 @@ pub struct Journal {
 /// Hard cap on retained events — long sessions stay light.
 const JOURNAL_CAP: usize = 10_000;
 
+struct ApprovalInbox {
+    path: PathBuf,
+    offset: u64,
+}
+
+#[derive(Deserialize)]
+struct ApprovalInboxLine {
+    fingerprint: String,
+    decision: String,
+    #[serde(rename = "ts_ms")]
+    _ts_ms: u64,
+}
+
+fn check_approval_inbox_permissions(path: &Path) -> Result<(), String> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "cannot inspect approval inbox '{}': {error}",
+            path.display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o022 != 0 {
+            return Err(format!(
+                "approval inbox '{}' is group/world-writable",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn approval_inbox_start_offset(path: &Path) -> Result<u64, String> {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            check_approval_inbox_permissions(path)?;
+            Ok(metadata.len())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(format!(
+            "cannot inspect approval inbox '{}': {error}",
+            path.display()
+        )),
+    }
+}
+
+fn read_approval_inbox_lines(inbox: &mut ApprovalInbox) -> Result<Vec<Vec<u8>>, String> {
+    let metadata = match fs::metadata(&inbox.path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect approval inbox '{}': {error}",
+                inbox.path.display()
+            ))
+        }
+    };
+    check_approval_inbox_permissions(&inbox.path)?;
+    if metadata.len() < inbox.offset {
+        inbox.offset = 0;
+    }
+
+    let mut file = match fs::File::open(&inbox.path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "cannot read approval inbox '{}': {error}",
+                inbox.path.display()
+            ))
+        }
+    };
+    file.seek(SeekFrom::Start(inbox.offset)).map_err(|error| {
+        format!(
+            "cannot seek approval inbox '{}': {error}",
+            inbox.path.display()
+        )
+    })?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|error| {
+        format!(
+            "cannot read approval inbox '{}': {error}",
+            inbox.path.display()
+        )
+    })?;
+    let Some(complete_len) = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map(|index| index + 1)
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for (index, byte) in bytes[..complete_len].iter().enumerate() {
+        if *byte == b'\n' {
+            lines.push(bytes[start..index].to_vec());
+            start = index + 1;
+        }
+    }
+    inbox.offset += complete_len as u64;
+    Ok(lines)
+}
+
 impl Journal {
     fn push(&mut self, ev: Event) {
         if self.events.len() >= JOURNAL_CAP {
@@ -154,6 +263,7 @@ pub struct Engine<D: ComputerDriver> {
     /// immediately so a presence overlay (or any consumer) can tail the
     /// journal while the task is still running.
     journal_sink: Option<std::io::BufWriter<std::fs::File>>,
+    approval_inbox: Option<ApprovalInbox>,
 }
 
 impl<D: ComputerDriver> Engine<D> {
@@ -164,7 +274,16 @@ impl<D: ComputerDriver> Engine<D> {
             approvals: ApprovalStore::new(approval_ttl),
             journal: Default::default(),
             journal_sink: None,
+            approval_inbox: None,
         }
+    }
+
+    /// Attach an opt-in JSONL channel for decisions on live approval
+    /// requests. Existing bytes are deliberately ignored.
+    pub fn set_approval_inbox(&mut self, path: PathBuf) -> Result<(), String> {
+        let offset = approval_inbox_start_offset(&path)?;
+        self.approval_inbox = Some(ApprovalInbox { path, offset });
+        Ok(())
     }
 
     /// Stream every event to `path` (truncated at open) as it happens —
@@ -228,6 +347,19 @@ impl<D: ComputerDriver> Engine<D> {
         granted
     }
 
+    /// Deny a live approval request without granting the action.
+    pub fn deny_pending(&mut self, fingerprint: &str) -> bool {
+        let denied = self.approvals.deny(fingerprint);
+        self.journal(
+            EventKind::PolicyChecked,
+            serde_json::json!({
+                "decision": if denied { "denied_by_human" } else { "deny_rejected" },
+                "fingerprint": fingerprint,
+            }),
+        );
+        denied
+    }
+
     /// Consent to physical input for this engine — fills the policy's
     /// physical default only when the file left it absent. Pair with
     /// `RunConfig::allow_coordinates` (the driver-side second line).
@@ -254,8 +386,59 @@ impl<D: ComputerDriver> Engine<D> {
         self.journal.lock().unwrap().push(ev);
     }
 
+    fn drain_approval_inbox(&mut self) {
+        let lines = match self.approval_inbox.as_mut() {
+            None => return,
+            Some(inbox) => match read_approval_inbox_lines(inbox) {
+                Ok(lines) => lines,
+                Err(reason) => {
+                    self.journal(
+                        EventKind::PolicyChecked,
+                        serde_json::json!({
+                            "decision": "inbox_rejected",
+                            "reason": reason,
+                        }),
+                    );
+                    return;
+                }
+            },
+        };
+
+        for line in lines {
+            let parsed = serde_json::from_slice::<ApprovalInboxLine>(&line);
+            let Ok(entry) = parsed else {
+                self.journal(
+                    EventKind::PolicyChecked,
+                    serde_json::json!({
+                        "decision": "grant_rejected",
+                        "reason": "malformed inbox line",
+                    }),
+                );
+                continue;
+            };
+            match entry.decision.as_str() {
+                "grant" => {
+                    self.approve_pending(&entry.fingerprint);
+                }
+                "deny" => {
+                    self.deny_pending(&entry.fingerprint);
+                }
+                _ => {
+                    self.journal(
+                        EventKind::PolicyChecked,
+                        serde_json::json!({
+                            "decision": "grant_rejected",
+                            "reason": "malformed inbox line",
+                        }),
+                    );
+                }
+            }
+        }
+    }
+
     /// Run one step: policy gate → bounded act/verify loop.
     pub fn run_step(&mut self, step: &Step, cfg: &RunConfig) -> StepStatus {
+        self.drain_approval_inbox();
         // The journal carries the target's on-screen bounds so the
         // presence overlay can draw the cursor where the act lands.
         // run_plan already holds a live observation; single steps take

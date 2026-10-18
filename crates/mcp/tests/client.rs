@@ -171,6 +171,7 @@ async fn operator_opt_in_allows_coords() {
             approve_all: false,
             allow_coords: true,
             presence: false,
+            approval_inbox: None,
         },
     );
     tokio::spawn(async move {
@@ -200,6 +201,30 @@ async fn operator_opt_in_allows_coords() {
         "operator coords opt-in should reach the normal approval path: {status}"
     );
     client.cancel().await.ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn insecure_approval_inbox_fails_mcp_engine_setup() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path =
+        std::env::temp_dir().join(format!("dexter-mcp-insecure-inbox-{}", std::process::id()));
+    std::fs::write(&path, "").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+    let config = dexter_mcp::ServerConfig {
+        approval_inbox: Some(path.clone()),
+        ..Default::default()
+    };
+    let result = DexterMcp::try_with_decider(
+        Policy::embedded(),
+        Box::new(SimDriver::new(vec![])),
+        None,
+        config,
+    );
+    assert!(result.is_err());
+    std::fs::remove_file(path).unwrap();
 }
 
 #[tokio::test]

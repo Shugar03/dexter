@@ -403,6 +403,15 @@ impl ApprovalStore {
         true
     }
 
+    /// Deny a live approval request. Unknown or expired requests return
+    /// false; a denied request cannot subsequently be granted.
+    pub fn deny(&mut self, fingerprint: &str) -> bool {
+        let Some(t) = self.pending.remove(fingerprint) else {
+            return false;
+        };
+        t.elapsed() <= self.ttl
+    }
+
     /// Operator pre-authorization (e.g. a scenario's `grants` list —
     /// the suite author *is* the approver). Single-use and time-boxed
     /// like any grant, but requires no pending request.
