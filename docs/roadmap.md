@@ -341,11 +341,15 @@ Seeded 2026-10-12 from the slices the last PRs flagged as remaining
 (#69, #70, #72, #73, laya-questions SDD) plus ROADMAP.md Etapas 1, 3,
 5 and 6.
 
-- [ ] Per-question-type Laya accuracy — extend `dexter-eval` so typed
+- [x] Per-question-type Laya accuracy — extend `dexter-eval` so typed
   questions (`blocking_modal`, `disambiguate`, `action_effect`,
   `goal_complete`) get gold labels and per-type coverage/accuracy in
   `docs/eval-numbers.md`, reported honestly next to `pick`. (Etapa 3
-  — criterio de salida; remaining from PR #73)
+  — criterio de salida; remaining from PR #73) —
+  [PR #77](https://github.com/Shugar03/dexter/pull/77), 2026-10-11:
+  `EvalItem.expect_questions` / `last_act`, `EvalReport.questions`
+  (`QuestionStats` per id), 10-item `datasets/questions`, numbers in
+  `docs/eval-numbers.md`. Remaining: label real (non-synthetic) items.
 - [ ] Modal dismissal as a generated candidate — when `blocking_modal`
   is answered true and the dialog offers a dismiss control matching a
   polarity-safe label ("Más tarde", "Cerrar"), generate it as a
