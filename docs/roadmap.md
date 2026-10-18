@@ -323,9 +323,17 @@ Seeded 2026-10-11 from the slices the last PRs flagged as remaining
   refuses to blindly repeat a no-effect act. Sim scenarios
   `no-effect-submit`, `goal-complete-mismatch` + recordings.
   Remaining: per-question accuracy on real data.
-- [ ] `[windows]` act remainder — context-menu patterns and
+- [x] `[windows]` act remainder — context-menu patterns and
   `background_input`, keeping SendInput behind `allow_coordinates`.
-  (Etapa 4; remaining from PR #57)
+  (Etapa 4; remaining from PR #57) —
+  [PR #75](https://github.com/Shugar03/dexter/pull/75), 2026-10-12:
+  right `Click` opens context menus semantically (posted
+  `WM_CONTEXTMENU`, then `IUIAutomationElement3::ShowContextMenu`),
+  success only once a new menu window of the pid appears; items press
+  through the normal semantic ladder. No semantic path → `UNSUPPORTED`
+  unless coords allowed. `background_input` stays `false` (SendInput
+  paths still exist); per-path claim documented and live-tested.
+  Remaining: middle click, Windows `icon.ico` for the desktop build.
 
 ## Fase 8 — operator surface + decision measurement
 
