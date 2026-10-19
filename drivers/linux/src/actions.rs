@@ -1,3 +1,5 @@
+use std::ffi::OsStr;
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,6 +26,7 @@ const IFACE_VALUE: &str = "org.a11y.atspi.Value";
 struct Resolved {
     element: Element,
     node: Acc,
+    pid: i32,
 }
 
 impl Resolved {
@@ -100,10 +103,11 @@ fn resolve_target(
             Ok(Resolved {
                 element: fresh,
                 node,
+                pid: entry.pid,
             })
         }
         Target::Semantic(_) => {
-            let (_, live) = walk_app(ctx)?;
+            let (pid, live) = walk_app(ctx)?;
             let LiveWalk {
                 elements,
                 nodes,
@@ -123,7 +127,7 @@ fn resolve_target(
                 .cloned()
                 .ok_or_else(stale_mid_walk)?;
             let node = nodes.get(idx).cloned().ok_or_else(stale_mid_walk)?;
-            Ok(Resolved { element, node })
+            Ok(Resolved { element, node, pid })
         }
         Target::Focused => {
             let (pid, live) = walk_app(ctx)?;
@@ -144,7 +148,7 @@ fn resolve_target(
                         .cloned()
                         .ok_or_else(stale_mid_walk)?;
                     let node = live.nodes.get(*idx).cloned().ok_or_else(stale_mid_walk)?;
-                    Ok(Resolved { element, node })
+                    Ok(Resolved { element, node, pid })
                 }
                 many => Err(DriverError::Ambiguous(format!(
                     "{} focused elements in pid {pid}",
@@ -404,6 +408,23 @@ fn type_text(
     set_editable_text(&resolved, text, &conn)
 }
 
+fn coordinate_scale(pid: Option<i32>) -> Result<f64, DriverError> {
+    pid.map(crate::scale::gdk_scale_for_pid)
+        .transpose()
+        .map(|scale| scale.unwrap_or(1.0))
+}
+
+fn scale_action_error(error: DriverError) -> Result<ActionResult, DriverError> {
+    match error {
+        DriverError::Unsupported(reason) => Ok(ActionResult::failure(
+            ActionStatus::Unsupported,
+            Mechanism::Coordinates,
+            reason,
+        )),
+        error => Err(error),
+    }
+}
+
 fn click(
     target: &Target,
     button: dexter_core::MouseButton,
@@ -415,7 +436,12 @@ fn click(
             if !ctx.allow_coordinates {
                 return Ok(physical_input(ctx));
             }
-            return input_action(xtest::click(*x, *y, button), |_| {
+            let pid = ctx.app.as_ref().map(bus::resolve_app).transpose()?;
+            let scale = match coordinate_scale(pid) {
+                Ok(scale) => scale,
+                Err(error) => return scale_action_error(error),
+            };
+            return input_action(xtest::click(*x * scale, *y * scale, button), |_| {
                 format!("clicked {} at ({x},{y})", button_name(button))
             });
         }
@@ -451,7 +477,11 @@ fn click(
     };
     let x = bounds.x + bounds.w / 2.0;
     let y = bounds.y + bounds.h / 2.0;
-    input_action(xtest::click(x, y, button), |_| {
+    let scale = match coordinate_scale(Some(resolved.pid)) {
+        Ok(scale) => scale,
+        Err(error) => return scale_action_error(error),
+    };
+    input_action(xtest::click(x * scale, y * scale, button), |_| {
         format!("clicked {} at ({x},{y})", button_name(button))
     })
 }
@@ -737,6 +767,44 @@ fn scroll(
     ))
 }
 
+fn navigable_url(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return false;
+    };
+    !rest.is_empty()
+        && matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "http" | "https" | "mailto"
+        )
+}
+
+fn navigate_with(opener: &OsStr, url: &str) -> Result<ActionResult, DriverError> {
+    if !navigable_url(url) {
+        return Ok(ActionResult::failure(
+            ActionStatus::Unsupported,
+            Mechanism::NativeAutomation,
+            "refusing to open non-URL input — only http/https/mailto reach xdg-open",
+        ));
+    }
+    match Command::new(opener).arg(url).status() {
+        Ok(status) if status.success() => Ok(ActionResult::success(
+            Mechanism::NativeAutomation,
+            Some(format!("opened {url}")),
+        )),
+        Ok(status) => Ok(ActionResult::failure(
+            ActionStatus::Failed,
+            Mechanism::NativeAutomation,
+            format!("xdg-open {url} exited {status}"),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ActionResult::failure(
+            ActionStatus::Unsupported,
+            Mechanism::NativeAutomation,
+            "xdg-open not found",
+        )),
+        Err(error) => Err(DriverError::Platform(format!("xdg-open {url}: {error}"))),
+    }
+}
+
 pub fn act(
     action: &Action,
     ctx: &ActContext,
@@ -753,11 +821,7 @@ pub fn act(
         Action::Observe => Err(DriverError::Unsupported(
             "Action::Observe is an engine directive, not a driver action".into(),
         )),
-        Action::Navigate { .. } => Ok(ActionResult::failure(
-            ActionStatus::Unsupported,
-            Mechanism::Api,
-            "navigate not implemented on linux",
-        )),
+        Action::Navigate { url } => navigate_with(OsStr::new("xdg-open"), url),
         Action::Click { target, button } => click(target, *button, ctx, cache),
         Action::TypeText { text, target } => type_text(text, target.as_ref(), ctx, cache),
         Action::Key { chord } => {
@@ -797,5 +861,153 @@ pub fn act(
             }
             set_value(&resolved, value)
         }
+    }
+}
+
+#[cfg(test)]
+mod navigate_tests {
+    use super::{navigable_url, navigate_with};
+    use dexter_core::{ActionStatus, Mechanism};
+    use dexter_driver::DriverError;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_SCRIPT_ID: AtomicU64 = AtomicU64::new(0);
+
+    struct Script {
+        dir: PathBuf,
+        path: PathBuf,
+    }
+
+    impl Script {
+        fn new(body: &str) -> Self {
+            let nonce = NEXT_SCRIPT_ID.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "dexter-linux-navigate-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&dir).expect("create opener test directory");
+            let path = dir.join("opener");
+            fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write opener script");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+                .expect("make opener executable");
+            Self { dir, path }
+        }
+
+        fn quoted(path: &Path) -> String {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+        }
+    }
+
+    impl Drop for Script {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn navigable_url_allowlists_document_schemes() {
+        for ok in [
+            "https://example.com",
+            "http://localhost:8080/x",
+            "mailto:a@b.c",
+            "HTTP:example",
+            "MaIlTo:a@b.c",
+        ] {
+            assert!(navigable_url(ok), "{ok}");
+        }
+        for bad in [
+            "notepad.exe",
+            "C:\\Windows\\System32\\calc.exe",
+            "file:///c:/windows/system32/calc.exe",
+            "shell:AppsFolder\\x",
+            "ms-settings:display",
+            "javascript:alert(1)",
+            "vbscript:x",
+            "-a foo",
+            "",
+            "http:",
+        ] {
+            assert!(!navigable_url(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn allowed_url_is_passed_as_one_argument_to_the_opener() {
+        let args = std::env::temp_dir().join(format!("dexter-args-{}", std::process::id()));
+        let script = Script::new(&format!(
+            "printf '%s\\n' \"$#\" > {}; printf '%s\\n' \"$@\" > {}",
+            Script::quoted(&args),
+            Script::quoted(&args.with_extension("argv"))
+        ));
+        let url = "https://example.com/path?q=1";
+        let result = navigate_with(script.path.as_os_str(), url).expect("spawn opener");
+        assert_eq!(result.status, ActionStatus::Success, "{result:?}");
+        assert_eq!(result.mechanism, Mechanism::NativeAutomation);
+        assert_eq!(
+            fs::read_to_string(&args).expect("read argument count"),
+            "1\n"
+        );
+        assert_eq!(
+            fs::read_to_string(args.with_extension("argv")).expect("read argv"),
+            format!("{url}\n")
+        );
+        let _ = fs::remove_file(args);
+        let _ = fs::remove_file(
+            std::env::temp_dir().join(format!("dexter-args-{}.argv", std::process::id())),
+        );
+    }
+
+    #[test]
+    fn nonzero_opener_exit_is_a_failed_action() {
+        let script = Script::new("exit 3");
+        let result =
+            navigate_with(script.path.as_os_str(), "https://example.com").expect("spawn opener");
+        assert_eq!(result.status, ActionStatus::Failed, "{result:?}");
+        assert_eq!(result.mechanism, Mechanism::NativeAutomation);
+        assert!(result
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("xdg-open https://example.com exited")));
+    }
+
+    #[test]
+    fn missing_opener_is_unsupported() {
+        let missing =
+            std::env::temp_dir().join(format!("dexter-missing-opener-{}", std::process::id()));
+        let result = navigate_with(missing.as_os_str(), "https://example.com")
+            .expect("missing opener verdict");
+        assert_eq!(result.status, ActionStatus::Unsupported, "{result:?}");
+        assert_eq!(result.mechanism, Mechanism::NativeAutomation);
+        assert_eq!(result.detail.as_deref(), Some("xdg-open not found"));
+    }
+
+    #[test]
+    fn refused_url_never_runs_the_opener() {
+        let marker =
+            std::env::temp_dir().join(format!("dexter-refused-opener-{}", std::process::id()));
+        let _ = fs::remove_file(&marker);
+        let script = Script::new(&format!("printf ran > {}", Script::quoted(&marker)));
+        let result = navigate_with(script.path.as_os_str(), "file:///etc/passwd")
+            .expect("refused URL verdict");
+        assert_eq!(result.status, ActionStatus::Unsupported, "{result:?}");
+        assert_eq!(result.mechanism, Mechanism::NativeAutomation);
+        assert_eq!(
+            result.detail.as_deref(),
+            Some("refusing to open non-URL input — only http/https/mailto reach xdg-open")
+        );
+        assert!(!marker.exists(), "refused URL ran the opener");
+    }
+
+    #[test]
+    fn other_spawn_errors_remain_platform_errors() {
+        let dir =
+            std::env::temp_dir().join(format!("dexter-opener-directory-{}", std::process::id()));
+        fs::create_dir(&dir).expect("create opener directory");
+        let result = navigate_with(dir.as_os_str(), "https://example.com");
+        let _ = fs::remove_dir(dir);
+        assert!(matches!(result, Err(DriverError::Platform(_))));
     }
 }

@@ -83,15 +83,16 @@ pub fn capture_window_region(window: &Window, path: &Path) -> Result<Rect, Drive
             "X display root has no captureable dimensions".into(),
         ));
     }
+    let scale = crate::scale::gdk_scale_for_pid(window.pid)?;
     let root_bounds = Rect {
         x: 0.0,
         y: 0.0,
-        w: f64::from(root_w),
-        h: f64::from(root_h),
+        w: f64::from(root_w) / scale,
+        h: f64::from(root_h) / scale,
     };
     let monitor = MonitorGeometry {
         bounds: root_bounds,
-        scale: 1.0,
+        scale,
     };
     if dexter_vision::capture_monitor(std::slice::from_ref(&monitor), &window.bounds).is_none() {
         return Err(DriverError::NotFound(
