@@ -382,9 +382,9 @@ Seeded 2026-10-12 from the slices the last PRs flagged as remaining
   explicit `--grant` fingerprints — `needs_approval` steps report the
   fingerprint to pass — coordinates stay off. `replay_with` +
   `outcome_from_events` added; live-driver replay verified.
-- [ ] Desktop session list + replay view — list journals, open one,
+- [x] Desktop session list + replay view — list journals, open one,
   step through its recording read-only. (Etapa 6; remaining from
-  PR #69)
+  PR #69) — [PR #82](https://github.com/Shugar03/dexter/pull/82), 2026-10-19
 
 ## Fase 9 — release surface + platform tail
 
