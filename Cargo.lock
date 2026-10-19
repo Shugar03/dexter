@@ -1240,6 +1240,7 @@ version = "0.1.0"
 dependencies = [
  "dexter-core",
  "dexter-engine",
+ "dexter-eval",
  "dexter-policy",
  "dexter-sim",
  "serde",

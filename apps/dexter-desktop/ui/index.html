@@ -81,12 +81,51 @@
       .approval-controls button:hover:not(:disabled) { background: #2b3a50; }
       .approval-controls button:disabled { cursor: not-allowed; opacity: .55; }
       .approval-status { color: #aebbd0; font-size: 12px; }
+      .sessions { grid-column: 1 / -1; }
+      .session-grid { display: grid; grid-template-columns: minmax(250px, .75fr) minmax(0, 1.25fr); gap: 18px; }
+      #session-list { display: flex; flex-direction: column; gap: 8px; padding: 0; margin: 0; list-style: none; }
+      #session-list button {
+        display: grid;
+        width: 100%;
+        gap: 5px;
+        padding: 10px;
+        border: 1px solid #293444;
+        border-radius: 7px;
+        background: #111721;
+        color: #e7edf5;
+        text-align: left;
+        font: inherit;
+        cursor: pointer;
+      }
+      #session-list button:hover { background: #202b3b; }
+      .session-meta { color: #9ba9bb; font-size: 12px; }
+      .session-detail { min-width: 0; padding: 12px; border-radius: 8px; background: #111721; }
+      .session-stepper { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
+      .session-stepper button {
+        padding: 6px 10px;
+        border: 1px solid #43536a;
+        border-radius: 6px;
+        background: #202b3b;
+        color: #e7edf5;
+        font: inherit;
+        cursor: pointer;
+      }
+      .session-stepper button:disabled { cursor: not-allowed; opacity: .55; }
+      .session-step-index { color: #aebbd0; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+      .session-header h3 { margin-top: 0; }
+      .session-header p { margin: 6px 0; color: #aebbd0; overflow-wrap: anywhere; }
+      .session-field { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 10px; margin: 8px 0; font-size: 13px; }
+      .session-field strong { color: #93a1b4; }
+      .session-field span { overflow-wrap: anywhere; white-space: pre-wrap; }
       @media (max-width: 800px) {
         body { padding: 16px; }
         main { grid-template-columns: 1fr; }
         .approvals { grid-column: auto; }
+        .sessions { grid-column: auto; }
+        .session-grid { grid-template-columns: 1fr; }
         #pending-approvals li { grid-template-columns: 1fr; }
         .approval-controls { justify-content: flex-start; }
+        .session-field { grid-template-columns: 1fr; gap: 4px; }
       }
     </style>
   </head>
@@ -102,6 +141,17 @@
         <p id="approval-note" class="state"></p>
         <p id="approval-error" class="error"></p>
         <ul id="pending-approvals"></ul>
+      </section>
+      <section class="sessions" aria-labelledby="sessions-heading">
+        <h2 id="sessions-heading">Sessions</h2>
+        <p id="sessions-state" class="state">Loading sessions…</p>
+        <div class="session-grid">
+          <ul id="session-list"></ul>
+          <div class="session-detail">
+            <p id="session-detail-state" class="state">Choose a recording or journal.</p>
+            <div id="session-detail-pane"></div>
+          </div>
+        </div>
       </section>
       <section aria-labelledby="policy-heading">
         <h2 id="policy-heading">Policy</h2>
@@ -130,6 +180,8 @@
     <script>
       const invoke = window.__TAURI__.core.invoke;
       const byId = (id) => document.getElementById(id);
+      let activeSession = null;
+      let activeStep = 0;
 
       function addCell(row, value) {
         const cell = document.createElement("td");
@@ -221,6 +273,149 @@
         return `${Math.floor(minutes / 60)}h ago`;
       }
 
+      function formatBytes(bytes) {
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+      }
+
+      function renderSessions(view) {
+        const state = byId("sessions-state");
+        const list = byId("session-list");
+        list.replaceChildren();
+        state.className = view.state === "error" ? "error" : "state";
+        if (view.state === "not_configured") {
+          state.textContent = "Not configured — launch with --sessions <dir>";
+          return;
+        }
+        if (view.state === "error") {
+          state.textContent = `${view.path}: ${view.message}`;
+          return;
+        }
+        state.textContent = `${view.entries.length} session${view.entries.length === 1 ? "" : "s"} · ${view.path}${view.truncated ? " · listing truncated to 200" : ""}`;
+        if (view.entries.length === 0) {
+          const empty = document.createElement("li");
+          empty.className = "empty";
+          empty.textContent = "No recordings or journals";
+          list.appendChild(empty);
+          return;
+        }
+        for (const entry of view.entries) {
+          const item = document.createElement("li");
+          const button = document.createElement("button");
+          button.type = "button";
+          const name = document.createElement("span");
+          name.textContent = entry.name;
+          const meta = document.createElement("span");
+          meta.className = "session-meta";
+          meta.textContent = `${entry.kind} · ${formatBytes(entry.bytes)} · ${formatAge(entry.modified_ms)}`;
+          button.append(name, meta);
+          button.addEventListener("click", () => openSession(entry.name));
+          item.appendChild(button);
+          list.appendChild(item);
+        }
+      }
+
+      function appendSessionField(container, label, value) {
+        const field = document.createElement("div");
+        field.className = "session-field";
+        const name = document.createElement("strong");
+        name.textContent = label;
+        const content = document.createElement("span");
+        content.textContent = value ?? "—";
+        field.append(name, content);
+        container.appendChild(field);
+      }
+
+      function renderSessionDetail() {
+        const pane = byId("session-detail-pane");
+        pane.replaceChildren();
+        if (!activeSession) return;
+
+        const recording = activeSession.kind === "recording";
+        const rows = recording ? activeSession.steps : activeSession.events;
+        if (recording) {
+          const header = document.createElement("div");
+          header.className = "session-header";
+          const title = document.createElement("h3");
+          title.textContent = activeSession.scenario;
+          const goal = document.createElement("p");
+          goal.textContent = `Goal: ${activeSession.goal}`;
+          const outcome = document.createElement("p");
+          outcome.textContent = `Outcome: ${activeSession.outcome}`;
+          header.append(title, goal, outcome);
+          pane.appendChild(header);
+        } else {
+          const title = document.createElement("h3");
+          title.textContent = activeSession.name;
+          pane.appendChild(title);
+        }
+
+        const stepper = document.createElement("div");
+        stepper.className = "session-stepper";
+        const previous = document.createElement("button");
+        previous.type = "button";
+        previous.textContent = "Prev";
+        previous.disabled = activeStep <= 0 || rows.length === 0;
+        previous.addEventListener("click", () => {
+          activeStep -= 1;
+          renderSessionDetail();
+        });
+        const indicator = document.createElement("span");
+        indicator.className = "session-step-index";
+        indicator.textContent = `step ${rows.length === 0 ? 0 : activeStep + 1} / ${rows.length}`;
+        const next = document.createElement("button");
+        next.type = "button";
+        next.textContent = "Next";
+        next.disabled = rows.length === 0 || activeStep >= rows.length - 1;
+        next.addEventListener("click", () => {
+          activeStep += 1;
+          renderSessionDetail();
+        });
+        stepper.append(previous, indicator, next);
+        pane.appendChild(stepper);
+
+        if (rows.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "empty";
+          empty.textContent = recording ? "No recorded steps" : "No journal events";
+          pane.appendChild(empty);
+          return;
+        }
+        const row = rows[activeStep];
+        if (recording) {
+          appendSessionField(pane, "Action", describeAction(row.action_json, row.app_json));
+          appendSessionField(
+            pane,
+            "App",
+            row.app_json == null ? "—" : JSON.stringify(row.app_json),
+          );
+          appendSessionField(pane, "Observes before", String(row.observes_before));
+          appendSessionField(pane, "Result", row.result);
+        } else {
+          appendSessionField(pane, "Kind", row.kind);
+          appendSessionField(pane, "Summary", row.summary);
+          appendSessionField(pane, "Time", new Date(row.ts_ms).toLocaleString());
+        }
+      }
+
+      async function openSession(name) {
+        activeSession = null;
+        activeStep = 0;
+        byId("session-detail-pane").replaceChildren();
+        const state = byId("session-detail-state");
+        state.className = "state";
+        state.textContent = `Opening ${name}…`;
+        try {
+          activeSession = await invoke("open_session", { name });
+          state.textContent = activeSession.name;
+          renderSessionDetail();
+        } catch (error) {
+          state.className = "error";
+          state.textContent = String(error);
+        }
+      }
+
       function renderApprovals(channel, pending) {
         const disabled = channel.state === "disabled";
         byId("approval-channel-state").textContent =
@@ -291,15 +486,19 @@
       function describeFingerprint(fingerprint) {
         try {
           const [action, app] = JSON.parse(fingerprint);
-          const target = action.target || {};
-          const label = target.name ?? target.name_contains ?? target.identifier;
-          const parts = [action.type, target.role, label ? `"${label}"` : null];
-          if (typeof action.text === "string") parts.push(`text "${action.text}"`);
-          if (app) parts.push(`in ${typeof app === "string" ? app : JSON.stringify(app)}`);
-          return parts.filter(Boolean).join(" ");
+          return describeAction(action, app);
         } catch {
           return fingerprint;
         }
+      }
+
+      function describeAction(action, app) {
+        const target = action.target || {};
+        const label = target.name ?? target.name_contains ?? target.identifier;
+        const parts = [action.type, target.role, label ? `"${label}"` : null];
+        if (typeof action.text === "string") parts.push(`text "${action.text}"`);
+        if (app) parts.push(`in ${typeof app === "string" ? app : JSON.stringify(app)}`);
+        return parts.filter(Boolean).join(" ");
       }
 
       async function sendDecision(command, fingerprint) {
@@ -325,6 +524,10 @@
       }
 
       poll();
+      invoke("sessions").then(renderSessions).catch((error) => {
+        byId("sessions-state").className = "error";
+        byId("sessions-state").textContent = String(error);
+      });
       window.setInterval(poll, 500);
     </script>
   </body>

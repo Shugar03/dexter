@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 dexter-core.workspace = true
+dexter-eval.workspace = true
 dexter-policy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
