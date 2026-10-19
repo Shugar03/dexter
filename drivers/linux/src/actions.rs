@@ -867,14 +867,30 @@ pub fn act(
 #[cfg(test)]
 mod navigate_tests {
     use super::{navigable_url, navigate_with};
-    use dexter_core::{ActionStatus, Mechanism};
+    use dexter_core::{ActionResult, ActionStatus, Mechanism};
     use dexter_driver::DriverError;
+    use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_SCRIPT_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn navigate_retrying(opener: &OsStr, url: &str) -> Result<ActionResult, DriverError> {
+        for retry in 0..=20 {
+            let result = navigate_with(opener, url);
+            let is_text_file_busy = matches!(
+                &result,
+                Err(DriverError::Platform(message)) if message.contains("Text file busy")
+            );
+            if retry == 20 || !is_text_file_busy {
+                return result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        unreachable!()
+    }
 
     struct Script {
         dir: PathBuf,
@@ -943,7 +959,7 @@ mod navigate_tests {
             Script::quoted(&args.with_extension("argv"))
         ));
         let url = "https://example.com/path?q=1";
-        let result = navigate_with(script.path.as_os_str(), url).expect("spawn opener");
+        let result = navigate_retrying(script.path.as_os_str(), url).expect("spawn opener");
         assert_eq!(result.status, ActionStatus::Success, "{result:?}");
         assert_eq!(result.mechanism, Mechanism::NativeAutomation);
         assert_eq!(
@@ -963,8 +979,8 @@ mod navigate_tests {
     #[test]
     fn nonzero_opener_exit_is_a_failed_action() {
         let script = Script::new("exit 3");
-        let result =
-            navigate_with(script.path.as_os_str(), "https://example.com").expect("spawn opener");
+        let result = navigate_retrying(script.path.as_os_str(), "https://example.com")
+            .expect("spawn opener");
         assert_eq!(result.status, ActionStatus::Failed, "{result:?}");
         assert_eq!(result.mechanism, Mechanism::NativeAutomation);
         assert!(result
@@ -990,7 +1006,7 @@ mod navigate_tests {
             std::env::temp_dir().join(format!("dexter-refused-opener-{}", std::process::id()));
         let _ = fs::remove_file(&marker);
         let script = Script::new(&format!("printf ran > {}", Script::quoted(&marker)));
-        let result = navigate_with(script.path.as_os_str(), "file:///etc/passwd")
+        let result = navigate_retrying(script.path.as_os_str(), "file:///etc/passwd")
             .expect("refused URL verdict");
         assert_eq!(result.status, ActionStatus::Unsupported, "{result:?}");
         assert_eq!(result.mechanism, Mechanism::NativeAutomation);
