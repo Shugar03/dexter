@@ -55,3 +55,30 @@ with:
 ```sh
 cargo run -p dexter-eval --example record
 ```
+
+## CLI
+
+`dexter record <journal.jsonl> -o <recording.json>` applies the same
+fail-closed contract from the command line: the journal is parsed
+strictly, the scenario id comes from `--scenario`, `--spec`, or the
+journal file stem, the goal from `--goal`, `--spec`, or the journal's
+`SubgoalStarted` events, and the outcome from the last terminal task
+event (`outcome_from_events`) unless `--outcome` overrides it — a
+journal with no terminal event is refused rather than recorded as a
+finished run. The final-state check is never fabricated: it comes from
+`--done` (an `ExpectedState` JSON) or the spec's `task.done_when`, and
+`record` fails when neither supplies one.
+
+`dexter replay <recording.json>` re-executes through `replay_with` and
+prints the `ReplayReport` as JSON, exiting nonzero whenever
+`faithful()` is false. `--driver sim` rebuilds the world from the
+scenario TOML (`--spec`, else `<recording>/../scenarios/<id>.toml`,
+else `datasets/scenarios/<id>.toml`) and mirrors the recorded run:
+`approve_all` is on and the spec's authored `grants` apply — the sim is
+the reference world the fixture was captured against. A real driver
+(`macos`, `browser`) replays live under the operator's `--policy` with
+`approve_all` off: nothing is approved implicitly, approval-requiring
+steps report `NeedsApproval` with the `(action, app)` fingerprint a
+`--grant` flag would approve, and `allow_coordinates` stays off —
+recordings are semantic-first and a physical act replayed on the real
+desktop would be unverifiable anyway.

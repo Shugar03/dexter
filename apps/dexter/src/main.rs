@@ -30,8 +30,10 @@ struct Cli {
     #[arg(long, global = true)]
     policy: Option<String>,
 
-    /// Driver backend: `macos` (Accessibility API) or `browser`
-    /// (W3C WebDriver — Safari via safaridriver, or any endpoint).
+    /// Driver backend: `macos` (Accessibility API), `browser`
+    /// (W3C WebDriver — Safari via safaridriver, or any endpoint),
+    /// or `sim` (synthetic world — `replay` rebuilds it from the
+    /// scenario spec).
     #[arg(long, global = true, default_value = "macos")]
     driver: String,
 
@@ -51,7 +53,7 @@ struct Cli {
     cmd: Command,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum Command {
     /// Report driver capabilities and macOS permission state.
     Doctor {
@@ -231,9 +233,64 @@ enum Command {
         #[arg(long, conflicts_with = "overlay")]
         no_overlay: bool,
     },
+    /// Turn an engine journal (JSONL events from `--events` or
+    /// `--journal-out`) into a replayable recording (JSON). Fails
+    /// closed on an incomplete or malformed journal — partial evidence
+    /// never becomes a fixture.
+    Record {
+        /// Journal file (one Event JSON per line).
+        journal: String,
+        /// Output recording JSON.
+        #[arg(short, long)]
+        out: String,
+        /// Scenario TOML (eval-scenario spec) the journal came from —
+        /// supplies the scenario id, goal and `task.done_when`.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Recording's scenario label. Default: the spec's id, else the
+        /// journal file stem.
+        #[arg(long)]
+        scenario: Option<String>,
+        /// Recording's goal. Default: the spec's goal, else the
+        /// journal's subgoal goals.
+        #[arg(long)]
+        goal: Option<String>,
+        /// Override the outcome derived from the journal's terminal
+        /// task event (completed | abstained | escalated | failed |
+        /// max_steps | cancelled | timed_out).
+        #[arg(long)]
+        outcome: Option<String>,
+        /// Final-state check (JSON ExpectedState) the recording
+        /// asserts. Required unless --spec supplies `task.done_when`.
+        #[arg(long)]
+        done: Option<String>,
+    },
+    /// Re-execute a recording's actions through `Engine::run_step` —
+    /// policy and approvals are re-evaluated against the replay world,
+    /// never trusted from the file. Exit is nonzero on any divergence.
+    ///
+    /// `--driver sim` rebuilds the scenario's sim world (from --spec,
+    /// else <recording>/../scenarios/<id>.toml, else
+    /// datasets/scenarios/<id>.toml) and mirrors the recorded run's
+    /// approvals. A real driver (`macos`, `browser`) replays live and
+    /// approves nothing implicitly: approval-requiring steps need an
+    /// explicit --grant fingerprint, and coordinates are never allowed.
+    Replay {
+        /// Recording JSON written by `dexter record`.
+        recording: String,
+        /// Scenario TOML backing `--driver sim` (explicit override for
+        /// the conventional spec locations).
+        #[arg(long)]
+        spec: Option<String>,
+        /// Operator pre-grant for one (action, app) fingerprint — the
+        /// same strings scenario `grants` lists carry. Repeat per
+        /// action to approve on a live driver.
+        #[arg(long)]
+        grant: Vec<String>,
+    },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum EvalCommand {
     /// Replay a JSONL dataset of labeled decision points against a
     /// decision engine — offline, deterministic, no machine access.
@@ -342,7 +399,7 @@ enum EvalCommand {
 }
 
 /// Flags for the closed-loop `task` command.
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 struct TaskArgs {
     /// Structural completion check (JSON ExpectedState).
     #[arg(long)]
@@ -397,7 +454,7 @@ struct TaskArgs {
 }
 
 /// Shared flags for single-action commands.
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 struct ActionArgs {
     /// Scope to an application: name, `com.bundle.id` or pid.
     #[arg(long)]
@@ -550,7 +607,8 @@ fn build_driver(cli: &Cli) -> Result<Box<dyn ComputerDriver>> {
                     .map_err(|e| anyhow::anyhow!("safaridriver: {e}"))?,
             )),
         },
-        other => anyhow::bail!("unknown driver '{other}' — available: macos, browser"),
+        "sim" => Ok(Box::new(dexter_sim::SimDriver::new(vec![]))),
+        other => anyhow::bail!("unknown driver '{other}' — available: macos, browser, sim"),
     }
 }
 
@@ -569,9 +627,47 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let policy = load_policy(&cli.policy)?;
     let is_browser = cli.driver == "browser";
-    let mut engine = Engine::new(build_driver(&cli)?, policy, Duration::from_secs(300));
 
-    match cli.cmd {
+    match &cli.cmd {
+        // `record` touches no driver; `replay` builds its own — the sim
+        // world comes from the scenario spec, not `--driver`'s backends.
+        Command::Record {
+            journal,
+            out,
+            spec,
+            scenario,
+            goal,
+            outcome,
+            done,
+        } => cmd_record(
+            journal,
+            out,
+            spec.as_deref(),
+            scenario.as_deref(),
+            goal.as_deref(),
+            outcome.as_deref(),
+            done.as_deref(),
+        ),
+        Command::Replay {
+            recording,
+            spec,
+            grant,
+        } => cmd_replay(&cli, recording, spec.as_deref(), grant),
+        cmd => {
+            let engine = Engine::new(build_driver(&cli)?, policy, Duration::from_secs(300));
+            run_with_engine(&cli, cmd.clone(), engine, is_browser)
+        }
+    }
+}
+
+fn run_with_engine(
+    cli: &Cli,
+    cmd: Command,
+    engine: Engine<Box<dyn ComputerDriver>>,
+    is_browser: bool,
+) -> Result<()> {
+    let mut engine = engine;
+    match cmd {
         Command::Doctor {
             request,
             engine: engine_name,
@@ -768,7 +864,7 @@ fn run() -> Result<()> {
             overlay,
             ref approval_inbox,
         } => run_mcp(
-            &cli,
+            cli,
             engine.into_driver(),
             eng,
             engine_path.clone(),
@@ -780,6 +876,9 @@ fn run() -> Result<()> {
                 approval_inbox: approval_inbox.clone().map(std::path::PathBuf::from),
             },
         ),
+        Command::Record { .. } | Command::Replay { .. } => {
+            unreachable!("record/replay run before engine construction")
+        }
     }
 }
 
@@ -1127,6 +1226,266 @@ fn run_scenario(
         Ok(())
     } else {
         anyhow::bail!("scenario failed")
+    }
+}
+
+// ---- record / replay ----
+
+/// Outcome strings a recording accepts — the same vocabulary
+/// `ScenarioRun::outcome` and `outcome_from_events` produce.
+const OUTCOMES: &[&str] = &[
+    "completed",
+    "abstained",
+    "escalated",
+    "failed",
+    "max_steps",
+    "cancelled",
+    "timed_out",
+];
+
+fn outcome_arg(raw: &str) -> Result<String> {
+    if OUTCOMES.contains(&raw) {
+        Ok(raw.to_string())
+    } else {
+        anyhow::bail!(
+            "invalid outcome '{raw}' — expected one of {}",
+            OUTCOMES.join(", ")
+        )
+    }
+}
+
+/// Provenance goal for a journal: the subgoal goals the plan pursued,
+/// in order (`run_plan` journals one `SubgoalStarted` per subgoal).
+fn journal_goal(events: &[dexter_core::Event]) -> Option<String> {
+    let goals: Vec<&str> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::SubgoalStarted)
+        .filter_map(|e| e.data.get("goal").and_then(|g| g.as_str()))
+        .collect();
+    (!goals.is_empty()).then(|| goals.join("; "))
+}
+
+/// The recording's final-state check: an explicit `--done` wins, then
+/// the spec's `task.done_when` — never fabricated.
+fn resolve_done_when(
+    done: Option<&str>,
+    spec: Option<&dexter_eval::scenario::ScenarioSpec>,
+) -> Result<ExpectedState> {
+    match (done, spec) {
+        (Some(raw), _) => serde_json::from_str(raw).context("invalid --done ExpectedState JSON"),
+        (None, Some(spec)) => Ok(spec.task.done_when.clone()),
+        (None, None) => anyhow::bail!(
+            "a recording needs a final-state check — pass --done <ExpectedState JSON> \
+             or --spec <scenario.toml>"
+        ),
+    }
+}
+
+fn cmd_record(
+    journal_path: &str,
+    out: &str,
+    spec_path: Option<&str>,
+    scenario: Option<&str>,
+    goal: Option<&str>,
+    outcome: Option<&str>,
+    done: Option<&str>,
+) -> Result<()> {
+    use dexter_eval::recording as rec_api;
+
+    let text = std::fs::read_to_string(journal_path)
+        .with_context(|| format!("reading journal '{journal_path}'"))?;
+    let events = rec_api::events_from_jsonl(&text)?;
+    let spec = spec_path
+        .map(|p| {
+            let text = std::fs::read_to_string(p).with_context(|| format!("reading spec '{p}'"))?;
+            toml::from_str::<dexter_eval::scenario::ScenarioSpec>(&text)
+                .with_context(|| format!("parsing spec '{p}'"))
+        })
+        .transpose()?;
+
+    let scenario_id = scenario
+        .map(str::to_string)
+        .or_else(|| spec.as_ref().map(|s| s.scenario.id.clone()))
+        .unwrap_or_else(|| {
+            std::path::Path::new(journal_path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "recording".into())
+        });
+    let goal = goal
+        .map(str::to_string)
+        .or_else(|| spec.as_ref().map(|s| s.scenario.goal.clone()))
+        .or_else(|| journal_goal(&events))
+        .unwrap_or_default();
+    let outcome = match outcome {
+        Some(raw) => outcome_arg(raw)?,
+        None => rec_api::outcome_from_events(&events).with_context(|| {
+            format!(
+                "journal '{journal_path}' has no terminal task event — \
+                 it is incomplete or not a task journal"
+            )
+        })?,
+    };
+    let done_when = resolve_done_when(done, spec.as_ref())?;
+
+    let recording = rec_api::record(&scenario_id, &goal, &outcome, &done_when, &events)?;
+    let json = serde_json::to_string_pretty(&recording)?;
+    std::fs::write(out, format!("{json}\n")).with_context(|| format!("writing '{out}'"))?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "scenario": recording.scenario,
+            "goal": recording.goal,
+            "outcome": recording.outcome,
+            "steps": recording.steps.len(),
+            "trailing_observes": recording.trailing_observes,
+            "wrote": out,
+        })
+    );
+    Ok(())
+}
+
+/// Locate the scenario TOML backing a `--driver sim` replay: an explicit
+/// `--spec`, then the datasets convention (`<recording>/../scenarios/
+/// <id>.toml`, then `datasets/scenarios/<id>.toml` under the cwd).
+fn resolve_sim_spec(
+    recording_path: &std::path::Path,
+    scenario_id: &str,
+    explicit: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    if let Some(p) = explicit {
+        // An explicit path is trusted to exist — a read failure reports
+        // it with context rather than silently falling through.
+        return Some(std::path::PathBuf::from(p));
+    }
+    let file = format!("{scenario_id}.toml");
+    let mut candidates = Vec::new();
+    if let Some(datasets) = recording_path.parent().and_then(|p| p.parent()) {
+        candidates.push(datasets.join("scenarios").join(&file));
+    }
+    candidates.push(
+        std::path::Path::new("datasets")
+            .join("scenarios")
+            .join(&file),
+    );
+    candidates.into_iter().find(|p| p.exists())
+}
+
+/// The `RunConfig` replay executes under — the shape the sim suite
+/// records with. `approve_all` is the live-vs-sim split: a sim replay
+/// mirrors the recorded run (which approved every escalation); a real
+/// driver grants only explicit `--grant` fingerprints. Coordinates are
+/// never enabled — recordings are semantic-first, and a physical act in
+/// the file replayed on the real desktop would be unverifiable anyway.
+fn replay_cfg(approve_all: bool) -> RunConfig {
+    RunConfig {
+        app: None,
+        max_attempts: 1,
+        verify_delay: Duration::from_millis(5),
+        post_act_settle: Duration::ZERO,
+        allow_coordinates: false,
+        approve_all,
+        observe_max_elements: 4_000,
+    }
+}
+
+fn cmd_replay(
+    cli: &Cli,
+    recording_path: &str,
+    spec_arg: Option<&str>,
+    grants: &[String],
+) -> Result<()> {
+    use dexter_eval::{recording as rec_api, scenario as scn};
+
+    let text = std::fs::read_to_string(recording_path)
+        .with_context(|| format!("reading recording '{recording_path}'"))?;
+    let rec: rec_api::Recording = serde_json::from_str(&text)
+        .with_context(|| format!("parsing recording '{recording_path}'"))?;
+    let policy = load_policy(&cli.policy)?;
+
+    let (report, spec_used, applied_grants) = if cli.driver == "sim" {
+        let path = resolve_sim_spec(
+            std::path::Path::new(recording_path),
+            &rec.scenario,
+            spec_arg,
+        )
+        .with_context(|| {
+            format!(
+                "no scenario spec for '{}' — pass --spec <path> or place it at \
+                 <recording>/../scenarios/{}.toml or datasets/scenarios/{}.toml",
+                rec.scenario, rec.scenario, rec.scenario
+            )
+        })?;
+        let spec: scn::ScenarioSpec = toml::from_str(
+            &std::fs::read_to_string(&path)
+                .with_context(|| format!("reading spec {}", path.display()))?,
+        )
+        .with_context(|| format!("parsing spec {}", path.display()))?;
+        let mut applied = spec.task.grants.clone();
+        applied.extend(grants.iter().cloned());
+        (
+            rec_api::replay_with(
+                &rec,
+                scn::build_driver(&spec),
+                &applied,
+                policy,
+                replay_cfg(true),
+            ),
+            Some(path.display().to_string()),
+            applied,
+        )
+    } else {
+        (
+            rec_api::replay_with(&rec, build_driver(cli)?, grants, policy, replay_cfg(false)),
+            None,
+            grants.to_vec(),
+        )
+    };
+
+    let steps: Vec<serde_json::Value> = rec
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            let mut row = serde_json::json!({
+                "index": index,
+                "recorded": step.result,
+                "replayed": report.replayed.get(index),
+            });
+            if report.replayed.get(index) == Some(&rec_api::StepResult::NeedsApproval) {
+                row["fingerprint"] = serde_json::json!(dexter_policy::fingerprint(
+                    &step.action,
+                    &dexter_policy::ActionContext {
+                        app: step.app.clone(),
+                        target_hint: None,
+                    }
+                ));
+                row["hint"] =
+                    serde_json::json!("re-run with --grant '<fingerprint>' to approve this step");
+            }
+            row
+        })
+        .collect();
+    let faithful = report.faithful(&rec);
+    println!(
+        "{}",
+        serde_json::json!({
+            "scenario": rec.scenario,
+            "goal": rec.goal,
+            "driver": cli.driver,
+            "spec": spec_used,
+            "grants": applied_grants,
+            "recorded_outcome": rec.outcome,
+            "steps": steps,
+            "diverged_at": report.diverged_at,
+            "done_when": report.done_when,
+            "faithful": faithful,
+        })
+    );
+    if faithful {
+        Ok(())
+    } else {
+        anyhow::bail!("replay diverged")
     }
 }
 
@@ -2136,6 +2495,98 @@ mod tests {
             panic!("expected mcp");
         };
         assert_eq!(approval_inbox.as_deref(), Some("mcp-inbox.jsonl"));
+    }
+
+    #[test]
+    fn record_and_replay_verbs_parse() {
+        let record = Cli::try_parse_from([
+            "dexter",
+            "record",
+            "journal.jsonl",
+            "-o",
+            "rec.json",
+            "--spec",
+            "scenario.toml",
+            "--scenario",
+            "my-run",
+            "--goal",
+            "press OK",
+            "--outcome",
+            "completed",
+            "--done",
+            r#"{"type":"text_present","text":"ok"}"#,
+        ])
+        .expect("record parse");
+        let Command::Record {
+            journal,
+            out,
+            spec,
+            scenario,
+            goal,
+            outcome,
+            done,
+        } = record.cmd
+        else {
+            panic!("expected record");
+        };
+        assert_eq!(journal, "journal.jsonl");
+        assert_eq!(out, "rec.json");
+        assert_eq!(spec.as_deref(), Some("scenario.toml"));
+        assert_eq!(scenario.as_deref(), Some("my-run"));
+        assert_eq!(goal.as_deref(), Some("press OK"));
+        assert_eq!(outcome.as_deref(), Some("completed"));
+        assert!(done.is_some());
+
+        let replay = Cli::try_parse_from([
+            "dexter", "replay", "rec.json", "--driver", "sim", "--spec", "s.toml", "--grant",
+            "fp1", "--grant", "fp2",
+        ])
+        .expect("replay parse");
+        let Command::Replay {
+            recording,
+            spec,
+            grant,
+        } = replay.cmd
+        else {
+            panic!("expected replay");
+        };
+        assert_eq!(recording, "rec.json");
+        assert_eq!(spec.as_deref(), Some("s.toml"));
+        assert_eq!(grant, vec!["fp1", "fp2"]);
+        assert_eq!(replay.driver, "sim");
+    }
+
+    #[test]
+    fn record_rejects_an_outcome_outside_the_vocabulary() {
+        let err = outcome_arg("completd").expect_err("typo outcome must fail");
+        assert!(err.to_string().contains("outcome"));
+        assert_eq!(outcome_arg("abstained").unwrap(), "abstained");
+    }
+
+    #[test]
+    fn sim_spec_resolves_by_convention_then_default() {
+        let dir = std::env::temp_dir().join(format!("dexter-cli-spec-{}", std::process::id()));
+        let scenarios = dir.join("scenarios");
+        let recordings = dir.join("recordings");
+        std::fs::create_dir_all(&scenarios).unwrap();
+        std::fs::create_dir_all(&recordings).unwrap();
+        let rec = recordings.join("w.json");
+        std::fs::write(&rec, "{}").unwrap();
+        let spec = scenarios.join("w.toml");
+        std::fs::write(&spec, "").unwrap();
+
+        assert_eq!(
+            resolve_sim_spec(&rec, "w", None).as_deref(),
+            Some(spec.as_path())
+        );
+        let explicit = recordings.join("elsewhere.toml");
+        std::fs::write(&explicit, "").unwrap();
+        assert_eq!(
+            resolve_sim_spec(&rec, "w", Some(explicit.to_str().unwrap())).as_deref(),
+            Some(explicit.as_path())
+        );
+        assert_eq!(resolve_sim_spec(&rec, "no-such-scenario-zzz", None), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
