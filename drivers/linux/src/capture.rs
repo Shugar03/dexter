@@ -52,15 +52,21 @@ fn connect_x11() -> Result<(RustConnection, usize), DriverError> {
 
 pub fn available() -> bool {
     if wayland_active() {
-        return false;
+        return x11_root().is_some() && crate::portal::available();
     }
-    x11rb::connect(None).is_ok_and(|(connection, screen_num)| {
-        connection
-            .setup()
-            .roots
-            .get(screen_num)
-            .is_some_and(|screen| screen.width_in_pixels > 0 && screen.height_in_pixels > 0)
-    })
+    x11_root().is_some()
+}
+
+fn x11_root() -> Option<(RustConnection, usize)> {
+    x11rb::connect(None)
+        .ok()
+        .filter(|(connection, screen_num)| {
+            connection
+                .setup()
+                .roots
+                .get(*screen_num)
+                .is_some_and(|screen| screen.width_in_pixels > 0 && screen.height_in_pixels > 0)
+        })
 }
 
 pub fn capture_app_window(windows: &[Window], path: &Path) -> Result<(), DriverError> {
@@ -70,6 +76,9 @@ pub fn capture_app_window(windows: &[Window], path: &Path) -> Result<(), DriverE
 }
 
 pub fn capture_window_region(window: &Window, path: &Path) -> Result<Rect, DriverError> {
+    if wayland_active() {
+        return capture_wayland_region(window, path);
+    }
     let (connection, screen_num) = connect_x11()?;
     let screen = connection
         .setup()
@@ -112,6 +121,110 @@ pub fn capture_window_region(window: &Window, path: &Path) -> Result<Rect, Drive
     )?;
     write_png(path, crop.w, crop.h, &image)?;
     Ok(window.bounds)
+}
+
+fn capture_wayland_region(window: &Window, path: &Path) -> Result<Rect, DriverError> {
+    let (connection, screen_num) = x11rb::connect(None).map_err(|error| {
+        DriverError::Unsupported(format!("Wayland capture needs XWayland: {error}"))
+    })?;
+    let screen = connection.setup().roots.get(screen_num).ok_or_else(|| {
+        DriverError::Unsupported("Wayland capture needs XWayland: no root screen".into())
+    })?;
+    let root_w = u32::from(screen.width_in_pixels);
+    let root_h = u32::from(screen.height_in_pixels);
+    if root_w == 0 || root_h == 0 {
+        return Err(DriverError::Unsupported(
+            "Wayland capture needs XWayland: X root has no captureable dimensions".into(),
+        ));
+    }
+
+    let gdk = crate::scale::gdk_scale_for_pid(window.pid)?;
+    let candidates = crate::ewmh::wayland_client_candidates(&connection, screen.root, window.pid)?;
+    crate::ewmh::classify_wayland_candidates(window.bounds, gdk, &candidates)?;
+
+    let image = crate::portal::screenshot()?;
+    let monitor = wayland_monitor((root_w, root_h), (image.width, image.height), gdk)?;
+    let crop_not_found = || {
+        DriverError::NotFound(format!(
+            "window region {},{} {}x{} is not fully on the Wayland screenshot (logical {}x{} @ {}x)",
+            window.bounds.x,
+            window.bounds.y,
+            window.bounds.w,
+            window.bounds.h,
+            monitor.bounds.w,
+            monitor.bounds.h,
+            monitor.scale
+        ))
+    };
+    if dexter_vision::capture_monitor(std::slice::from_ref(&monitor), &window.bounds).is_none() {
+        return Err(crop_not_found());
+    }
+    let crop =
+        dexter_vision::monitor_pixel_crop(&monitor, &window.bounds, image.width, image.height)
+            .ok_or_else(crop_not_found)?;
+    let rgb = crop_rgb(&image, crop)?;
+    write_png(path, crop.w, crop.h, &rgb)?;
+    Ok(window.bounds)
+}
+
+fn wayland_monitor(
+    xroot: (u32, u32),
+    image: (u32, u32),
+    gdk: f64,
+) -> Result<MonitorGeometry, DriverError> {
+    let (xw, xh) = xroot;
+    let (iw, ih) = image;
+    let unsupported = || {
+        DriverError::Unsupported(format!(
+            "portal screenshot {iw}x{ih} does not map onto XWayland root {xw}x{xh} (multi-output or fractional scale)"
+        ))
+    };
+    if xw == 0 || xh == 0 || iw == 0 || ih == 0 || !gdk.is_finite() || gdk <= 0.0 {
+        return Err(unsupported());
+    }
+    if iw % xw != 0 || ih % xh != 0 {
+        return Err(unsupported());
+    }
+    let out_w = iw / xw;
+    let out_h = ih / xh;
+    if out_w != out_h || !(1..=4).contains(&out_w) {
+        return Err(unsupported());
+    }
+    Ok(MonitorGeometry {
+        bounds: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: f64::from(xw) / gdk,
+            h: f64::from(xh) / gdk,
+        },
+        scale: gdk * f64::from(out_w),
+    })
+}
+
+fn crop_rgb(image: &crate::portal::PortalImage, crop: PixelCrop) -> Result<Vec<u8>, DriverError> {
+    let row_stride = usize::try_from(u64::from(image.width) * 3)
+        .map_err(|_| DriverError::Platform("portal RGB row size overflows address space".into()))?;
+    let capacity = usize::try_from(u64::from(crop.w) * u64::from(crop.h) * 3)
+        .map_err(|_| DriverError::Platform("portal crop size overflows address space".into()))?;
+    let mut rgb = Vec::with_capacity(capacity);
+    for row in crop.y..crop.y + crop.h {
+        let start = usize::try_from(u64::from(row) * row_stride as u64 + u64::from(crop.x) * 3)
+            .map_err(|_| {
+                DriverError::Platform("portal crop offset overflows address space".into())
+            })?;
+        let end = start
+            .checked_add(usize::try_from(u64::from(crop.w) * 3).map_err(|_| {
+                DriverError::Platform("portal crop row overflows address space".into())
+            })?)
+            .ok_or_else(|| {
+                DriverError::Platform("portal crop end overflows address space".into())
+            })?;
+        let row = image.rgb.get(start..end).ok_or_else(|| {
+            DriverError::Platform("portal screenshot RGB buffer is truncated".into())
+        })?;
+        rgb.extend_from_slice(row);
+    }
+    Ok(rgb)
 }
 
 fn capture_crop(
@@ -266,4 +379,63 @@ fn write_png(path: &Path, width: u32, height: u32, rgb: &[u8]) -> Result<(), Dri
     writer
         .write_image_data(rgb)
         .map_err(|error| DriverError::Platform(format!("encode PNG pixels: {error}")))
+}
+
+#[cfg(test)]
+mod wayland_monitor_tests {
+    use super::wayland_monitor;
+    use dexter_driver::DriverError;
+
+    #[test]
+    fn derives_physical_output_scale_and_logical_bounds() {
+        let monitor = wayland_monitor((640, 360), (1280, 720), 1.0).unwrap();
+        assert_eq!(monitor.scale, 2.0);
+        assert_eq!((monitor.bounds.w, monitor.bounds.h), (640.0, 360.0));
+    }
+
+    #[test]
+    fn combines_output_and_gdk_scales() {
+        let monitor = wayland_monitor((640, 360), (1280, 720), 2.0).unwrap();
+        assert_eq!(monitor.scale, 4.0);
+        assert_eq!((monitor.bounds.w, monitor.bounds.h), (320.0, 180.0));
+    }
+
+    #[test]
+    fn accepts_identity_output_scale() {
+        let monitor = wayland_monitor((1280, 720), (1280, 720), 1.0).unwrap();
+        assert_eq!(monitor.scale, 1.0);
+    }
+
+    #[test]
+    fn rejects_non_integer_fractional_and_non_uniform_output_scales() {
+        for (xroot, image) in [
+            ((1920, 1080), (1280, 720)),
+            ((1280, 720), (1920, 1080)),
+            ((640, 360), (1280, 1080)),
+            ((640, 360), (3200, 1800)),
+        ] {
+            assert!(
+                matches!(
+                    wayland_monitor(xroot, image, 1.0),
+                    Err(DriverError::Unsupported(_))
+                ),
+                "xroot={xroot:?} image={image:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_zero_dimensions() {
+        for (xroot, image) in [
+            ((0, 360), (1280, 720)),
+            ((640, 0), (1280, 720)),
+            ((640, 360), (0, 720)),
+            ((640, 360), (1280, 0)),
+        ] {
+            assert!(matches!(
+                wayland_monitor(xroot, image, 1.0),
+                Err(DriverError::Unsupported(_))
+            ));
+        }
+    }
 }
