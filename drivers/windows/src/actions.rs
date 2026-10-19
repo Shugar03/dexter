@@ -989,7 +989,9 @@ pub fn act(
                         // WM_CONTEXTMENU / ShowContextMenu opens the
                         // menu without moving the cursor or stealing
                         // focus. Only when no semantic path exists does
-                        // the physical tier get a turn.
+                        // the physical tier get a turn. Middle click
+                        // has no semantic verb — it can only ever be
+                        // the pointer click.
                         if matches!(button, MouseButton::Right) {
                             if let Some(detail) = open_context_menu(&r)? {
                                 return Ok(ActionResult::success(
@@ -999,12 +1001,26 @@ pub fn act(
                             }
                         }
                         if !ctx.allow_coordinates {
-                            // No semantic path reached a context menu
-                            // here — Unsupported, not a fake left-click.
+                            let (mechanism, detail) = match button {
+                                // The menu ladder ran and reached
+                                // nothing — Unsupported, not a fake
+                                // left-click.
+                                MouseButton::Right => (
+                                    Mechanism::Accessibility,
+                                    "no semantic path opened a context menu — enable coords for a pointer click",
+                                ),
+                                // Middle's only path is the disabled
+                                // pointer input — the same verdict a
+                                // Point target reports.
+                                _ => (
+                                    Mechanism::Coordinates,
+                                    "coordinate input disabled — pass the explicit coords flag",
+                                ),
+                            };
                             return Ok(ActionResult::failure(
                                 ActionStatus::Unsupported,
-                                Mechanism::Accessibility,
-                                "no semantic path opened a context menu — enable coords for a pointer click",
+                                mechanism,
+                                detail,
                             ));
                         }
                         let Some((x, y)) = resolved_center(&r) else {

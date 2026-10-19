@@ -645,3 +645,27 @@ fn engine_and_desktop_share_the_live_approval_path() {
     fs::remove_file(inbox).unwrap();
     fs::remove_file(events).unwrap();
 }
+
+#[test]
+fn windows_icon_is_wired_and_multi_size() {
+    // tauri-build's Windows resource step reads bundle.icon's first
+    // `.ico` entry (falling back to icons/icon.ico) and fails the
+    // build when it is missing — pin both halves of that contract.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let conf: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("tauri.conf.json")).unwrap()).unwrap();
+    let icons = conf["bundle"]["icon"].as_array().expect("bundle.icon");
+    let ico = icons
+        .iter()
+        .filter_map(|i| i.as_str())
+        .find(|i| i.ends_with(".ico"))
+        .expect("bundle.icon must reference a .ico — the Windows build fails without one");
+    let path = root.join(ico);
+    let bytes = fs::read(&path).expect("referenced .ico must exist");
+
+    // ICONDIR: reserved(0) type(1) count(>1) — one image per size.
+    assert!(bytes.len() >= 6, "truncated icon");
+    assert_eq!(&bytes[0..4], &[0, 0, 1, 0], "not an icon resource");
+    let count = u16::from_le_bytes([bytes[4], bytes[5]]);
+    assert!(count >= 2, "single-size icon {path:?}");
+}

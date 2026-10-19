@@ -447,6 +447,7 @@ impl Desktop {
     }
 }
 
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn check_inbox_permissions(path: &Path, metadata: &fs::Metadata) -> Result<(), String> {
     #[cfg(unix)]
     {

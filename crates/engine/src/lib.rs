@@ -149,6 +149,7 @@ struct ApprovalInboxLine {
     _ts_ms: u64,
 }
 
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn check_approval_inbox_permissions(path: &Path) -> Result<(), String> {
     let metadata = fs::metadata(path).map_err(|error| {
         format!(
