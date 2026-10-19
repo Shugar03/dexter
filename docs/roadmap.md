@@ -394,10 +394,13 @@ Seeded 2026-10-19 from the slices the last PRs flagged as remaining
 - [x] `[windows]` act tail — middle `Click` (SendInput behind
   `ctx.allow_coordinates`, matching the right-click path) and
   `icon.ico` for the desktop build. (Etapa 4; remaining from PR #75) — [PR #83](https://github.com/Shugar03/dexter/pull/83), 2026-10-19
-- [ ] `[linux]` Navigate + Wayland capture — `Action::Navigate` on
-  the AT-SPI driver (remaining from PR #70) and XWayland/Wayland
-  portal screenshot incl. HiDPI `GDK_SCALE` mapping (remaining from
-  PR #71). (Etapa 5)
+- [x] `[linux]` Navigate + HiDPI — `Action::Navigate` on the AT-SPI
+  driver (remaining from PR #70) and HiDPI `GDK_SCALE` mapping for X11
+  capture + XTest (remaining from PR #71). (Etapa 5) — [PR #84](https://github.com/Shugar03/dexter/pull/84), 2026-10-19
+- [ ] `[linux]` Wayland capture — xdg-desktop-portal Screenshot backend
+  (fail closed when no portal/compositor answers or consent is denied;
+  verified on a real Wayland session, not the X11 build box).
+  (Etapa 5; remaining from PR #84)
 - [ ] Browser protected sessions — cookie/credential-backed login
   flows behind explicit policy consent, credentials staying
   local-first. (Etapa 2 — sesiones protegidas)
