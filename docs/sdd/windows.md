@@ -137,11 +137,15 @@ operation declines.
     top-level window of the pid materializes (`EnumWindows` diff over
     ~1s) — an `S_OK` alone is not a menu, providers swallow both
     verbs. No semantic path and no coords → `UNSUPPORTED` with
-    `Mechanism::Accessibility`, the existing honest error; middle
-    click keeps it — there is no semantic middle verb. With
+    `Mechanism::Accessibility`, the existing honest error. Middle
+    click has no semantic verb at all — its no-coords verdict is the
+    `Mechanism::Coordinates` "coordinate input disabled" report a
+    `Target::Point` gets, not a context-menu report. With
     `ctx.allow_coordinates` the rungs fall through to the same
-    `SendInput` click at the element's bounds center as before. The
-    opened menu enumerates as a top-level window of the app (`#32768`
+    `SendInput` click at the element's bounds center as before —
+    `MOUSEEVENTF_MIDDLEDOWN`/`MIDDLEUP` verified end-to-end by the
+    `WH_MOUSE_LL` live test. The opened menu enumerates as a
+    top-level window of the app (`#32768`
     on classic Win32), so its `menu_item` elements resolve through
     the same `Target::Semantic`/`Element` machinery and press
     through the standard left-click ladder — a real pick dismisses

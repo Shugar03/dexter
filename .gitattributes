@@ -1,0 +1,3 @@
+# Datasets are compared byte-for-byte against regenerated output —
+# they must check out with LF endings on every platform.
+*.jsonl text eol=lf

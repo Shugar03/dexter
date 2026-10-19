@@ -6,7 +6,8 @@
 #![cfg(windows)]
 
 use dexter_core::{
-    Action, ActionStatus, AppSelector, MouseButton, ObservationScope, SemanticTarget, Target,
+    Action, ActionStatus, AppSelector, Mechanism, MouseButton, ObservationScope, SemanticTarget,
+    Target,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverError};
 use dexter_windows::WindowsDriver;
@@ -639,5 +640,140 @@ fn middle_click_has_no_semantic_path() {
         )
         .expect("middle click resolves");
     assert_eq!(res.status, ActionStatus::Unsupported, "{res:?}");
+    // There is no semantic middle verb — the only path is disabled
+    // pointer input, so the verdict is the same one a Point target
+    // reports, not a context-menu report.
+    assert_eq!(res.mechanism, Mechanism::Coordinates, "{res:?}");
+    assert!(
+        res.detail
+            .as_deref()
+            .is_some_and(|d| d.contains("coordinate input disabled")),
+        "unexpected detail: {res:?}"
+    );
+    let _ = np.0.kill();
+}
+
+/// Injected button events seen by the low-level mouse hook —
+/// `(wParam, x, y)` in screen coordinates.
+static MOUSE_EVENTS: Mutex<Vec<(u32, i32, i32)>> = Mutex::new(Vec::new());
+
+/// `WH_MOUSE_LL` recorder. The callback runs in the installing
+/// thread's context once that thread pumps its message queue.
+/// `LLMHF_INJECTED` flags only the events the OS considers injected —
+/// exactly what `SendInput` produces.
+unsafe extern "system" fn record_mouse_hook(
+    code: i32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, LLMHF_INJECTED, MSLLHOOKSTRUCT};
+    if code >= 0 {
+        let s = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+        if s.flags & LLMHF_INJECTED != 0 {
+            MOUSE_EVENTS
+                .lock()
+                .unwrap()
+                .push((wparam.0 as u32, s.pt.x, s.pt.y));
+        }
+    }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// Pump this thread's queue — low-level hook callbacks are delivered
+/// through it, so the injected click only becomes visible here.
+fn pump_events() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    };
+    unsafe {
+        let mut msg = MSG::default();
+        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+#[test]
+fn middle_click_sendinput_delivers_middle_button_events() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowsHookExW, UnhookWindowsHookEx, WH_MOUSE_LL, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    };
+
+    let _desktop = desktop();
+    let driver = WindowsDriver::new();
+    let Some(mut np) = Notepad::launch() else {
+        return;
+    };
+    let pid = np.0.id() as i32;
+    assert!(wait_for_window(&driver, pid), "notepad window appeared");
+
+    let scope = ObservationScope::for_app(AppSelector::Pid(pid));
+    let obs = driver.observe(&scope).expect("observe notepad");
+    let edit = obs
+        .element(find_editable(&obs).expect("edit surface"))
+        .expect("edit lookup")
+        .clone();
+    let center = edit.bounds.expect("edit has bounds").center();
+
+    MOUSE_EVENTS.lock().unwrap().clear();
+    let hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(record_mouse_hook), None, 0) }
+        .expect("WH_MOUSE_LL hook installs");
+
+    let res = driver
+        .act(
+            &Action::Click {
+                target: Target::Element {
+                    observation: obs.id,
+                    element: edit.id,
+                },
+                button: MouseButton::Middle,
+            },
+            &ActContext {
+                app: Some(AppSelector::Pid(pid)),
+                allow_coordinates: true,
+            },
+        )
+        .expect("middle click resolves");
+
+    // The hook is notified through this thread's queue — pump until
+    // the injected pair arrives or the window for it closes.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let events = loop {
+        pump_events();
+        let evs = MOUSE_EVENTS.lock().unwrap().clone();
+        if evs
+            .iter()
+            .filter(|(w, _, _)| *w == WM_MBUTTONDOWN || *w == WM_MBUTTONUP)
+            .count()
+            >= 2
+            || Instant::now() > deadline
+        {
+            break evs;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    };
+    let _ = unsafe { UnhookWindowsHookEx(hook) };
+
+    assert_eq!(res.status, ActionStatus::Success, "{res:?}");
+    assert_eq!(res.mechanism, Mechanism::Coordinates, "{res:?}");
+    let seq: Vec<u32> = events.iter().map(|e| e.0).collect();
+    let down = seq
+        .iter()
+        .position(|w| *w == WM_MBUTTONDOWN)
+        .unwrap_or_else(|| panic!("no injected WM_MBUTTONDOWN recorded — events {events:?}"));
+    assert!(
+        seq.iter().skip(down + 1).any(|w| *w == WM_MBUTTONUP),
+        "no WM_MBUTTONUP after the down — events {events:?}"
+    );
+    // And the pair must land where SetCursorPos put the pointer: the
+    // element's bounds center.
+    let (x, y) = (center.x as i32, center.y as i32);
+    assert!(
+        events.iter().any(|(w, ex, ey)| *w == WM_MBUTTONDOWN
+            && (*ex - x).abs() <= 1
+            && (*ey - y).abs() <= 1),
+        "middle-down not at element center ({x},{y}) — events {events:?}"
+    );
     let _ = np.0.kill();
 }
