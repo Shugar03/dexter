@@ -172,6 +172,7 @@ async fn operator_opt_in_allows_coords() {
             allow_coords: true,
             presence: false,
             approval_inbox: None,
+            credentials: None,
         },
     );
     tokio::spawn(async move {

@@ -256,7 +256,8 @@ fn action_element(action: &Action, obs: &Observation) -> Option<ElementId> {
     let target: &Target = match action {
         Action::Click { target, .. }
         | Action::Focus { target }
-        | Action::SetValue { target, .. } => target,
+        | Action::SetValue { target, .. }
+        | Action::FillCredential { target, .. } => target,
         Action::TypeText { target, .. } => match target {
             Some(t) => t,
             None => &Target::Focused,

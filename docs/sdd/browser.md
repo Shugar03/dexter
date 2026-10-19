@@ -125,6 +125,11 @@ cierra en `Drop`; el perfil (en disco) persiste. Chrome bloquea un
 `user-data-dir` en uso por otra instancia — ese error de chromedriver
 llega íntegro.
 
+Para rellenar campos de login con secretos locales, ver
+[`browser-credentials.md`](browser-credentials.md): la acción solo lleva
+el nombre de la credencial, exige una regla explícita de policy y valida
+el origen en la misma ejecución DOM que escribe el valor.
+
 Errores HTTP 4xx/5xx: el cliente lee el body WebDriver
 (`{"value":{"error","message"}}`) y propaga el mensaje real — p.ej. el
 "Allow remote automation" de Safari llega íntegro al usuario.

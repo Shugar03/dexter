@@ -22,7 +22,8 @@ fn without_index(action: &Action) -> Option<Action> {
     let target = match &mut a {
         Action::Click { target, .. }
         | Action::Focus { target }
-        | Action::SetValue { target, .. } => Some(target),
+        | Action::SetValue { target, .. }
+        | Action::FillCredential { target, .. } => Some(target),
         Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_mut(),
         _ => None,
     };

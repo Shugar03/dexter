@@ -394,6 +394,10 @@ impl ComputerDriver for SimDriver {
             Action::Observe => Err(DriverError::Unsupported(
                 "Action::Observe is an engine directive".into(),
             )),
+            Action::FillCredential { .. } => Err(DriverError::Unsupported(
+                "Action::FillCredential is an engine directive — the engine calls fill_secret"
+                    .into(),
+            )),
             Action::Navigate { url } => Ok(ActionResult::success(
                 Mechanism::Api,
                 Some(format!("navigated to {url}")),

@@ -26,7 +26,10 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+pub mod credentials;
 pub mod presence;
+
+pub use credentials::CredentialStore;
 
 /// One step of a scenario.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,6 +268,7 @@ pub struct Engine<D: ComputerDriver> {
     /// journal while the task is still running.
     journal_sink: Option<std::io::BufWriter<std::fs::File>>,
     approval_inbox: Option<ApprovalInbox>,
+    credentials: Option<CredentialStore>,
 }
 
 impl<D: ComputerDriver> Engine<D> {
@@ -276,6 +280,7 @@ impl<D: ComputerDriver> Engine<D> {
             journal: Default::default(),
             journal_sink: None,
             approval_inbox: None,
+            credentials: None,
         }
     }
 
@@ -285,6 +290,12 @@ impl<D: ComputerDriver> Engine<D> {
         let offset = approval_inbox_start_offset(&path)?;
         self.approval_inbox = Some(ApprovalInbox { path, offset });
         Ok(())
+    }
+
+    /// Attach local credential metadata; secret values remain in the
+    /// environment and are resolved only for authorized fill actions.
+    pub fn set_credentials(&mut self, store: CredentialStore) {
+        self.credentials = Some(store);
     }
 
     /// Stream every event to `path` (truncated at open) as it happens —
@@ -474,6 +485,7 @@ impl<D: ComputerDriver> Engine<D> {
         };
         let fp = dexter_policy::fingerprint(&step.action, &ctx);
         let intrusiveness = step.action.intrusiveness();
+        let credential_fill = matches!(&step.action, Action::FillCredential { .. });
         let bounds = target_bounds(&step.action, obs);
         self.journal(
             EventKind::ActionProposed,
@@ -500,7 +512,7 @@ impl<D: ComputerDriver> Engine<D> {
                 return StepStatus::Denied { reason };
             }
             PolicyDecision::RequireApproval { reason } => {
-                if cfg.approve_all {
+                if cfg.approve_all && !credential_fill {
                     self.journal(
                         EventKind::HumanApprovalRequired,
                         serde_json::json!({
@@ -549,14 +561,54 @@ impl<D: ComputerDriver> Engine<D> {
                     serde_json::json!({"attempt": attempt}),
                 );
             }
-            let result = match self.driver.act(&step.action, &act_ctx) {
-                Ok(r) => r,
-                Err(e) => {
+            let mut secret_for_scrubbing = None;
+            let result = match &step.action {
+                Action::FillCredential {
+                    target,
+                    credential,
+                    field,
+                } => {
+                    let Some(store) = self.credentials.as_ref() else {
+                        let error = DriverError::Unsupported(
+                            "no credential store configured (--credentials)".into(),
+                        );
+                        self.journal(
+                            EventKind::ActionFailed,
+                            serde_json::json!({"error": error.to_string(), "attempt": attempt}),
+                        );
+                        return StepStatus::Errored { error };
+                    };
+                    match store.resolve(credential, *field) {
+                        Ok((origin, secret)) => {
+                            if !secret.is_empty() {
+                                secret_for_scrubbing = Some(secret.clone());
+                            }
+                            self.driver
+                                .fill_secret(target, *field, &secret, &origin, &act_ctx)
+                        }
+                        Err(message) => Err(DriverError::NotFound(message)),
+                    }
+                }
+                _ => self.driver.act(&step.action, &act_ctx),
+            };
+            let result = match result {
+                Ok(mut result) => {
+                    if let Some(secret) = secret_for_scrubbing.as_deref() {
+                        redact_action_result(&mut result, secret);
+                    }
+                    result
+                }
+                Err(error) => {
+                    let error = if let Some(secret) = secret_for_scrubbing.as_deref() {
+                        redact_driver_error(error, secret)
+                    } else {
+                        error
+                    };
                     self.journal(
                         EventKind::ActionFailed,
-                        serde_json::json!({"error": e.to_string(), "attempt": attempt}),
+                        serde_json::json!({"error": error.to_string(), "attempt": attempt}),
                     );
-                    return StepStatus::Errored { error: e };
+                    return StepStatus::Errored { error };
                 }
             };
             self.journal(
@@ -595,19 +647,29 @@ impl<D: ComputerDriver> Engine<D> {
             };
             let obs = match self.driver.observe(&scope) {
                 Ok(o) => o,
-                Err(e) => {
+                Err(error) => {
+                    let error = if let Some(secret) = secret_for_scrubbing.as_deref() {
+                        redact_driver_error(error, secret)
+                    } else {
+                        error
+                    };
                     self.journal(
                         EventKind::ActionFailed,
-                        serde_json::json!({"error": format!("verify observe: {e}"), "attempt": attempt}),
+                        serde_json::json!({"error": format!("verify observe: {error}"), "attempt": attempt}),
                     );
-                    return StepStatus::Errored { error: e };
+                    return StepStatus::Errored { error };
                 }
             };
             self.journal(
                 EventKind::ObservationCreated,
                 serde_json::json!({"observation": obs.id.0, "elements": obs.elements.len(), "attempt": attempt}),
             );
-            let verification = dexter_verify::verify(&obs, expected);
+            let mut verification = dexter_verify::verify(&obs, expected);
+            if let Some(secret) = secret_for_scrubbing.as_deref() {
+                for check in &mut verification.checks {
+                    *check = redact_text(check, secret);
+                }
+            }
             self.journal(
                 if verification.status == VerificationStatus::Verified {
                     EventKind::VerificationPassed
@@ -1150,7 +1212,8 @@ fn bounds_need_observation(action: &Action) -> bool {
     let target = match action {
         Action::Click { target, .. }
         | Action::Focus { target }
-        | Action::SetValue { target, .. } => Some(target),
+        | Action::SetValue { target, .. }
+        | Action::FillCredential { target, .. } => Some(target),
         Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
         _ => None,
     };
@@ -1161,7 +1224,8 @@ fn target_bounds(action: &Action, obs: Option<&Observation>) -> Option<Rect> {
     let target = match action {
         Action::Click { target, .. }
         | Action::Focus { target }
-        | Action::SetValue { target, .. } => Some(target),
+        | Action::SetValue { target, .. }
+        | Action::FillCredential { target, .. } => Some(target),
         Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
         _ => None,
     }?;
@@ -1257,10 +1321,42 @@ fn is_mutating(action: &Action) -> bool {
         action,
         Action::Click { .. }
             | Action::SetValue { .. }
+            | Action::FillCredential { .. }
             | Action::TypeText { .. }
             | Action::Key { .. }
             | Action::Navigate { .. }
     )
+}
+
+fn redact_text(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        text.to_owned()
+    } else {
+        text.replace(secret, "<redacted>")
+    }
+}
+
+fn redact_action_result(result: &mut ActionResult, secret: &str) {
+    if let Some(detail) = result.detail.as_mut() {
+        *detail = redact_text(detail, secret);
+    }
+}
+
+fn redact_driver_error(error: DriverError, secret: &str) -> DriverError {
+    if secret.is_empty() {
+        return error;
+    }
+    let redact = |message: String| redact_text(&message, secret);
+    match error {
+        DriverError::PermissionDenied(message) => DriverError::PermissionDenied(redact(message)),
+        DriverError::AppNotFound(message) => DriverError::AppNotFound(redact(message)),
+        DriverError::NotFound(message) => DriverError::NotFound(redact(message)),
+        DriverError::Ambiguous(message) => DriverError::Ambiguous(redact(message)),
+        DriverError::Unsupported(message) => DriverError::Unsupported(redact(message)),
+        DriverError::Timeout(message) => DriverError::Timeout(redact(message)),
+        DriverError::Platform(message) => DriverError::Platform(redact(message)),
+        DriverError::StaleReference(message) => DriverError::StaleReference(redact(message)),
+    }
 }
 
 fn observation_incomplete(obs: &Observation) -> bool {

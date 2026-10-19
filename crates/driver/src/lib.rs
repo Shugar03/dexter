@@ -5,7 +5,10 @@
 
 pub mod identity;
 
-use dexter_core::{Action, ActionResult, AppSelector, Observation, ObservationScope, Window};
+use dexter_core::{
+    Action, ActionResult, AppSelector, CredentialField, Observation, ObservationScope, Target,
+    Window,
+};
 
 /// Errors a driver can surface. Mapped to `ActionStatus` at the action layer.
 #[derive(Debug, thiserror::Error)]
@@ -107,6 +110,23 @@ pub trait ComputerDriver: Send + Sync {
     /// and never claims success it can't substantiate.
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError>;
 
+    /// Atomically confirm the page origin and set `secret` on `target`.
+    /// Default refuses: only a driver that can prove the origin in the same
+    /// step as the write (browser DOM) may ever receive a credential.
+    fn fill_secret(
+        &self,
+        target: &Target,
+        field: CredentialField,
+        secret: &str,
+        expected_origin: &str,
+        ctx: &ActContext,
+    ) -> Result<ActionResult, DriverError> {
+        let _ = (target, field, secret, expected_origin, ctx);
+        Err(DriverError::Unsupported(
+            "credential fill needs a driver that can verify the page origin".into(),
+        ))
+    }
+
     /// Best-effort request to expose `app`'s window content. Some
     /// platforms (macOS) only surface an app's AX window tree while it
     /// is frontmost — waking means one bounded activation, never a
@@ -133,6 +153,16 @@ impl ComputerDriver for Box<dyn ComputerDriver> {
     }
     fn act(&self, action: &Action, ctx: &ActContext) -> Result<ActionResult, DriverError> {
         (**self).act(action, ctx)
+    }
+    fn fill_secret(
+        &self,
+        target: &Target,
+        field: CredentialField,
+        secret: &str,
+        expected_origin: &str,
+        ctx: &ActContext,
+    ) -> Result<ActionResult, DriverError> {
+        (**self).fill_secret(target, field, secret, expected_origin, ctx)
     }
     fn wake(&self, app: &AppSelector) -> Result<WakeHandle, DriverError> {
         (**self).wake(app)

@@ -72,7 +72,7 @@ fn default_mutating() -> DecisionKind {
 #[derive(Debug, Deserialize)]
 struct RawRule {
     /// `click`, `type_text`, `key`, `scroll`, `focus`, `set_value`,
-    /// `observe`, `wait`, or `*` for every mutating action.
+    /// `fill_credential`, `observe`, `wait`, or `*` for ordinary mutations.
     action: String,
     /// Optional app filter: substring of app name, `bundle:com.x`, or
     /// `pid:123`. Absent = matches any app.
@@ -200,6 +200,14 @@ impl Policy {
                 DecisionKind::RequireApproval => PolicyDecision::RequireApproval { reason },
             };
         }
+        if kind == "fill_credential" {
+            return PolicyDecision::Deny {
+                reason: format!(
+                    "credential fill on {} requires an explicit `fill_credential` policy rule",
+                    describe_ctx(ctx)
+                ),
+            };
+        }
         // No rule matched. Physical input has its own floor — a batch
         // approval for mutations never silently covers moving the real
         // cursor. The floor is a gate, not the verdict: once it passes,
@@ -270,6 +278,7 @@ fn action_kind(action: &Action) -> Option<&'static str> {
         Action::Scroll { .. } => Some("scroll"),
         Action::Focus { .. } => Some("focus"),
         Action::SetValue { .. } => Some("set_value"),
+        Action::FillCredential { .. } => Some("fill_credential"),
         Action::Navigate { .. } => Some("navigate"),
         Action::Observe | Action::Wait { .. } => None,
     }
@@ -280,7 +289,7 @@ fn action_kind(action: &Action) -> Option<&'static str> {
 fn action_kind_of(s: &str) -> Option<()> {
     match s {
         "*" | "click" | "type_text" | "key" | "scroll" | "focus" | "set_value" | "observe"
-        | "wait" | "navigate" => Some(()),
+        | "wait" | "navigate" | "fill_credential" => Some(()),
         _ => None,
     }
 }
@@ -291,7 +300,11 @@ fn rule_matches(
     intrusiveness: Intrusiveness,
     ctx: &ActionContext,
 ) -> bool {
-    let action_ok = rule.action == "*" || rule.action == kind;
+    let action_ok = if kind == "fill_credential" {
+        rule.action == kind
+    } else {
+        rule.action == "*" || rule.action == kind
+    };
     if !action_ok {
         return false;
     }

@@ -949,6 +949,12 @@ pub fn act(
                 "Action::Observe is an engine directive, not a driver action".into(),
             ));
         }
+        Action::FillCredential { .. } => {
+            return Err(DriverError::Unsupported(
+                "Action::FillCredential is an engine directive — the engine calls fill_secret"
+                    .into(),
+            ));
+        }
         Action::Navigate { url } => return navigate(url),
         _ => {}
     }
@@ -1203,7 +1209,10 @@ pub fn act(
         }
         // Wait/Observe/Navigate return before the COM session — this arm
         // only exists to keep the match exhaustive.
-        Action::Wait { .. } | Action::Observe | Action::Navigate { .. } => {
+        Action::Wait { .. }
+        | Action::Observe
+        | Action::FillCredential { .. }
+        | Action::Navigate { .. } => {
             unreachable!("handled before COM init")
         }
     }

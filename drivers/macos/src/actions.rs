@@ -407,6 +407,9 @@ pub fn act(
         Action::Observe => Err(DriverError::Unsupported(
             "Action::Observe is an engine directive, not a driver action".into(),
         )),
+        Action::FillCredential { .. } => Err(DriverError::Unsupported(
+            "Action::FillCredential is an engine directive — the engine calls fill_secret".into(),
+        )),
         Action::Navigate { url } => {
             // `--` ends option parsing: a url like "-a Calculator"
             // must reach open as an argument, not a flag — open(1)

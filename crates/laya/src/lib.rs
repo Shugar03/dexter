@@ -393,6 +393,7 @@ fn describe_candidate(i: usize, c: &CandidateAction) -> String {
         Action::Scroll { .. } => "scroll",
         Action::Focus { .. } => "focus",
         Action::SetValue { .. } => "set value",
+        Action::FillCredential { .. } => "fill credential",
         Action::Navigate { .. } => "navigate",
         Action::Observe => "observe",
         Action::Wait { .. } => "wait",
