@@ -404,9 +404,12 @@ Seeded 2026-10-19 from the slices the last PRs flagged as remaining
   XWayland targets only, verified under headless sway at output scale
   1 and 2; native Wayland windows fail closed (window-relative AT-SPI
   extents). Remaining: native Wayland placement, Wayland input.
-- [ ] Browser protected sessions — cookie/credential-backed login
+- [x] Browser protected sessions — cookie/credential-backed login
   flows behind explicit policy consent, credentials staying
-  local-first. (Etapa 2 — sesiones protegidas)
+  local-first. (Etapa 2 — sesiones protegidas) — [PR #86](https://github.com/Shugar03/dexter/pull/86), 2026-10-19.
+  `Action::FillCredential` (name only; password from env via
+  `--credentials`), deny unless an explicit `fill_credential` rule,
+  origin + field kind checked in-page; non-browser drivers refuse.
 - [ ] `[macos]` Release v0.1.0 — signed binary + Homebrew tap,
   published as `dexter-cu`. (Etapa 1 — release)
 - [ ] Real-item Laya labels — extend `datasets/questions` and the
