@@ -397,10 +397,13 @@ Seeded 2026-10-19 from the slices the last PRs flagged as remaining
 - [x] `[linux]` Navigate + HiDPI — `Action::Navigate` on the AT-SPI
   driver (remaining from PR #70) and HiDPI `GDK_SCALE` mapping for X11
   capture + XTest (remaining from PR #71). (Etapa 5) — [PR #84](https://github.com/Shugar03/dexter/pull/84), 2026-10-19
-- [ ] `[linux]` Wayland capture — xdg-desktop-portal Screenshot backend
+- [x] `[linux]` Wayland capture — xdg-desktop-portal Screenshot backend
   (fail closed when no portal/compositor answers or consent is denied;
   verified on a real Wayland session, not the X11 build box).
-  (Etapa 5; remaining from PR #84)
+  (Etapa 5; remaining from PR #84) — [PR #85](https://github.com/Shugar03/dexter/pull/85), 2026-10-19.
+  XWayland targets only, verified under headless sway at output scale
+  1 and 2; native Wayland windows fail closed (window-relative AT-SPI
+  extents). Remaining: native Wayland placement, Wayland input.
 - [ ] Browser protected sessions — cookie/credential-backed login
   flows behind explicit policy consent, credentials staying
   local-first. (Etapa 2 — sesiones protegidas)
