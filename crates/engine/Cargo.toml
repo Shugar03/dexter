@@ -14,6 +14,7 @@ dexter-decision.workspace = true
 dexter-world-model.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+toml.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

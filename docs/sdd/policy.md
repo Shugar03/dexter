@@ -29,7 +29,8 @@ del target. La política no resuelve elementos — evalúa intención.
 1. **Deny-by-default**: una acción mutante sin regla que la permita y sin
    aprobación vigente → `RequireApproval` o `Deny` (según default), nunca `Allow`.
 2. Lectura (`Observe`, `Wait`) → `Allow` siempre.
-3. Acciones mutantes: `Click`, `TypeText`, `Key`, `Scroll`, `Focus`, `SetValue`.
+3. Acciones mutantes: `Click`, `TypeText`, `Key`, `Scroll`, `Focus`, `SetValue`,
+   `Navigate` y `FillCredential`.
 4. Reglas se evalúan **en orden; primer match gana**. Sin match → defaults.
 5. Un TOML malformado → error explícito, nunca default-permisivo silencioso.
 6. Una aprobación está ligada al fingerprint `(action, app)`, es **de un
@@ -50,6 +51,11 @@ del target. La política no resuelve elementos — evalúa intención.
    solicitud viva sin concederla. Líneas malformadas se registran como
    rechazadas. Sin configuración no hay inbox; nunca se pre-autoriza ni
    se consume un grant desde el lector.
+9. `FillCredential` siempre requiere una regla explícita
+   `action = "fill_credential"`: el comodín `action = "*"` y
+   `defaults.mutating = "allow"` no la autorizan. Sin regla explícita se
+   deniega. `require_approval` exige un grant real, de un solo uso;
+   `approve_all` (`--approve-all`) no concede el relleno de credenciales.
 
 ## Formato TOML
 
@@ -58,11 +64,25 @@ del target. La política no resuelve elementos — evalúa intención.
 mutating = "require_approval"   # allow | deny | require_approval
 
 [[rule]]
-action = "click"                # click|type_text|key|scroll|focus|set_value|*
+action = "click"                # click|type_text|key|scroll|focus|set_value|navigate|fill_credential|*
 app = "Safari"                  # substring, "bundle:com.x", "pid:123", o ausente
 decision = "allow"
 reason = "browser interaction approved for this task"
 ```
+
+La regla de credenciales debe nombrarse explícitamente; `*` no coincide:
+
+```toml
+[[rule]]
+action = "fill_credential"
+app = "browser"
+decision = "require_approval"
+reason = "confirmar el inicio de sesión protegido"
+```
+
+La acción solo contiene el nombre de la credencial y el campo, nunca el
+secreto. Ver [credenciales de navegador](browser-credentials.md) para el
+formato local, la resolución desde el entorno y el guard de origen/campo.
 
 ## Errores
 

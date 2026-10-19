@@ -11,6 +11,14 @@ pub enum MouseButton {
     Middle,
 }
 
+/// Which credential field a browser may fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialField {
+    Username,
+    Password,
+}
+
 /// A key plus optional modifiers, e.g. `cmd+s`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyChord {
@@ -95,7 +103,9 @@ impl Action {
     pub fn intrusiveness(&self) -> Intrusiveness {
         match self {
             Action::Click { target, .. } | Action::Focus { target } => target.intrusiveness(),
-            Action::SetValue { target, .. } => target.intrusiveness(),
+            Action::SetValue { target, .. } | Action::FillCredential { target, .. } => {
+                target.intrusiveness()
+            }
             Action::Scroll { target, .. } | Action::TypeText { target, .. } => target
                 .as_ref()
                 .map(Target::intrusiveness)
@@ -139,6 +149,30 @@ mod tests {
             assert_eq!(action.intrusiveness(), Intrusiveness::Physical);
         }
     }
+
+    #[test]
+    fn fill_credential_roundtrips_without_carrying_a_secret_and_uses_target_tier() {
+        let action = Action::FillCredential {
+            target: Target::Semantic(Default::default()),
+            credential: "github".into(),
+            field: CredentialField::Password,
+        };
+        let value = serde_json::to_value(&action).unwrap();
+        assert_eq!(value["type"], "fill_credential");
+        assert_eq!(value["credential"], "github");
+        assert_eq!(value["field"], "password");
+        assert!(value.get("secret").is_none());
+        let decoded: Action = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, action);
+        assert_eq!(action.intrusiveness(), Intrusiveness::Background);
+
+        let physical = Action::FillCredential {
+            target: Target::Point { x: 4.0, y: 9.0 },
+            credential: "github".into(),
+            field: CredentialField::Username,
+        };
+        assert_eq!(physical.intrusiveness(), Intrusiveness::Physical);
+    }
 }
 
 /// A single physical/semantic action against the computer.
@@ -169,6 +203,14 @@ pub enum Action {
     Focus { target: Target },
     /// Set an element's value directly (semantic set, e.g. AXValue).
     SetValue { target: Target, value: String },
+    /// Fill a stored, origin-bound credential into a field. Carries only the
+    /// credential *name*; the engine resolves the secret at act time and it is
+    /// never serialized, journaled or returned.
+    FillCredential {
+        target: Target,
+        credential: String,
+        field: CredentialField,
+    },
     /// Re-observe the world.
     Observe,
     /// Wait a fixed amount of time.

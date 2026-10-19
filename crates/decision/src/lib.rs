@@ -1004,7 +1004,8 @@ fn already_tried(el: &Element, elements: &[Element], attempts: &[Action]) -> boo
     attempts.iter().any(|a| match a {
         Action::Click { target, .. }
         | Action::Focus { target }
-        | Action::SetValue { target, .. } => target == &wanted,
+        | Action::SetValue { target, .. }
+        | Action::FillCredential { target, .. } => target == &wanted,
         Action::TypeText { target, .. } => target.as_ref() == Some(&wanted),
         _ => false,
     })
@@ -1140,10 +1141,14 @@ impl CandidateGenerator for HeuristicGenerator {
             // pressing the "Documento" menu won't type anything. Once an
             // edit was actually attempted, though, the goal's remaining
             // intent is the press — the penalty no longer applies.
-            let edit_done = hist
-                .attempts
-                .iter()
-                .any(|a| matches!(a, Action::SetValue { .. } | Action::TypeText { .. }));
+            let edit_done = hist.attempts.iter().any(|a| {
+                matches!(
+                    a,
+                    Action::SetValue { .. }
+                        | Action::FillCredential { .. }
+                        | Action::TypeText { .. }
+                )
+            });
             if want_edit && !editable && !edit_done {
                 prior *= 0.5;
             }
@@ -1243,7 +1248,8 @@ fn candidate_element<'a>(c: &CandidateAction, elements: &'a [Element]) -> Option
     let target = match &c.action {
         Action::Click { target, .. }
         | Action::Focus { target }
-        | Action::SetValue { target, .. } => Some(target),
+        | Action::SetValue { target, .. }
+        | Action::FillCredential { target, .. } => Some(target),
         Action::TypeText { target, .. } | Action::Scroll { target, .. } => target.as_ref(),
         _ => None,
     }?;
@@ -1305,6 +1311,10 @@ fn annotate_structure(out: &mut [CandidateAction], elements: &[Element]) {
                 target: Target::Semantic(st),
             }
             | Action::SetValue {
+                target: Target::Semantic(st),
+                ..
+            }
+            | Action::FillCredential {
                 target: Target::Semantic(st),
                 ..
             } => st.index.map(|k| (k, st)),

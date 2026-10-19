@@ -821,6 +821,9 @@ pub fn act(
         Action::Observe => Err(DriverError::Unsupported(
             "Action::Observe is an engine directive, not a driver action".into(),
         )),
+        Action::FillCredential { .. } => Err(DriverError::Unsupported(
+            "Action::FillCredential is an engine directive — the engine calls fill_secret".into(),
+        )),
         Action::Navigate { url } => navigate_with(OsStr::new("xdg-open"), url),
         Action::Click { target, button } => click(target, *button, ctx, cache),
         Action::TypeText { text, target } => type_text(text, target.as_ref(), ctx, cache),

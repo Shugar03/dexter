@@ -15,8 +15,8 @@ mod walker;
 mod webdriver;
 
 use dexter_core::{
-    Action, ActionResult, ActionStatus, AppSelector, Element, ElementId, Mechanism, Observation,
-    ObservationId, ObservationScope, Rect, Target, Window,
+    Action, ActionResult, ActionStatus, AppSelector, CredentialField, Element, ElementId,
+    Mechanism, Observation, ObservationId, ObservationScope, Rect, Target, Window,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverCapabilities, DriverError};
 use serde_json::json;
@@ -455,6 +455,10 @@ impl ComputerDriver for BrowserDriver {
             Action::Observe => Err(DriverError::Unsupported(
                 "Action::Observe is an engine directive".into(),
             )),
+            Action::FillCredential { .. } => Err(DriverError::Unsupported(
+                "Action::FillCredential is an engine directive — the engine calls fill_secret"
+                    .into(),
+            )),
             Action::Navigate { url } => {
                 self.client.lock().unwrap().navigate(url)?;
                 Ok(ActionResult::success(
@@ -699,6 +703,71 @@ impl ComputerDriver for BrowserDriver {
                 ))
             }
         }
+    }
+
+    fn fill_secret(
+        &self,
+        target: &Target,
+        field: CredentialField,
+        secret: &str,
+        expected_origin: &str,
+        _ctx: &ActContext,
+    ) -> Result<ActionResult, DriverError> {
+        let id = self
+            .resolve(target)
+            .map_err(|error| redact_driver_error(error, secret))?;
+        let field_check = match field {
+            CredentialField::Password => "el.tagName === 'INPUT' && type === 'password'",
+            CredentialField::Username => {
+                "el.tagName === 'INPUT' && ['text','email','tel',''].includes(type)"
+            }
+        };
+        let script = format!(
+            "return (() => {{ const el = window.__dexterNodes?.[{}]; \
+             if (!el) return {{__dexter_err:'stale node'}}; \
+             if (location.origin !== arguments[1]) return {{__dexter_err:'origin mismatch'}}; \
+             if (el.disabled === true || el.getAttribute('aria-disabled') === 'true') \
+                 return {{__dexter_err:'disabled'}}; \
+             const type = (el.getAttribute('type') || '').toLowerCase(); \
+             if (!({field_check})) return {{__dexter_err:'field kind mismatch'}}; \
+             el.focus(); el.value = arguments[0]; \
+             el.dispatchEvent(new Event('input',{{bubbles:true}})); \
+             el.dispatchEvent(new Event('change',{{bubbles:true}})); \
+             return 'filled'; }})()",
+            id.0
+        );
+        let response = self
+            .client
+            .lock()
+            .unwrap()
+            .execute(&script, vec![json!(secret), json!(expected_origin)])
+            .map_err(|error| redact_driver_error(error, secret))?;
+        if let Some(result) =
+            Self::el_err(&response).map_err(|error| redact_driver_error(error, secret))?
+        {
+            return Ok(result);
+        }
+        Ok(ActionResult::success(
+            Mechanism::Dom,
+            Some(format!("filled {field:?} on element {id}")),
+        ))
+    }
+}
+
+fn redact_driver_error(error: DriverError, secret: &str) -> DriverError {
+    if secret.is_empty() {
+        return error;
+    }
+    let redact = |message: String| message.replace(secret, "<redacted>");
+    match error {
+        DriverError::PermissionDenied(message) => DriverError::PermissionDenied(redact(message)),
+        DriverError::AppNotFound(message) => DriverError::AppNotFound(redact(message)),
+        DriverError::NotFound(message) => DriverError::NotFound(redact(message)),
+        DriverError::Ambiguous(message) => DriverError::Ambiguous(redact(message)),
+        DriverError::Unsupported(message) => DriverError::Unsupported(redact(message)),
+        DriverError::Timeout(message) => DriverError::Timeout(redact(message)),
+        DriverError::Platform(message) => DriverError::Platform(redact(message)),
+        DriverError::StaleReference(message) => DriverError::StaleReference(redact(message)),
     }
 }
 

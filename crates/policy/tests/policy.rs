@@ -33,6 +33,14 @@ fn key() -> Action {
     }
 }
 
+fn fill_credential() -> Action {
+    Action::FillCredential {
+        target: Target::Semantic(Default::default()),
+        credential: "github".into(),
+        field: dexter_core::CredentialField::Password,
+    }
+}
+
 #[test]
 fn embedded_policy_allows_reads_and_gates_mutations() {
     let p = Policy::embedded();
@@ -52,6 +60,59 @@ fn embedded_policy_allows_reads_and_gates_mutations() {
         p.evaluate(&key(), &ctx(Some("Safari"))),
         // Keys are physical input — denied, never merely approval-gated.
         PolicyDecision::Deny { .. }
+    ));
+}
+
+#[test]
+fn credential_fill_requires_an_explicit_rule() {
+    let embedded = Policy::embedded();
+    match embedded.evaluate(&fill_credential(), &ctx(Some("Browser"))) {
+        PolicyDecision::Deny { reason } => assert!(reason.starts_with(
+            "credential fill on app 'Browser' requires an explicit `fill_credential` policy rule"
+        )),
+        other => panic!("expected explicit credential-rule denial, got {other:?}"),
+    }
+
+    let wildcard = Policy::from_toml(
+        r#"
+        [defaults]
+        mutating = "allow"
+
+        [[rule]]
+        action = "*"
+        decision = "allow"
+        "#,
+    )
+    .unwrap();
+    assert!(matches!(
+        wildcard.evaluate(&fill_credential(), &ctx(Some("Browser"))),
+        PolicyDecision::Deny { .. }
+    ));
+
+    let allow = Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "fill_credential"
+        decision = "allow"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        allow.evaluate(&fill_credential(), &ctx(Some("Browser"))),
+        PolicyDecision::Allow
+    );
+
+    let approval = Policy::from_toml(
+        r#"
+        [[rule]]
+        action = "fill_credential"
+        decision = "require_approval"
+        "#,
+    )
+    .unwrap();
+    assert!(matches!(
+        approval.evaluate(&fill_credential(), &ctx(Some("Browser"))),
+        PolicyDecision::RequireApproval { .. }
     ));
 }
 

@@ -30,6 +30,10 @@ struct Cli {
     #[arg(long, global = true)]
     policy: Option<String>,
 
+    /// Local credential metadata file. Password values are read from env.
+    #[arg(long, global = true, value_name = "FILE")]
+    credentials: Option<String>,
+
     /// Driver backend: `macos` (Accessibility API), `browser`
     /// (W3C WebDriver — Safari via safaridriver, or any endpoint),
     /// or `sim` (synthetic world — `replay` rebuilds it from the
@@ -654,7 +658,12 @@ fn run() -> Result<()> {
             grant,
         } => cmd_replay(&cli, recording, spec.as_deref(), grant),
         cmd => {
-            let engine = Engine::new(build_driver(&cli)?, policy, Duration::from_secs(300));
+            let mut engine = Engine::new(build_driver(&cli)?, policy, Duration::from_secs(300));
+            if let Some(path) = cli.credentials.as_deref() {
+                let store = dexter_engine::CredentialStore::load(std::path::Path::new(path))
+                    .map_err(anyhow::Error::msg)?;
+                engine.set_credentials(store);
+            }
             run_with_engine(&cli, cmd.clone(), engine, is_browser)
         }
     }
@@ -874,6 +883,7 @@ fn run_with_engine(
                 allow_coords: coords,
                 presence: overlay,
                 approval_inbox: approval_inbox.clone().map(std::path::PathBuf::from),
+                credentials: cli.credentials.as_deref().map(std::path::PathBuf::from),
             },
         ),
         Command::Record { .. } | Command::Replay { .. } => {

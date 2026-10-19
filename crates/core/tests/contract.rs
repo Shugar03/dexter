@@ -123,6 +123,14 @@ fn intrusiveness_covers_every_action() {
             Background,
         ),
         (
+            Action::FillCredential {
+                target: Target::Focused,
+                credential: "github".into(),
+                field: CredentialField::Password,
+            },
+            Background,
+        ),
+        (
             Action::TypeText {
                 text: "hi".into(),
                 target: Some(Target::Focused),

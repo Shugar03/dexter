@@ -9,7 +9,9 @@
 use dexter_core::{Action, AppSelector, ExpectedState, ObservationScope};
 use dexter_decision::{CandidateGenerator, DecisionEngine, HeuristicGenerator};
 use dexter_driver::ComputerDriver;
-use dexter_engine::{Engine, RunConfig, Step, StepStatus, TaskConfig, TaskOutcome};
+use dexter_engine::{
+    CredentialStore, Engine, RunConfig, Step, StepStatus, TaskConfig, TaskOutcome,
+};
 use dexter_policy::Policy;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -48,6 +50,9 @@ impl DexterRuntime {
         config: ServerConfig,
     ) -> Result<Self, String> {
         let mut engine = Engine::new(driver, policy, Duration::from_secs(300));
+        if let Some(path) = &config.credentials {
+            engine.set_credentials(CredentialStore::load(path)?);
+        }
         if let Some(path) = &config.approval_inbox {
             engine.set_approval_inbox(path.clone())?;
         }
@@ -121,6 +126,8 @@ pub struct ServerConfig {
     pub presence: bool,
     /// File-based approval inbox shared with dexter-desktop.
     pub approval_inbox: Option<PathBuf>,
+    /// Local credential metadata file. Secret values stay in the environment.
+    pub credentials: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -413,7 +420,7 @@ impl DexterMcp {
     /// failed | error.
     #[tool(
         name = "dexter_act",
-        description = "Run one action through policy+verify; needs_approval returns a fingerprint for dexter_grant"
+        description = "Run one action through policy+verify, including origin-bound fill_credential; needs_approval returns a fingerprint for dexter_grant"
     )]
     async fn dexter_act(
         &self,

@@ -7,8 +7,8 @@
 
 use dexter_browser::BrowserDriver;
 use dexter_core::{
-    Action, ActionStatus, ElementSource, KeyChord, Mechanism, MouseButton, ObservationScope,
-    ScrollDelta, SemanticTarget, Target,
+    Action, ActionStatus, CredentialField, ElementSource, KeyChord, Mechanism, MouseButton,
+    ObservationScope, ScrollDelta, SemanticTarget, Target,
 };
 use dexter_driver::{ActContext, ComputerDriver, DriverError};
 use serde_json::{json, Value};
@@ -58,6 +58,10 @@ struct FakeServer {
     action_bodies: Arc<Mutex<Vec<Value>>>,
     /// JSON bodies posted to /session (new-session payloads), in order.
     session_bodies: Arc<Mutex<Vec<Value>>>,
+    /// Argument arrays passed to `/execute/sync`, in order.
+    execute_args: Arc<Mutex<Vec<Vec<Value>>>>,
+    /// Make credential fill report an origin mismatch.
+    origin_mismatch: Arc<Mutex<bool>>,
     /// Toggle: make the walker return a *different* tree to simulate a
     /// mutated DOM (stale detection test).
     mutated: Arc<Mutex<bool>>,
@@ -77,7 +81,9 @@ fn fake_webdriver() -> FakeServer {
     let current = Arc::new(Mutex::new("h1".to_string()));
     let iframe_errors = Arc::new(Mutex::new(0u32));
     let session_bodies = Arc::new(Mutex::new(Vec::new()));
-    let (s2, m2, h2, c2, e2, a2, sb2) = (
+    let execute_args = Arc::new(Mutex::new(Vec::new()));
+    let origin_mismatch = Arc::new(Mutex::new(false));
+    let (s2, m2, h2, c2, e2, a2, sb2, ea2, om2) = (
         scripts.clone(),
         mutated.clone(),
         handles.clone(),
@@ -85,6 +91,8 @@ fn fake_webdriver() -> FakeServer {
         iframe_errors.clone(),
         action_bodies.clone(),
         session_bodies.clone(),
+        execute_args.clone(),
+        origin_mismatch.clone(),
     );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -191,16 +199,18 @@ fn fake_webdriver() -> FakeServer {
                 }
                 ("DELETE", p) if p.ends_with("/actions") => json!({"value":null}),
                 ("POST", p) if p.ends_with("/execute/sync") => {
-                    let script = serde_json::from_str::<Value>(body)
-                        .ok()
-                        .and_then(|b| b["script"].as_str().map(String::from))
-                        .unwrap_or_default();
+                    let request = serde_json::from_str::<Value>(body).unwrap_or_default();
+                    let script = request["script"].as_str().unwrap_or_default().to_string();
+                    let args = request["args"].as_array().cloned().unwrap_or_default();
+                    ea2.lock().unwrap().push(args);
                     s2.lock().unwrap().push(script.clone());
                     if script.contains("__dexterNodes?.[5]") {
                         // Node 5 is the disabled "Apply coupon" button:
                         // a real DOM node's el.disabled is true, so the
                         // in-page guard reports 'disabled' — emulate it.
                         json!({"value":{"__dexter_err":"disabled"}})
+                    } else if script.contains("location.origin") && *om2.lock().unwrap() {
+                        json!({"value":{"__dexter_err":"origin mismatch"}})
                     } else if script.contains("return el;") {
                         // Element-reference probe (`return el`): the
                         // driver hands this to pointer actions' origin.
@@ -243,6 +253,8 @@ fn fake_webdriver() -> FakeServer {
         scripts,
         action_bodies,
         session_bodies,
+        execute_args,
+        origin_mismatch,
         mutated,
         iframe_errors,
     }
@@ -401,6 +413,72 @@ fn point_targets_are_unsupported() {
         )
         .expect("result");
     assert_eq!(result.status, dexter_core::ActionStatus::Unsupported);
+}
+
+#[test]
+fn fill_secret_checks_origin_and_passes_secret_and_origin_as_execute_arguments() {
+    let server = fake_webdriver();
+    let driver = BrowserDriver::connect(&server.url, "chrome").unwrap();
+    let target = Target::Semantic(SemanticTarget {
+        role: Some("text_field".into()),
+        name: Some("Card number".into()),
+        ..Default::default()
+    });
+
+    let result = driver
+        .fill_secret(
+            &target,
+            CredentialField::Username,
+            "local-secret-value",
+            "https://fake.test",
+            &ActContext::default(),
+        )
+        .expect("credential fill");
+    assert_eq!(result.status, ActionStatus::Success);
+    assert!(result.detail.as_deref().unwrap().contains("Username"));
+    assert!(!result
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("local-secret-value"));
+
+    let scripts = server.scripts.lock().unwrap();
+    let fill_script = scripts
+        .iter()
+        .find(|script| script.contains("location.origin"))
+        .expect("origin-bound fill script");
+    assert!(fill_script.contains("location.origin"));
+    drop(scripts);
+    let args = server.execute_args.lock().unwrap();
+    assert_eq!(
+        args.last().unwrap(),
+        &vec![json!("local-secret-value"), json!("https://fake.test")]
+    );
+}
+
+#[test]
+fn fill_secret_origin_mismatch_is_not_success() {
+    let server = fake_webdriver();
+    *server.origin_mismatch.lock().unwrap() = true;
+    let driver = BrowserDriver::connect(&server.url, "chrome").unwrap();
+    let target = Target::Semantic(SemanticTarget {
+        role: Some("text_field".into()),
+        name: Some("Card number".into()),
+        ..Default::default()
+    });
+
+    let result = driver.fill_secret(
+        &target,
+        CredentialField::Password,
+        "not-in-error",
+        "https://wrong.example",
+        &ActContext::default(),
+    );
+    assert!(
+        result.is_err() || matches!(result, Ok(ref result) if !result.status.ok()),
+        "origin mismatch must not succeed: {result:?}"
+    );
+    assert!(!format!("{result:?}").contains("not-in-error"));
 }
 
 #[test]
