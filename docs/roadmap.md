@@ -391,9 +391,9 @@ Seeded 2026-10-12 from the slices the last PRs flagged as remaining
 Seeded 2026-10-19 from the slices the last PRs flagged as remaining
 (#70, #71, #73, #75, #77) plus ROADMAP.md Etapas 1, 2, 3 and 5.
 
-- [ ] `[windows]` act tail — middle `Click` (SendInput behind
+- [x] `[windows]` act tail — middle `Click` (SendInput behind
   `ctx.allow_coordinates`, matching the right-click path) and
-  `icon.ico` for the desktop build. (Etapa 4; remaining from PR #75)
+  `icon.ico` for the desktop build. (Etapa 4; remaining from PR #75) — [PR #83](https://github.com/Shugar03/dexter/pull/83), 2026-10-19
 - [ ] `[linux]` Navigate + Wayland capture — `Action::Navigate` on
   the AT-SPI driver (remaining from PR #70) and XWayland/Wayland
   portal screenshot incl. HiDPI `GDK_SCALE` mapping (remaining from
