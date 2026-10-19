@@ -48,6 +48,10 @@ impl Fixture {
 }
 
 fn fixture() -> Option<Fixture> {
+    fixture_with_scale(None)
+}
+
+fn fixture_with_scale(gdk_scale: Option<&str>) -> Option<Fixture> {
     let gtk3 = Command::new("python3")
         .args([
             "-c",
@@ -75,17 +79,18 @@ fn fixture() -> Option<Fixture> {
     }
 
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/act_app.py");
-    let mut child = ChildGuard(
-        Command::new("python3")
-            .arg(script)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .env("NO_AT_BRIDGE", "0")
-            .env("GTK_MODULES", "gail:atk-bridge")
-            .spawn()
-            .expect("spawn GTK fixture"),
-    );
+    let mut command = Command::new("python3");
+    command
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .env("NO_AT_BRIDGE", "0")
+        .env("GTK_MODULES", "gail:atk-bridge");
+    if let Some(scale) = gdk_scale {
+        command.env("GDK_SCALE", scale);
+    }
+    let mut child = ChildGuard(command.spawn().expect("spawn GTK fixture"));
     let pid = i32::try_from(child.0.id()).expect("fixture pid fits i32");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -864,19 +869,6 @@ fn direct_actions_keep_their_declared_mechanisms() {
         driver.act(&Action::Observe, &ActContext::default()),
         Err(DriverError::Unsupported(_))
     ));
-    let navigate = driver
-        .act(
-            &Action::Navigate {
-                url: "https://example.com".into(),
-            },
-            &ActContext::default(),
-        )
-        .expect("navigation returns an unsupported verdict");
-    assert_verdict(&navigate, ActionStatus::Unsupported, Mechanism::Api);
-    assert_eq!(
-        navigate.detail.as_deref(),
-        Some("navigate not implemented on linux")
-    );
     let semantic_focus = driver
         .act(
             &Action::Focus {
@@ -916,4 +908,57 @@ fn direct_actions_keep_their_declared_mechanisms() {
         .act(&Action::Wait { millis: 0 }, &ActContext::default())
         .expect("wait needs no AT-SPI bus");
     assert_verdict(&wait, ActionStatus::Success, Mechanism::NativeAutomation);
+}
+
+#[test]
+fn navigate_refuses_non_urls_without_coordinate_or_accessibility_context() {
+    let result = LinuxDriver::new()
+        .act(
+            &Action::Navigate {
+                url: "file:///etc/passwd".into(),
+            },
+            &ActContext::default(),
+        )
+        .expect("refused navigation returns an unsupported verdict");
+    assert_eq!(result.status, ActionStatus::Unsupported);
+    assert_eq!(result.mechanism, Mechanism::NativeAutomation);
+    assert_eq!(
+        result.detail.as_deref(),
+        Some("refusing to open non-URL input — only http/https/mailto reach xdg-open")
+    );
+}
+
+#[test]
+fn gdk_scale_two_element_click_uses_device_coordinates() {
+    let fixture = fixture_with_scale(Some("2"))
+        .expect("GDK_SCALE=2 live GTK fixture requires X11 and a D-Bus session");
+    let result = fixture
+        .driver
+        .act(
+            &Action::Click {
+                target: semantic("button", "Greet"),
+                button: MouseButton::Right,
+            },
+            &allow_coordinates(&fixture),
+        )
+        .expect("click Greet with XTest");
+    assert_verdict(&result, ActionStatus::Success, Mechanism::Coordinates);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let observation = fixture.observe();
+        if observation
+            .elements
+            .iter()
+            .any(|item| item.name.as_deref() == Some("Pressed button 3"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "GDK_SCALE=2 XTest click did not reach Greet:\n{}",
+            observation.digest
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
 }

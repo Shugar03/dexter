@@ -1,7 +1,7 @@
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+from gi.repository import Gdk, Gtk
 
 window = Gtk.Window(title="dexter-act-fixture")
 window.set_default_size(500, 560)
@@ -14,6 +14,15 @@ grid.attach(status, 0, 0, 2, 1)
 
 greet = Gtk.Button(label="Greet")
 greet.connect("clicked", lambda _button: status.set_text("Hello"))
+
+
+def record_mouse_press(_button, event):
+    status.set_text(f"Pressed button {event.button}")
+    return False
+
+
+greet.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+greet.connect("button-press-event", record_mouse_press)
 grid.attach(greet, 0, 1, 1, 1)
 
 name = Gtk.Entry()

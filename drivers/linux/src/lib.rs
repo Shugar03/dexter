@@ -26,6 +26,8 @@ pub mod capture;
 mod ewmh;
 pub mod geometry;
 #[cfg(target_os = "linux")]
+mod scale;
+#[cfg(target_os = "linux")]
 mod vision;
 pub mod xtest;
 

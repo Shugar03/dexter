@@ -164,6 +164,20 @@ path. Focus uses `Component.GrabFocus`. Disabled and read-only controls
 fail before mutation. AT-SPI calls report their actual bool result;
 missing interfaces and unsupported operations never simulate success.
 
+## Linux Navigate (Fase 9 slice)
+
+`Action::Navigate` is independent of AT-SPI, X11, and
+`allow_coordinates`. The driver validates the input before spawning a
+process: only case-insensitive `http`, `https`, and `mailto` schemes
+with a non-empty remainder are allowed. Paths, empty input, and all
+other schemes are refused as `Unsupported` with
+`"refusing to open non-URL input — only http/https/mailto reach xdg-open"`.
+Allowed input is passed as one argument to `xdg-open` without a shell.
+Exit status 0 succeeds; a nonzero status fails; a missing `xdg-open`
+returns `Unsupported`; other spawn errors are platform errors.
+Navigation remains `Intrusiveness::Visual`; policy defaults are
+unchanged.
+
 ## XTest physical input + AT-SPI focus/scroll (Fase 8 slice)
 
 Physical input is opt-in through `ActContext.allow_coordinates`.
@@ -176,10 +190,15 @@ same way as the Windows keyboard fallback. Semantic clicks and editable
 text continue to use AT-SPI. `background_input` remains false.
 
 The XTest backend refuses Wayland sessions: XTest through XWayland
-cannot reach native Wayland windows. Coordinates are root-window pixels,
-scale 1.0 as in X11 capture; HiDPI is untested. It reports success only
-after the X server processes the queued requests; X errors are platform
-errors, never simulated success.
+cannot reach native Wayland windows. On X11, GTK with `GDK_SCALE > 1`
+reports AT-SPI bounds in logical pixels while XTest expects root-window
+device pixels. Coordinate clicks multiply observed points and element
+centers by the target app's scale; a bare point without an app selector
+uses scale 1.0. The scale is read from `/proc/<pid>/environ`: unset or
+`1` means 1.0, and integer values 2 through 4 are supported. Invalid
+values or unreadable environ fail closed with `Unsupported`. The
+backend reports success only after the X server processes the queued
+requests; X errors are platform errors, never simulated success.
 
 - A point click moves to `(x, y)` and presses/releases button 1 (left),
   3 (right), or 2 (middle). A non-left semantic/element click uses the
@@ -237,9 +256,14 @@ errors, never simulated success.
 Linux screenshots use X11 `GetImage` on the root window and crop the
 selected AT-SPI window frame. A Wayland session is refused, including
 XWayland: its root image cannot capture native Wayland windows. The root
-is treated as one monitor with scale 1.0; AT-SPI screen extents under
-X11 are assumed to be root pixels. HiDPI `GDK_SCALE > 1` is untested.
-Regions not fully covered by the root image fail closed.
+is treated as one monitor in device pixels. GTK AT-SPI extents are
+logical pixels when `GDK_SCALE > 1`; capture reads the target app's
+scale from `/proc/<pid>/environ` and passes it through
+`MonitorGeometry.scale` and `monitor_pixel_crop` to produce a
+device-pixel crop. Unset or `1` means 1.0; integer values 2 through 4
+are supported. Invalid values or unreadable environ fail closed with
+`Unsupported`, never a scale-1 fallback. Regions not fully covered by
+the root image fail closed.
 
 `capabilities().screenshots` is true only when the session is not
 Wayland and an X connection reports a non-empty root. Only 24/32-bit
