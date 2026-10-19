@@ -189,6 +189,50 @@ pub fn events_from_jsonl(text: &str) -> Result<Vec<Event>, RecordError> {
         .collect()
 }
 
+/// The task-level outcome a journal ended with — the last terminal task
+/// event wins. `None` when the journal has no terminal: a truncated or
+/// in-flight trace has no outcome and must not be recorded as one.
+///
+/// `run_plan` journals `SubgoalFailed` with the inner `TaskOutcome`'s
+/// Debug name when a subgoal ends the plan; `run_goal`/`run_scenario`
+/// journal `TaskCompleted`/`TaskFailed`/`TaskCancelled`/`TaskTimedOut`
+/// directly. Both surfaces map onto the same outcome vocabulary
+/// `ScenarioRun` uses ("completed", "abstained", "escalated", "failed",
+/// "max_steps", "cancelled", "timed_out").
+pub fn outcome_from_events(events: &[Event]) -> Option<String> {
+    let mut outcome = None;
+    for event in events {
+        let mapped = match event.kind {
+            EventKind::TaskCompleted | EventKind::SubgoalCompleted => Some("completed"),
+            EventKind::TaskCancelled => Some("cancelled"),
+            EventKind::TaskTimedOut => Some("timed_out"),
+            EventKind::TaskFailed => match event.data.get("outcome").and_then(|v| v.as_str()) {
+                Some("abstain") => Some("abstained"),
+                Some("escalated") => Some("escalated"),
+                _ => Some("failed"),
+            },
+            EventKind::SubgoalFailed => {
+                match event.data.get("outcome").and_then(|v| v.as_str()) {
+                    Some(debug) if debug.starts_with("Completed") => Some("completed"),
+                    Some(debug) if debug.starts_with("Abstained") => Some("abstained"),
+                    Some(debug) if debug.starts_with("Escalated") => Some("escalated"),
+                    Some(debug) if debug.starts_with("Failed") => Some("failed"),
+                    Some(debug) if debug.starts_with("MaxSteps") => Some("max_steps"),
+                    Some(debug) if debug.starts_with("Cancelled") => Some("cancelled"),
+                    Some(debug) if debug.starts_with("TimedOut") => Some("timed_out"),
+                    // An unrecognized Debug payload never becomes a guess.
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(mapped) = mapped {
+            outcome = Some(mapped.to_string());
+        }
+    }
+    outcome
+}
+
 fn terminal_result(event: &Event) -> Result<Option<StepResult>, RecordError> {
     match event.kind {
         EventKind::PolicyChecked
@@ -222,11 +266,30 @@ fn terminal_result(event: &Event) -> Result<Option<StepResult>, RecordError> {
 }
 
 pub fn replay<D: ComputerDriver>(rec: &Recording, driver: D, grants: &[String]) -> ReplayReport {
-    let mut engine = Engine::new(driver, Policy::embedded(), Duration::from_secs(60));
+    replay_with(
+        rec,
+        driver,
+        grants,
+        Policy::embedded(),
+        scenario::sim_run_config(),
+    )
+}
+
+/// `replay` with the policy and run config explicit — the sim surface
+/// delegates with the embedded policy and the sim `RunConfig` (which
+/// `approve_all`s like the recording runs did). Live callers set their
+/// own: a driver replay on the real desktop grants nothing implicitly.
+pub fn replay_with<D: ComputerDriver>(
+    rec: &Recording,
+    driver: D,
+    grants: &[String],
+    policy: Policy,
+    cfg: RunConfig,
+) -> ReplayReport {
+    let mut engine = Engine::new(driver, policy, Duration::from_secs(60));
     for grant in grants {
         engine.pre_grant_approval(grant);
     }
-    let cfg: RunConfig = scenario::sim_run_config();
     let scope = ObservationScope {
         app: None,
         max_elements: 4_000,

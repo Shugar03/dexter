@@ -1,15 +1,17 @@
 use dexter_core::{
-    Action, AppSelector, Event, EventKind, ExpectedState, KeyChord, SemanticTarget,
-    VerificationStatus,
+    Action, AppSelector, Element, ElementId, Event, EventKind, ExpectedState, KeyChord,
+    MouseButton, SemanticTarget, Target, VerificationStatus,
 };
 use dexter_decision::{HeuristicGenerator, RuleBased};
+use dexter_engine::RunConfig;
 use dexter_eval::{
     recording::{
-        events_from_jsonl, record, record_run, replay, RecordError, RecordedStep, Recording,
-        StepResult,
+        events_from_jsonl, outcome_from_events, record, record_run, replay, replay_with,
+        RecordError, RecordedStep, Recording, StepResult,
     },
     scenario::{build_driver, run_scenario, ScenarioRun, ScenarioSpec},
 };
+use dexter_policy::{ActionContext, Policy};
 use dexter_sim::SimDriver;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -295,4 +297,156 @@ fn proposal_parser_rejects_invalid_app_values() {
         record("bad", "goal", "failed", &done_when, &[event]),
         Err(RecordError::Malformed(_))
     ));
+}
+
+#[test]
+fn outcome_derives_from_the_last_terminal_task_event() {
+    let done_proposal = proposal(&Action::Wait { millis: 1 });
+    // A journal without a task-level terminal is not a recording source —
+    // a truncated file ends mid-run and must not mint an outcome.
+    assert_eq!(outcome_from_events(&[]), None);
+    assert_eq!(outcome_from_events(&[done_proposal]), None);
+
+    for (event, expected) in [
+        (
+            Event::new(EventKind::TaskCompleted, json!({"steps": 2})),
+            "completed",
+        ),
+        (
+            Event::new(EventKind::SubgoalCompleted, json!({"index": 0})),
+            "completed",
+        ),
+        (
+            Event::new(EventKind::TaskFailed, json!({"outcome": "abstain"})),
+            "abstained",
+        ),
+        (
+            Event::new(EventKind::TaskFailed, json!({"outcome": "escalated"})),
+            "escalated",
+        ),
+        (
+            Event::new(EventKind::TaskFailed, json!({"error": "observe: boom"})),
+            "failed",
+        ),
+        (Event::new(EventKind::TaskCancelled, json!({})), "cancelled"),
+        (Event::new(EventKind::TaskTimedOut, json!({})), "timed_out"),
+        (
+            Event::new(
+                EventKind::SubgoalFailed,
+                json!({"outcome": "Abstained { reason: \"no candidate\" }"}),
+            ),
+            "abstained",
+        ),
+        (
+            Event::new(EventKind::SubgoalFailed, json!({"outcome": "MaxSteps"})),
+            "max_steps",
+        ),
+        (
+            Event::new(
+                EventKind::SubgoalFailed,
+                json!({"outcome": "Failed { reason: \"boom\" }"}),
+            ),
+            "failed",
+        ),
+    ] {
+        assert_eq!(
+            outcome_from_events(std::slice::from_ref(&event)).as_deref(),
+            Some(expected),
+            "{event:?}"
+        );
+    }
+
+    // Last terminal wins: a successful subgoal followed by an abstain.
+    let journal = vec![
+        Event::new(EventKind::SubgoalStarted, json!({"index": 0, "goal": "g"})),
+        Event::new(EventKind::TaskCompleted, json!({"steps": 1})),
+        Event::new(EventKind::SubgoalCompleted, json!({"index": 0})),
+        Event::new(EventKind::SubgoalStarted, json!({"index": 1, "goal": "g2"})),
+        Event::new(EventKind::TaskFailed, json!({"outcome": "abstain"})),
+        Event::new(
+            EventKind::SubgoalFailed,
+            json!({"outcome": "Abstained { reason: \"no candidate\" }"}),
+        ),
+    ];
+    assert_eq!(outcome_from_events(&journal).as_deref(), Some("abstained"));
+
+    // Unknown debug payload — never guess an outcome.
+    assert_eq!(
+        outcome_from_events(&[Event::new(
+            EventKind::SubgoalFailed,
+            json!({"outcome": "SomethingNew { .. }"})
+        )]),
+        None
+    );
+}
+
+#[test]
+fn replay_with_honors_its_policy_and_run_config() {
+    // An action the embedded policy escalates (mutating default) must not
+    // be silently approved: with approve_all off and no grants the replay
+    // lands `needs_approval`, which diverges from the recorded `done`.
+    let click = Action::Click {
+        target: Target::Semantic(SemanticTarget {
+            role: Some("button".into()),
+            name: Some("OK".into()),
+            ..Default::default()
+        }),
+        button: MouseButton::Left,
+    };
+    let recording = Recording {
+        scenario: "needs-consent".into(),
+        goal: "press OK".into(),
+        outcome: "failed".into(),
+        done_when: never_present(),
+        steps: vec![RecordedStep {
+            action: click.clone(),
+            app: None,
+            observes_before: 0,
+            result: StepResult::Done,
+        }],
+        trailing_observes: 0,
+    };
+    let driver = || {
+        SimDriver::new(vec![Element {
+            id: ElementId(1),
+            role: Some("button".into()),
+            name: Some("OK".into()),
+            actions: vec!["press".into()],
+            enabled: Some(true),
+            ..Default::default()
+        }])
+    };
+    let cfg = |approve_all| RunConfig {
+        app: None,
+        max_attempts: 1,
+        verify_delay: std::time::Duration::from_millis(5),
+        post_act_settle: std::time::Duration::ZERO,
+        allow_coordinates: false,
+        approve_all,
+        observe_max_elements: 4_000,
+    };
+
+    // No approve_all, no grant — the escalation is the honest result.
+    let report = replay_with(&recording, driver(), &[], Policy::embedded(), cfg(false));
+    assert_eq!(report.replayed, vec![StepResult::NeedsApproval]);
+    assert_eq!(report.diverged_at, Some(0));
+    assert!(!report.faithful(&recording));
+
+    // The same replay with the operator's fingerprint grant executes.
+    let fp = dexter_policy::fingerprint(&click, &ActionContext::default());
+    let report = replay_with(&recording, driver(), &[fp], Policy::embedded(), cfg(false));
+    assert_eq!(report.replayed, vec![StepResult::Done]);
+    assert!(report.faithful(&recording));
+
+    // A policy that flatly denies the action re-evaluates to Denied.
+    let policy = Policy::from_toml(
+        r#"[[rule]]
+action = "click"
+decision = "deny"
+reason = "replay cannot press""#,
+    )
+    .expect("policy parses");
+    let report = replay_with(&recording, driver(), &[], policy, cfg(true));
+    assert_eq!(report.replayed, vec![StepResult::Denied]);
+    assert!(!report.faithful(&recording));
 }
