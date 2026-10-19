@@ -1,7 +1,7 @@
 use dexter_core::{Event, EventKind};
 use dexter_desktop::{
-    load_policy_view, parse_args, ApprovalChannel, Desktop, JournalStatus, PolicyView, Verdict,
-    JOURNAL_CAP,
+    load_policy_view, parse_args, ApprovalChannel, Desktop, JournalStatus, PolicyView,
+    SessionDetail, SessionsView, Verdict, JOURNAL_CAP,
 };
 use dexter_engine::{Engine, RunConfig, Step, StepStatus};
 use dexter_sim::SimDriver;
@@ -217,12 +217,15 @@ fn parses_events_and_policy_paths() {
         "policy.toml".to_string(),
         "--approvals".to_string(),
         "inbox.jsonl".to_string(),
+        "--sessions".to_string(),
+        "sessions".to_string(),
     ])
     .unwrap();
 
     assert_eq!(args.events, Some(PathBuf::from("journal.jsonl")));
     assert_eq!(args.policy, Some(PathBuf::from("policy.toml")));
     assert_eq!(args.approvals, Some(PathBuf::from("inbox.jsonl")));
+    assert_eq!(args.sessions, Some(PathBuf::from("sessions")));
 }
 
 #[test]
@@ -230,6 +233,179 @@ fn unknown_flags_and_missing_values_are_rejected() {
     assert!(parse_args(["--unknown".to_string()]).is_err());
     assert!(parse_args(["--events".to_string()]).is_err());
     assert!(parse_args(["--approvals".to_string()]).is_err());
+    assert!(parse_args(["--sessions".to_string()]).is_err());
+}
+
+#[test]
+fn sessions_without_a_directory_are_not_configured() {
+    assert_eq!(
+        Desktop::new(None, None, None).sessions(),
+        SessionsView::NotConfigured
+    );
+}
+
+#[test]
+fn session_listing_filters_sorts_and_caps_entries() {
+    let directory = temp_path("sessions-listing");
+    fs::create_dir_all(&directory).unwrap();
+    for index in 0..202 {
+        fs::write(directory.join(format!("recording-{index:03}.json")), "{}").unwrap();
+    }
+    fs::write(directory.join("journal.jsonl"), "{}\n").unwrap();
+    fs::write(directory.join("ignored.txt"), "{}").unwrap();
+    fs::create_dir(directory.join("nested.json")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        directory.join("recording-000.json"),
+        directory.join("linked.json"),
+    )
+    .unwrap();
+
+    let desktop = Desktop::new_with_sessions(None, None, None, Some(directory.clone()));
+    let SessionsView::Ready {
+        entries, truncated, ..
+    } = desktop.sessions()
+    else {
+        panic!("configured sessions directory should be listed");
+    };
+    assert_eq!(entries.len(), 200);
+    assert!(truncated);
+    assert!(entries.iter().any(|entry| entry.name == "journal.jsonl"));
+    assert!(entries
+        .iter()
+        .all(|entry| entry.name.ends_with(".json") || entry.name.ends_with(".jsonl")));
+    assert!(!entries.iter().any(|entry| entry.name == "linked.json"));
+    assert!(entries.windows(2).all(|pair| {
+        pair[0].modified_ms > pair[1].modified_ms
+            || (pair[0].modified_ms == pair[1].modified_ms && pair[0].name <= pair[1].name)
+    }));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn missing_sessions_directory_is_an_error_view() {
+    let directory = temp_path("missing-sessions");
+    let desktop = Desktop::new_with_sessions(None, None, None, Some(directory.clone()));
+
+    assert!(matches!(
+        desktop.sessions(),
+        SessionsView::Error { path, .. } if path == directory.display().to_string()
+    ));
+}
+
+#[test]
+fn open_session_rejects_non_bare_names_and_symlinks() {
+    let directory = temp_path("unsafe-session-names");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("target.json"), "{}").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(directory.join("target.json"), directory.join("linked.json"))
+        .unwrap();
+    let desktop = Desktop::new_with_sessions(None, None, None, Some(directory.clone()));
+
+    for name in [
+        "",
+        ".",
+        "..",
+        "../x.json",
+        "a/b.json",
+        r"a\b.json",
+        "no-extension",
+        "x.json.bak",
+        "bad\0name.json",
+    ] {
+        assert!(desktop.open_session(name).is_err(), "{name:?}");
+    }
+    #[cfg(unix)]
+    assert!(desktop.open_session("linked.json").is_err());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn open_session_rejects_files_over_sixteen_mib() {
+    let directory = temp_path("oversized-session");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("large.json"),
+        vec![b' '; 16 * 1024 * 1024 + 1],
+    )
+    .unwrap();
+    let desktop = Desktop::new_with_sessions(None, None, None, Some(directory.clone()));
+
+    assert!(desktop.open_session("large.json").is_err());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn open_session_deserializes_recording_steps_strictly() {
+    let directory = temp_path("recording-session");
+    fs::create_dir_all(&directory).unwrap();
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../datasets/recordings/modal-confirm.json");
+    fs::copy(source, directory.join("modal-confirm.json")).unwrap();
+    let desktop = Desktop::new_with_sessions(None, None, None, Some(directory.clone()));
+
+    let detail = desktop.open_session("modal-confirm.json").unwrap();
+    let SessionDetail::Recording {
+        name,
+        scenario,
+        goal,
+        outcome,
+        steps,
+    } = detail
+    else {
+        panic!("JSON recording should open as a recording");
+    };
+    assert_eq!(name, "modal-confirm.json");
+    assert_eq!(scenario, "modal-confirm");
+    assert_eq!(goal, "descartar el borrador");
+    assert_eq!(outcome, "completed");
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0].index, 1);
+    assert_eq!(steps[0].action_json["type"], "click");
+    assert_eq!(steps[0].app_json, serde_json::Value::Null);
+    assert_eq!(steps[0].observes_before, 1);
+    assert_eq!(serde_json::to_value(steps[0].result).unwrap(), "done");
+
+    let mut recording: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("modal-confirm.json")).unwrap()).unwrap();
+    recording["steps"][0]["result"] = serde_json::Value::String("unknown".into());
+    fs::write(
+        directory.join("tampered.json"),
+        serde_json::to_vec(&recording).unwrap(),
+    )
+    .unwrap();
+    assert!(desktop.open_session("tampered.json").is_err());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn open_session_parses_journals_all_or_error() {
+    let directory = temp_path("journal-session");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("valid.jsonl"),
+        format!(
+            "{}\n",
+            event_line(
+                EventKind::TaskCompleted,
+                serde_json::json!({"outcome": "completed"})
+            )
+        ),
+    )
+    .unwrap();
+    fs::write(directory.join("malformed.jsonl"), "{\"kind\":\n").unwrap();
+    let desktop = Desktop::new_with_sessions(None, None, None, Some(directory.clone()));
+
+    let detail = desktop.open_session("valid.jsonl").unwrap();
+    let SessionDetail::Journal { name, events } = detail else {
+        panic!("JSONL journal should open as a timeline");
+    };
+    assert_eq!(name, "valid.jsonl");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "TaskCompleted");
+    assert!(desktop.open_session("malformed.jsonl").is_err());
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

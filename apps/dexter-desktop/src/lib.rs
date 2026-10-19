@@ -1,6 +1,7 @@
-//! Dexter desktop journal and policy view with a narrow approval inbox.
+//! Dexter desktop journal, policy, approvals, and read-only session views.
 
 use dexter_core::{Event, EventKind, JournalTail};
+use dexter_eval::recording::{events_from_jsonl, Recording, StepResult};
 use dexter_policy::{Policy, PolicySummary};
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
@@ -10,12 +11,62 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const JOURNAL_CAP: usize = 200;
+const SESSION_ENTRY_CAP: usize = 200;
+const SESSION_SIZE_CAP: u64 = 16 * 1024 * 1024;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct EventRow {
     pub ts_ms: u64,
     pub kind: String,
     pub summary: String,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SessionsView {
+    NotConfigured,
+    Ready {
+        path: String,
+        entries: Vec<SessionEntry>,
+        truncated: bool,
+    },
+    Error {
+        path: String,
+        message: String,
+    },
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct SessionEntry {
+    pub name: String,
+    pub kind: String,
+    pub bytes: u64,
+    pub modified_ms: u64,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionDetail {
+    Recording {
+        name: String,
+        scenario: String,
+        goal: String,
+        outcome: String,
+        steps: Vec<StepRow>,
+    },
+    Journal {
+        name: String,
+        events: Vec<EventRow>,
+    },
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct StepRow {
+    pub index: usize,
+    pub action_json: serde_json::Value,
+    pub app_json: serde_json::Value,
+    pub observes_before: u32,
+    pub result: StepResult,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -75,6 +126,7 @@ pub struct Snapshot {
 pub struct Desktop {
     events_path: Option<PathBuf>,
     approvals_path: Option<PathBuf>,
+    sessions_path: Option<PathBuf>,
     tail: JournalTail,
     ring: VecDeque<EventRow>,
     policy: PolicyView,
@@ -87,13 +139,171 @@ impl Desktop {
         policy: Option<PathBuf>,
         approvals: Option<PathBuf>,
     ) -> Self {
+        Self::new_with_sessions(events, policy, approvals, None)
+    }
+
+    pub fn new_with_sessions(
+        events: Option<PathBuf>,
+        policy: Option<PathBuf>,
+        approvals: Option<PathBuf>,
+        sessions: Option<PathBuf>,
+    ) -> Self {
         Self {
             events_path: events,
             approvals_path: approvals,
+            sessions_path: sessions,
             tail: JournalTail::replay(),
             ring: VecDeque::new(),
             policy: load_policy_view(policy.as_deref()),
             pending: BTreeMap::new(),
+        }
+    }
+
+    pub fn sessions(&self) -> SessionsView {
+        let Some(path) = self.sessions_path.as_deref() else {
+            return SessionsView::NotConfigured;
+        };
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(error) => {
+                return SessionsView::Error {
+                    path: path.display().to_string(),
+                    message: error.to_string(),
+                }
+            }
+        };
+
+        let mut sessions = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    return SessionsView::Error {
+                        path: path.display().to_string(),
+                        message: error.to_string(),
+                    }
+                }
+            };
+            let name = match entry.file_name().into_string() {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
+            let kind = match Path::new(&name).extension().and_then(|ext| ext.to_str()) {
+                Some("jsonl") => "journal",
+                Some("json") => "recording",
+                _ => continue,
+            };
+            let metadata = match fs::symlink_metadata(entry.path()) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    return SessionsView::Error {
+                        path: path.display().to_string(),
+                        message: error.to_string(),
+                    }
+                }
+            };
+            if !metadata.file_type().is_file() {
+                continue;
+            }
+            let modified_ms = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or_default();
+            sessions.push(SessionEntry {
+                name,
+                kind: kind.to_string(),
+                bytes: metadata.len(),
+                modified_ms,
+            });
+        }
+
+        sessions.sort_by(|left, right| {
+            right
+                .modified_ms
+                .cmp(&left.modified_ms)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        let truncated = sessions.len() > SESSION_ENTRY_CAP;
+        sessions.truncate(SESSION_ENTRY_CAP);
+        SessionsView::Ready {
+            path: path.display().to_string(),
+            entries: sessions,
+            truncated,
+        }
+    }
+
+    pub fn open_session(&self, name: &str) -> Result<SessionDetail, String> {
+        let directory = self
+            .sessions_path
+            .as_deref()
+            .ok_or_else(|| "sessions directory is not configured".to_string())?;
+        if name.is_empty()
+            || matches!(name, "." | "..")
+            || name.contains('/')
+            || name.contains('\\')
+            || name.contains('\0')
+        {
+            return Err("session name must be a bare file name".into());
+        }
+        let kind = match Path::new(name).extension().and_then(|ext| ext.to_str()) {
+            Some("json") => "recording",
+            Some("jsonl") => "journal",
+            _ => return Err("session name must end in .json or .jsonl".into()),
+        };
+        let path = directory.join(name);
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("cannot inspect session '{}': {error}", path.display()))?;
+        if !metadata.file_type().is_file() {
+            return Err(format!(
+                "session '{}' is not a regular file",
+                path.display()
+            ));
+        }
+        if metadata.len() > SESSION_SIZE_CAP {
+            return Err(format!(
+                "session '{}' exceeds the 16 MiB size limit",
+                path.display()
+            ));
+        }
+        let text = fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read session '{}': {error}", path.display()))?;
+
+        if kind == "recording" {
+            let recording: Recording = serde_json::from_str(&text)
+                .map_err(|error| format!("cannot parse recording '{}': {error}", path.display()))?;
+            let steps = recording
+                .steps
+                .into_iter()
+                .enumerate()
+                .map(|(index, step)| {
+                    Ok(StepRow {
+                        index: index + 1,
+                        action_json: serde_json::to_value(step.action).map_err(|error| {
+                            format!("cannot serialize recorded action: {error}")
+                        })?,
+                        app_json: serde_json::to_value(step.app)
+                            .map_err(|error| format!("cannot serialize recorded app: {error}"))?,
+                        observes_before: step.observes_before,
+                        result: step.result,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(SessionDetail::Recording {
+                name: name.to_string(),
+                scenario: recording.scenario,
+                goal: recording.goal,
+                outcome: recording.outcome,
+                steps,
+            })
+        } else {
+            let events = events_from_jsonl(&text)
+                .map_err(|error| format!("cannot parse journal '{}': {error}", path.display()))?;
+            Ok(SessionDetail::Journal {
+                name: name.to_string(),
+                events: events.into_iter().map(EventRow::from).collect(),
+            })
         }
     }
 
@@ -302,6 +512,7 @@ pub struct Args {
     pub events: Option<PathBuf>,
     pub policy: Option<PathBuf>,
     pub approvals: Option<PathBuf>,
+    pub sessions: Option<PathBuf>,
 }
 
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -310,11 +521,12 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
         events: None,
         policy: None,
         approvals: None,
+        sessions: None,
     };
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "--events" | "--policy" | "--approvals" => {
+            "--events" | "--policy" | "--approvals" | "--sessions" => {
                 let value = args
                     .next()
                     .filter(|value| !value.starts_with("--"))
@@ -324,8 +536,10 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
                     parsed.events = Some(path);
                 } else if flag == "--policy" {
                     parsed.policy = Some(path);
-                } else {
+                } else if flag == "--approvals" {
                     parsed.approvals = Some(path);
+                } else {
+                    parsed.sessions = Some(path);
                 }
             }
             other => return Err(format!("unknown flag '{other}'")),
