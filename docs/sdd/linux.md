@@ -254,21 +254,49 @@ requests; X errors are platform errors, never simulated success.
 ## X11 capture + Tesseract OCR (Fase 7 slice)
 
 Linux screenshots use X11 `GetImage` on the root window and crop the
-selected AT-SPI window frame. A Wayland session is refused, including
-XWayland: its root image cannot capture native Wayland windows. The root
-is treated as one monitor in device pixels. GTK AT-SPI extents are
-logical pixels when `GDK_SCALE > 1`; capture reads the target app's
-scale from `/proc/<pid>/environ` and passes it through
-`MonitorGeometry.scale` and `monitor_pixel_crop` to produce a
-device-pixel crop. Unset or `1` means 1.0; integer values 2 through 4
-are supported. Invalid values or unreadable environ fail closed with
-`Unsupported`, never a scale-1 fallback. Regions not fully covered by
-the root image fail closed.
+selected AT-SPI window frame. In a Wayland session, screenshots use the
+session-bus `org.freedesktop.portal.Screenshot.Screenshot` API and wait
+for `org.freedesktop.portal.Request.Response` on the expected request
+handle path using the same D-Bus connection as the caller (the response
+is unicast). Only XWayland clients can be matched: the client must be in
+`_NET_CLIENT_LIST`, have the target PID, and its root-translated geometry
+must match the AT-SPI frame after applying the target's `GDK_SCALE`.
+Multiple matches are ambiguous. If no `_NET_CLIENT_LIST` client has the
+target PID, the target is refused as a native Wayland window because
+native Wayland AT-SPI extents are window-relative and cannot be placed
+on the portal screenshot. If same-PID XWayland clients exist but none
+matches the AT-SPI frame, capture returns `StaleReference` with the frame
+and each candidate's root-translated rectangle; this avoids treating
+geometry observed during a compositor re-layout as a native Wayland
+window.
 
-`capabilities().screenshots` is true only when the session is not
-Wayland and an X connection reports a non-empty root. Only 24/32-bit
-TrueColor pixel layouts supported by the capture implementation are
-accepted; other formats return `Unsupported`.
+The XWayland root dimensions and portal image dimensions must map by the
+same exact integer output scale from 1 through 4; multi-output layouts,
+fractional and non-uniform scales fail closed. GTK AT-SPI extents are
+logical pixels when `GDK_SCALE > 1`; capture reads the target app's scale
+from `/proc/<pid>/environ` and passes it through `MonitorGeometry.scale`
+and `monitor_pixel_crop` to produce a device-pixel crop. The portal image
+scale is multiplied by `GDK_SCALE`; unset or `1` means 1.0, and integer
+values 2 through 4 are supported. Invalid values or unreadable environ
+fail closed with `Unsupported`, never a scale-1 fallback. Regions not
+fully covered by the image fail closed.
+
+The WLR portal backend may write to a fixed path such as `/tmp/out.png`.
+The image's modification time must be at least the time immediately
+before the request, preventing a stale file from being accepted as the
+current capture. The portal file is removed after successful decoding
+and after decode errors. A missing Screenshot interface/backend maps to
+`Unsupported`; a denied or cancelled response maps to
+`PermissionDenied`; other portal errors map to `Platform`; and a missing
+response within ten seconds maps to `Timeout`.
+
+`capabilities().screenshots` is true in Wayland only when XWayland is
+reachable with a non-empty root and the portal Screenshot interface's
+`version` property is readable. On X11 it remains true only when an X
+connection reports a non-empty root. Only 24/32-bit TrueColor pixel
+layouts supported by the X11 capture implementation are accepted;
+other formats return `Unsupported`. XTest input and EWMH activation
+remain refused on Wayland; Wayland input is out of scope.
 
 The Linux `dexter-vision` provider invokes the local `tesseract` CLI
 (`--psm 11`, TSV output, default English). It is available only when
