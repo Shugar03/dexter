@@ -371,12 +371,42 @@ Seeded 2026-10-12 from the slices the last PRs flagged as remaining
   coordinates only behind `ctx.allow_coordinates` + `defaults.physical`,
   plus window focus and targeted scroll via AT-SPI. (Etapa 5;
   remaining from PR #70) — [PR #80](https://github.com/Shugar03/dexter/pull/80), 2026-10-18
-- [ ] `[macos]` CLI `dexter record` / `dexter replay` verbs over
+- [x] `[macos]` CLI `dexter record` / `dexter replay` verbs over
   `dexter_eval::recording`, replay still through `Engine::run_step`
-  with policy re-evaluated. (Etapa 1; remaining from PR #72)
+  with policy re-evaluated. (Etapa 1; remaining from PR #72) —
+  [PR #81](https://github.com/Shugar03/dexter/pull/81), 2026-10-19:
+  `record` fails closed (strict journal, no terminal event → refuse,
+  `done_when` never fabricated); `replay` prints the ReplayReport,
+  nonzero on divergence. `--driver sim` mirrors the recorded run
+  (spec by convention + authored grants); a real driver grants only
+  explicit `--grant` fingerprints — `needs_approval` steps report the
+  fingerprint to pass — coordinates stay off. `replay_with` +
+  `outcome_from_events` added; live-driver replay verified.
 - [ ] Desktop session list + replay view — list journals, open one,
   step through its recording read-only. (Etapa 6; remaining from
   PR #69)
+
+## Fase 9 — release surface + platform tail
+
+Seeded 2026-10-19 from the slices the last PRs flagged as remaining
+(#70, #71, #73, #75, #77) plus ROADMAP.md Etapas 1, 2, 3 and 5.
+
+- [ ] `[windows]` act tail — middle `Click` (SendInput behind
+  `ctx.allow_coordinates`, matching the right-click path) and
+  `icon.ico` for the desktop build. (Etapa 4; remaining from PR #75)
+- [ ] `[linux]` Navigate + Wayland capture — `Action::Navigate` on
+  the AT-SPI driver (remaining from PR #70) and XWayland/Wayland
+  portal screenshot incl. HiDPI `GDK_SCALE` mapping (remaining from
+  PR #71). (Etapa 5)
+- [ ] Browser protected sessions — cookie/credential-backed login
+  flows behind explicit policy consent, credentials staying
+  local-first. (Etapa 2 — sesiones protegidas)
+- [ ] `[macos]` Release v0.1.0 — signed binary + Homebrew tap,
+  published as `dexter-cu`. (Etapa 1 — release)
+- [ ] Real-item Laya labels — extend `datasets/questions` and the
+  eval datasets with real (non-synthetic) labeled items; per-question
+  accuracy reported honestly in `docs/eval-numbers.md`. (Etapa 3;
+  remaining from PRs #73/#77)
 
 ## Cleanup backlog (low severity, pick when convenient)
 
