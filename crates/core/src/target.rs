@@ -16,6 +16,12 @@ pub struct SemanticTarget {
     pub value_contains: Option<String>,
     pub identifier: Option<String>,
     pub enabled: Option<bool>,
+    /// `Some(true)` matches only off-screen elements (hidden-but-
+    /// reachable), `Some(false)` only on-screen ones; `None` does not
+    /// constrain — a match on a hidden element resolves but cannot be
+    /// mutated directly.
+    #[serde(default)]
+    pub hidden: Option<bool>,
     /// Disambiguate when several elements match. `None` requires exactly one
     /// match (fail-closed on ambiguity); `Some(n)` explicitly picks the nth
     /// match in tree order.
@@ -32,6 +38,7 @@ impl SemanticTarget {
             && self.value_contains.is_none()
             && self.identifier.is_none()
             && self.enabled.is_none()
+            && self.hidden.is_none()
     }
 }
 

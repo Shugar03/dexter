@@ -7,6 +7,7 @@ use dexter_engine::credentials::CredentialStore;
 use dexter_engine::{Engine, RunConfig, Step, StepStatus};
 use dexter_policy::Policy;
 use dexter_sim::SimDriver;
+#[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -14,8 +15,10 @@ use std::time::Duration;
 
 static TEST_ID: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(unix)]
 struct TempDir(PathBuf);
 
+#[cfg(unix)]
 impl TempDir {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
@@ -28,6 +31,7 @@ impl TempDir {
     }
 }
 
+#[cfg(unix)]
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);

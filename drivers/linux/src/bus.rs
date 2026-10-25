@@ -446,6 +446,7 @@ fn walk(acc: &Acc, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx<'_>) {
     let id = ElementId(ctx.next_id);
     ctx.next_id += 1;
     ctx.elements.push(Element {
+        hidden: None,
         id,
         parent,
         depth,

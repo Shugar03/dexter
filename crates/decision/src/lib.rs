@@ -1054,6 +1054,12 @@ impl CandidateGenerator for HeuristicGenerator {
             if el.enabled == Some(false) {
                 continue;
             }
+            // Hidden-but-reachable (inactive tab pages, offscreen
+            // items): reported for complete perception, never proposed
+            // — mutating acts on them fail closed anyway.
+            if el.hidden.unwrap_or(false) {
+                continue;
+            }
             let editable = is_editable(el);
             let pressable = is_pressable(el);
             if !editable && !pressable {

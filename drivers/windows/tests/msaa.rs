@@ -76,7 +76,7 @@ fn msaa_walks_a_real_window_tree() {
     let (_guard, _uia) = uia::connect().expect("COM+UIA session");
     let (_child, pid) = launch("C:\\Windows\\System32\\msconfig.exe", &[]);
     let hwnd = main_hwnd(pid);
-    let w = msaa::walk_hwnd(hwnd, 40, 4000);
+    let w = msaa::walk_hwnd(hwnd, 40, 4000, false);
     assert!(
         w.forest.len() > 5,
         "msconfig OBJID_CLIENT should yield a real tree, got {}",
@@ -113,7 +113,7 @@ fn augment_produces_real_elements_and_handles() {
     let hwnd = main_hwnd(pid);
     let claimed: HashSet<usize> = HashSet::new();
     let mut next_id = 1u64;
-    let (els, handles, _truncated, _errors) =
+    let (els, handles, _truncated, _errors, _partial) =
         msaa::augment(&[], &claimed, hwnd, 40, 4000, &mut next_id);
     assert_eq!(els.len(), handles.len(), "one handle per element");
     assert!(!els.is_empty(), "empty partition must earn the full walk");
@@ -212,7 +212,7 @@ fn put_acc_value_round_trips_on_a_real_edit() {
     let (_guard, _uia) = uia::connect().expect("COM+UIA session");
     let (_child, pid) = launch("C:\\Windows\\System32\\charmap.exe", &[]);
     let hwnd = main_hwnd(pid);
-    let w = msaa::walk_hwnd(hwnd, 40, 4000);
+    let w = msaa::walk_hwnd(hwnd, 40, 4000, false);
     let idx = w
         .forest
         .iter()

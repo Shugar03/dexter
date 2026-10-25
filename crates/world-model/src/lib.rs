@@ -100,6 +100,11 @@ fn matches_target(e: &Element, t: &SemanticTarget) -> bool {
             return false;
         }
     }
+    if let Some(hidden) = t.hidden {
+        if e.hidden.unwrap_or(false) != hidden {
+            return false;
+        }
+    }
     true
 }
 
@@ -321,6 +326,9 @@ fn element_line(e: &Element) -> String {
     let flags = [
         e.enabled.map(|v| if v { "enabled" } else { "disabled" }),
         e.focused.then_some("focused"),
+        // Reachable but not on screen — listed (it exists), marked
+        // (it cannot be directly acted on).
+        e.hidden.unwrap_or(false).then_some("hidden"),
     ]
     .into_iter()
     .flatten()

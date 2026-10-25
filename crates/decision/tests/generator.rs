@@ -711,3 +711,38 @@ fn english_contraction_negates_next_term() {
         "{cands:?}"
     );
 }
+
+#[test]
+fn hidden_elements_never_generate_candidates() {
+    // An inactive tab page's controls are reported (marked hidden) so
+    // perception stays complete — but they are not on screen and must
+    // never be proposed for direct action.
+    let mut offscreen = el(1, "button", "Apply scheme", &["press"]);
+    offscreen.hidden = Some(true);
+    let o = obs(vec![offscreen]);
+    let cands = gen().generate(&o, "apply the scheme", &empty());
+    assert!(
+        !cands.iter().any(|c| matches!(
+            &c.action,
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            } if st.name.as_deref() == Some("Apply scheme")
+        )),
+        "hidden control must not produce a candidate: {cands:?}"
+    );
+
+    // The same control revealed (hidden=false or unreported) does.
+    let o2 = obs(vec![el(1, "button", "Apply scheme", &["press"])]);
+    let cands2 = gen().generate(&o2, "apply the scheme", &empty());
+    assert!(
+        cands2.iter().any(|c| matches!(
+            &c.action,
+            Action::Click {
+                target: Target::Semantic(st),
+                ..
+            } if st.name.as_deref() == Some("Apply scheme")
+        )),
+        "{cands2:?}"
+    );
+}

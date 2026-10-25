@@ -55,9 +55,13 @@ const ACTION_WALK_MAX: usize = 4_000;
 /// A live element resolved for an action, with a display detail. The
 /// node is whatever produced it — a UIA element or an MSAA
 /// `(IAccessible, child)` pair — and each act arm handles both.
+/// `hidden` is the fresh walk's reachability verdict: the element
+/// exists (inside a hidden container or off screen) but is not on
+/// screen — mutating acts on it fail closed.
 struct Resolved {
     node: LiveNode,
     detail: String,
+    hidden: bool,
 }
 
 #[derive(Debug)]
@@ -239,18 +243,21 @@ fn resolve_element(
                 entry.max_depth,
                 entry.max_elements,
             )?;
-            resolve::fresh_at_stored_index(&stored, &tree.elements).ok_or_else(|| {
-                DriverError::StaleReference(format!(
-                    "element {} changed since observation {} — re-observe",
-                    element.0, observation.0
-                ))
-            })?;
+            let fresh =
+                resolve::fresh_at_stored_index(&stored, &tree.elements).ok_or_else(|| {
+                    DriverError::StaleReference(format!(
+                        "element {} changed since observation {} — re-observe",
+                        element.0, observation.0
+                    ))
+                })?;
+            let hidden = fresh.hidden.unwrap_or(false);
             let node = tree.nodes.get(idx).cloned().ok_or_else(|| {
                 DriverError::StaleReference("resolved element vanished mid-walk".into())
             })?;
             Ok(Resolved {
                 detail: describe_node(&node),
                 node,
+                hidden,
             })
         }
         Target::Semantic(_) => {
@@ -263,6 +270,7 @@ fn resolve_element(
             };
             let found = dexter_world_model::resolve_element(&obs, target)
                 .map_err(|e| resolve::resolve_error(e, obs.elements_truncated))?;
+            let hidden = found.hidden.unwrap_or(false);
             let idx = found.id.0 as usize - 1;
             let node = tree.nodes.get(idx).cloned().ok_or_else(|| {
                 DriverError::StaleReference("resolved element vanished mid-walk".into())
@@ -270,6 +278,7 @@ fn resolve_element(
             Ok(Resolved {
                 detail: describe_node(&node),
                 node,
+                hidden,
             })
         }
         Target::Focused => {
@@ -281,9 +290,16 @@ fn resolve_element(
                     "focused element belongs to pid {el_pid}, not {pid}"
                 )));
             }
+            // A focused element cannot be off screen — but the report
+            // is read, not assumed, so a provider that disagrees still
+            // fails closed.
+            let hidden = unsafe { el.CurrentIsOffscreen() }
+                .map(|b| b.as_bool())
+                .unwrap_or(false);
             Ok(Resolved {
                 detail: describe(&el),
                 node: LiveNode::Uia(el),
+                hidden,
             })
         }
         Target::Point { .. } | Target::Window { .. } => {
@@ -297,6 +313,28 @@ fn describe_node(node: &LiveNode) -> String {
         LiveNode::Uia(el) => describe(el),
         LiveNode::Msaa(m) => msaa::describe(m),
     }
+}
+
+/// A resolved element that is not on screen cannot be honestly
+/// mutated: a `press`/`set_value` would execute unseen (or hit a
+/// different control drawn at the same rect), so the act fails closed
+/// with the reveal instruction — activate the tab/pane, scroll the
+/// item into view — rather than simulate success. `Scroll` with a
+/// target is exempt upstream: `ScrollIntoView` IS the reveal path.
+/// The verdict reads the fresh walk's flag, so an element revealed
+/// between observe and act is not refused.
+fn hidden_verdict(r: &Resolved) -> Option<ActionResult> {
+    if !r.hidden {
+        return None;
+    }
+    Some(ActionResult::failure(
+        ActionStatus::Failed,
+        Mechanism::Accessibility,
+        format!(
+            "{} is not on screen (inside a hidden container) — reveal it before acting",
+            r.detail
+        ),
+    ))
 }
 
 /// A resolved element must be enabled for a mutation to mean anything —
@@ -985,6 +1023,9 @@ pub fn act(
             )),
             _ => {
                 let r = resolve_element(target, ctx, cache, &uia)?;
+                if let Some(fail) = hidden_verdict(&r) {
+                    return Ok(fail);
+                }
                 if let Some(fail) = disabled_verdict(&r) {
                     return Ok(fail);
                 }
@@ -1048,6 +1089,9 @@ pub fn act(
         Action::TypeText { text, target } => {
             let t = target.clone().unwrap_or(Target::Focused);
             let r = resolve_element(&t, ctx, cache, &uia)?;
+            if let Some(fail) = hidden_verdict(&r) {
+                return Ok(fail);
+            }
             if let Some(fail) = disabled_verdict(&r) {
                 return Ok(fail);
             }
@@ -1189,6 +1233,9 @@ pub fn act(
             )),
             _ => {
                 let r = resolve_element(target, ctx, cache, &uia)?;
+                if let Some(fail) = hidden_verdict(&r) {
+                    return Ok(fail);
+                }
                 match &r.node {
                     LiveNode::Uia(el) => unsafe { el.SetFocus() }
                         .map_err(|e| DriverError::Platform(format!("SetFocus: {e}")))?,
@@ -1202,6 +1249,9 @@ pub fn act(
         },
         Action::SetValue { target, value } => {
             let r = resolve_element(target, ctx, cache, &uia)?;
+            if let Some(fail) = hidden_verdict(&r) {
+                return Ok(fail);
+            }
             if let Some(fail) = disabled_verdict(&r) {
                 return Ok(fail);
             }

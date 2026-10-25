@@ -239,6 +239,7 @@ pub fn parse_elements(raw: serde_json::Value) -> (Vec<Element>, u32) {
         .elements
         .into_iter()
         .map(|r| Element {
+            hidden: None,
             id: ElementId(r.id as u64),
             parent: r.parent.map(|p| ElementId(p as u64)),
             depth: r.depth,

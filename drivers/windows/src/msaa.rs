@@ -240,6 +240,9 @@ pub struct MsaaNode {
     pub enabled: Option<bool>,
     pub focused: bool,
     pub actions: Vec<String>,
+    /// Not on screen: the node's own `INVISIBLE|OFFSCREEN` state or an
+    /// ancestor (the root HWND when the walked window is hidden).
+    pub hidden: bool,
     /// Forest parent: index into the same `Vec<MsaaNode>` — `None` at roots.
     pub parent: Option<usize>,
 }
@@ -259,6 +262,12 @@ pub fn warranted(partition: &[Element]) -> bool {
 /// identical rect + name is the same control even across role
 /// disagreement: two distinct controls never share both.
 fn same_control(node: &MsaaNode, el: &Element) -> bool {
+    // Visibility is part of identity: two tab pages can hold same-named
+    // controls at the same rect — the inactive page's is a different
+    // control than the active page's, never a duplicate.
+    if node.hidden != el.hidden.unwrap_or(false) {
+        return false;
+    }
     if node.name.as_deref() != el.name.as_deref() {
         return false;
     }
@@ -268,7 +277,23 @@ fn same_control(node: &MsaaNode, el: &Element) -> bool {
         (Some(a), Some(b))
             if a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h
     );
-    same_bounds && (identical || node.role.is_none() || el.role.is_none() || node.role == el.role)
+    // Provider rect drift: MSAA reports the inner client rect, UIA the
+    // full rect — the same control's frames drift by up to ~4px per
+    // edge, past the ±2 identity tolerance. Name already matches by
+    // here, so a same-shape frame at that drift with a role match is
+    // the same control.
+    let drift = matches!(
+        (node.bounds, el.bounds),
+        (Some(a), Some(b))
+            if (a.x - b.x).abs() <= 4.5
+                && (a.y - b.y).abs() <= 4.5
+                && (a.w - b.w).abs() <= 4.5
+                && (a.h - b.h).abs() <= 4.5
+    );
+    let role_ok = node.role.is_none() || el.role.is_none() || node.role == el.role;
+    // The wider drift clause requires a real shared name — nameless
+    // controls at ±4px could still be distinct siblings.
+    (same_bounds && (identical || role_ok)) || (drift && role_ok && node.name.is_some())
 }
 
 /// Whether `b` lies inside `r` (±4px edges, strictly smaller) — an
@@ -353,6 +378,7 @@ pub fn merge_msaa(
                 value: node.value.clone(),
                 bounds: node.bounds,
                 enabled: node.enabled,
+                hidden: Some(node.hidden),
                 focused: node.focused,
                 actions: node.actions.clone(),
                 identifier: None,
@@ -518,9 +544,11 @@ mod sys {
         r.ok()
     }
 
-    /// `(IAccessible, child id)` → the element payload. Returns `None`
-    /// for `INVISIBLE`/`OFFSCREEN` nodes — they aren't reachable UI
-    /// (UIA's ControlView applies the same filter).
+    /// `(IAccessible, child id)` → the element payload.
+    /// `INVISIBLE`/`OFFSCREEN` nodes stay — marked `hidden`, not
+    /// dropped: an inactive tab page or a scrolled-out list item is
+    /// off screen but reachable, and perception is honest when it
+    /// reports them *as hidden* rather than not at all.
     fn read_node(acc: &IAccessible, child: i32, failed: &mut bool) -> Option<MsaaNode> {
         let var = var_child(child);
         // State first: it gates value redaction and visibility.
@@ -530,9 +558,6 @@ mod sys {
             n
         });
         let st = state.unwrap_or(0) as u32;
-        if st & (STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_OFFSCREEN) != 0 {
-            return None;
-        }
         let protected = st & STATE_SYSTEM_PROTECTED != 0;
         let role = rd(unsafe { acc.get_accRole(&var) }, failed).and_then(|mut v| {
             let out = unsafe {
@@ -611,12 +636,17 @@ mod sys {
             enabled: state.map(|_| st & STATE_SYSTEM_UNAVAILABLE == 0),
             focused: st & STATE_SYSTEM_FOCUSED != 0,
             actions,
+            hidden: st & (STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_OFFSCREEN) != 0,
             parent: None, // the walk links it
         })
     }
 
     /// Walk one root `(IAccessible, CHILDID_SELF)` depth-first. Object
     /// children recurse; simple elements are leaves by definition.
+    /// `ancestor_hidden` forces `hidden` on every descendant — a hidden
+    /// root HWND's whole subtree is off screen whatever the nodes'
+    /// own state bits claim.
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         acc: &IAccessible,
         child: i32,
@@ -625,6 +655,7 @@ mod sys {
         w: &mut MsaaWalk,
         budget: usize,
         max_depth: u32,
+        ancestor_hidden: bool,
     ) {
         if w.forest.len() >= budget || depth > max_depth {
             w.truncated = true;
@@ -632,10 +663,10 @@ mod sys {
         }
         let mut failed = false;
         let Some(mut node) = read_node(acc, child, &mut failed) else {
-            // Invisible/offscreen node: it isn't UI and neither is its
-            // subtree — skip both, don't even count a read error.
             return;
         };
+        node.hidden |= ancestor_hidden;
+        let descend_hidden = node.hidden;
         if failed {
             w.errors += 1;
         }
@@ -693,6 +724,7 @@ mod sys {
                                         w,
                                         budget,
                                         max_depth,
+                                        descend_hidden,
                                     );
                                 }
                             }
@@ -702,7 +734,16 @@ mod sys {
                             VariantClear(v).ok();
                             // A simple element — a leaf addressed as
                             // (parent acc, child id).
-                            visit(acc, cid, Some(idx), depth + 1, w, budget, max_depth);
+                            visit(
+                                acc,
+                                cid,
+                                Some(idx),
+                                depth + 1,
+                                w,
+                                budget,
+                                max_depth,
+                                descend_hidden,
+                            );
                         }
                         _ => {
                             VariantClear(v).ok();
@@ -820,8 +861,10 @@ mod sys {
 
     /// Run the MSAA pass over `hwnd`'s `OBJID_CLIENT` tree, bounded by
     /// `budget` (remaining `max_elements`) and `max_depth` — the same
-    /// caps the UIA walk reports truncation against.
-    pub fn walk_hwnd(hwnd: HWND, max_depth: u32, budget: usize) -> MsaaWalk {
+    /// caps the UIA walk reports truncation against. `root_hidden` is
+    /// the HWND's own visibility: a hidden window's whole subtree is
+    /// off screen regardless of the nodes' own state bits.
+    pub fn walk_hwnd(hwnd: HWND, max_depth: u32, budget: usize, root_hidden: bool) -> MsaaWalk {
         let mut w = MsaaWalk {
             forest: Vec::new(),
             handles: Vec::new(),
@@ -841,6 +884,7 @@ mod sys {
                     &mut w,
                     budget,
                     max_depth,
+                    root_hidden,
                 );
             }
             // No MSAA root for this window — an empty walk, not an error:
@@ -853,13 +897,20 @@ mod sys {
 
     /// Decide where the MSAA pass walks inside `hwnd`'s subtree and run
     /// it. The trigger is the honest coverage test: UIA attached and
-    /// produced an interior → only descendant HWNDs no UIA element claims
-    /// (OLE-hosted panes, skipped providers); UIA saw nothing usable →
-    /// the whole `OBJID_CLIENT` tree is fair game.
+    /// produced an interior → only descendant HWNDs no UIA element
+    /// claims; UIA saw nothing usable → the whole `OBJID_CLIENT` tree
+    /// is fair game. Neither visibility nor interior coverage *skips*
+    /// a child anymore: a hidden window walks in hidden mode (its
+    /// subtree reported, marked — inactive tab pages are reachable),
+    /// and a covered window walks so the merge can surface whatever
+    /// UIA bridged only partially.
     ///
     /// `partition` is this window's UIA elements (slice of the shared
-    /// list); `claimed` is every NativeWindowHandle the UIA walk reported.
-    /// Returns `(kept forest indices → merged elements, live handles)`.
+    /// list); `claimed` is every NativeWindowHandle the UIA walk
+    /// reported. Returns `(merged elements, live handles, truncated,
+    /// errors, partial_coverage)` — the last flag is measured proof
+    /// an interior UIA covered was not fully covered after all, so
+    /// the observation must keep signalling incompleteness.
     pub fn augment(
         partition: &[Element],
         claimed: &std::collections::HashSet<usize>,
@@ -867,64 +918,69 @@ mod sys {
         max_depth: u32,
         budget: usize,
         next_id: &mut u64,
-    ) -> (Vec<Element>, Vec<MsaaRef>, bool, u32) {
+    ) -> (Vec<Element>, Vec<MsaaRef>, bool, u32, bool) {
         let _lock = oleacc_lock();
-        let mut roots: Vec<HWND> = Vec::new();
+        // (HWND, hidden-mode, interior-covered) — visible roots first so
+        // a deep hidden subtree can't starve on-screen coverage of
+        // budget; nesting still dedupes across both queues.
+        let mut roots: Vec<(HWND, bool, bool)> = Vec::new();
+        let mut hidden_roots: Vec<(HWND, bool, bool)> = Vec::new();
         if warranted(partition) {
-            roots.push(hwnd);
+            roots.push((hwnd, false, false));
         }
         for child in descendant_hwnds(hwnd) {
             if claimed.contains(&(child.0 as usize)) {
                 continue; // UIA owns this HWND — trusted as covered.
             }
-            // Hidden subtrees (inactive tab pages, collapsed panes)
-            // aren't visible UI — MSAA cheerfully reports their
-            // controls with live bounds, which would lie about what's
-            // on screen. Same rule the ControlView walk applies.
-            if !unsafe { IsWindowVisible(child) }.as_bool() {
-                continue;
-            }
             // A descendant of an already-walked root is covered by that
             // root's own MSAA tree — skip it to avoid double-walking.
             let nested = roots
                 .iter()
-                .any(|r| unsafe { IsChild(*r, child) }.as_bool());
+                .chain(hidden_roots.iter())
+                .any(|(r, _, _)| unsafe { IsChild(*r, child) }.as_bool());
             if nested {
                 continue;
             }
-            // The honest coverage test (measured on msconfig/odbcad32):
-            // an unclaimed child HWND still doesn't earn a walk when
-            // UIA's windowless children already fill its interior —
-            // prop-page hosts are exactly that shape, and re-walking
-            // them only duplicates every bridged control.
             let rect = unsafe { window_rect(child) };
             let covered = rect
                 .as_ref()
                 .map(|r| interior_covered(partition, r))
                 .unwrap_or(false);
-            if !covered {
-                roots.push(child);
+            if unsafe { IsWindowVisible(child) }.as_bool() {
+                roots.push((child, false, covered));
+            } else if rect.is_some() {
+                // Hidden-but-reachable: inactive tab pages and collapsed
+                // panes sit behind real rects; rect-less stubs (IME
+                // hosts, tooltip shells) have nothing to place on
+                // screen and earn no walk.
+                hidden_roots.push((child, true, covered));
             }
         }
+        roots.extend(hidden_roots);
         let mut out: Vec<Element> = Vec::new();
         let mut out_handles: Vec<MsaaRef> = Vec::new();
         let mut truncated = false;
         let mut errors = 0u32;
-        for root in roots {
+        let mut partial = false;
+        for (root, hidden, covered) in roots {
             if budget <= out.len() {
                 truncated = true;
                 break;
             }
-            let w = walk_hwnd(root, max_depth, budget - out.len());
+            let w = walk_hwnd(root, max_depth, budget - out.len(), hidden);
             errors += w.errors;
             truncated |= w.truncated;
             let kept = merge_msaa(&partition_ext(partition, &out), &w.forest, next_id);
+            // Interior coverage proven partial: UIA reported content
+            // inside this HWND's rect and MSAA still found more —
+            // the observation must stay UNCERTAIN about absence.
+            partial |= covered && !kept.is_empty();
             for (fi, e) in kept {
                 out_handles.push(w.handles[fi].clone());
                 out.push(e);
             }
         }
-        (out, out_handles, truncated, errors)
+        (out, out_handles, truncated, errors, partial)
     }
 
     /// The merge dedupes against UIA partition + already-kept MSAA
@@ -942,6 +998,7 @@ mod tests {
 
     fn el(id: u64, name: Option<&str>, role: Option<&str>, bounds: Option<Rect>) -> Element {
         Element {
+            hidden: None,
             id: ElementId(id),
             parent: None,
             depth: 0,
@@ -974,6 +1031,7 @@ mod tests {
             enabled: Some(true),
             focused: false,
             actions: vec![],
+            hidden: false,
             parent: None,
         }
     }
@@ -1153,6 +1211,78 @@ mod tests {
         let mut next_id = 2;
         let kept = merge_msaa(&uia, &[dup_a, dup_b], &mut next_id);
         assert_eq!(kept.len(), 1);
+    }
+
+    #[test]
+    fn merge_marks_hidden_nodes() {
+        let uia = vec![el(
+            1,
+            Some("win"),
+            Some("window"),
+            r(0.0, 0.0, 500.0, 500.0),
+        )];
+        let mut offscreen = node(
+            Some("Apply"),
+            Some("msaa:ROLE_SYSTEM_PUSHBUTTON"),
+            Some("button"),
+            r(120.0, 120.0, 50.0, 20.0),
+        );
+        offscreen.hidden = true;
+        let mut next_id = 2;
+        let kept = merge_msaa(&uia, &[offscreen], &mut next_id);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].1.hidden, Some(true));
+    }
+
+    #[test]
+    fn merge_never_dedupes_across_visibility() {
+        // Two tab pages can hold same-named controls at the same
+        // screen rect — they are different controls. A hidden MSAA
+        // node must not collapse into the visible UIA element that
+        // happens to share its name/bounds/role (the inactive page's
+        // "Apply" is not the active page's "Apply").
+        let uia = vec![el(
+            1,
+            Some("Apply"),
+            Some("button"),
+            r(120.0, 120.0, 50.0, 20.0),
+        )];
+        let mut page_two = node(
+            Some("Apply"),
+            Some("msaa:ROLE_SYSTEM_PUSHBUTTON"),
+            Some("button"),
+            r(120.0, 120.0, 50.0, 20.0),
+        );
+        page_two.hidden = true;
+        let mut next_id = 2;
+        let kept = merge_msaa(&uia, &[page_two], &mut next_id);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].1.hidden, Some(true));
+        assert_eq!(kept[0].1.id, ElementId(2));
+    }
+
+    #[test]
+    fn merge_dedupes_hidden_against_hidden() {
+        // Same visibility ⇒ the usual duplicate rule still applies:
+        // UIA reported this offscreen control (IsOffscreen) and the
+        // hidden HWND walk found the same one.
+        let mut hidden_uia = el(
+            1,
+            Some("Apply"),
+            Some("button"),
+            r(120.0, 120.0, 50.0, 20.0),
+        );
+        hidden_uia.hidden = Some(true);
+        let mut page_two = node(
+            Some("Apply"),
+            Some("msaa:ROLE_SYSTEM_PUSHBUTTON"),
+            Some("button"),
+            r(121.0, 121.0, 50.0, 20.0),
+        );
+        page_two.hidden = true;
+        let mut next_id = 2;
+        assert!(merge_msaa(&[hidden_uia], &[page_two], &mut next_id).is_empty());
+        assert_eq!(next_id, 2);
     }
 
     #[test]
