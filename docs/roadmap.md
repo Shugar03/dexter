@@ -436,10 +436,15 @@ Seeded 2026-10-19 from the slices the last PRs flagged as remaining
 Seeded 2026-10-20 from the slices the last PRs flagged as remaining
 (#61, #65, #67, #72, #85) plus ROADMAP.md Etapas 1, 2, 4, 5 and 6.
 
-- [ ] `[windows]` UIA/MSAA coverage remainder — hidden-but-reachable
+- [x] `[windows]` UIA/MSAA coverage remainder — hidden-but-reachable
   containers (inactive tab pages) and HWNDs whose interior UIA
   partially covered are still skipped whole (remaining from PR #61);
   measure the fix on real Electron/WPF/legacy surfaces (Etapa 4).
+  Hidden HWNDs now walk and report `Element.hidden`; covered roots
+  raise `ax_limited` on measured partial coverage; mutating acts on
+  hidden elements fail closed. Measured on msconfig/charmap/odbcad32
+  (legacy), powershell_ise (WPF) and Chrome (Electron-class) —
+  [PR #90](https://github.com/Shugar03/dexter/pull/90), 2026-10-25.
 - [ ] `[linux]` Native Wayland — window-relative extents for native
   Wayland clients (portal capture today covers XWayland targets only)
   and an honest Wayland input path or a documented fail-closed.
