@@ -1,4 +1,5 @@
 # Probe manifest only. Replace placeholder route labels after authoring gold.
+# Example: last_act = { action = { type = "click", target = { role = "link", name = "Read more" }, button = "left" }, delta = "changed" }
 
 [[page]]
 id = "gh-login"

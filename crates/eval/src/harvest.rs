@@ -41,6 +41,9 @@ pub struct HarvestPage {
     /// Question labels expected for this page.
     #[serde(default)]
     pub expect_questions: Option<Vec<String>>,
+    /// Previous action and its observed world change.
+    #[serde(default)]
+    pub last_act: Option<dexter_decision::LastAct>,
     /// Gold label for this page.
     pub gold: HarvestGold,
     /// Extra settle time after navigate/scope before observing (ms).
@@ -151,7 +154,7 @@ pub fn harvest(
             goal: page.goal.clone(),
             observation: obs,
             gold,
-            last_act: None,
+            last_act: page.last_act.clone(),
             expect_questions: page.expect_questions.clone(),
             source: "harvest".into(),
             meta: serde_json::json!({"url": url, "app": page.app}),

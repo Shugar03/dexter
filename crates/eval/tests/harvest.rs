@@ -1,5 +1,5 @@
-use dexter_core::{Element, ElementId, ElementSource};
-use dexter_decision::Route;
+use dexter_core::{Action, Element, ElementId, ElementSource, MouseButton, SemanticTarget, Target};
+use dexter_decision::{LastAct, Route, WorldDelta};
 use dexter_eval::{
     harvest::{harvest, harvest_file, HarvestManifest},
     load_jsonl, to_jsonl, Gold,
@@ -112,6 +112,50 @@ type = "abstain"
         Some(["blocking_modal".to_string()].as_slice())
     );
     assert!(items[1].expect_questions.is_none());
+}
+
+#[test]
+fn last_act_is_carried_from_manifest_and_defaults_to_none() {
+    let driver = SimDriver::new(vec![]);
+    let manifest = parse_manifest(
+        r#"
+[[page]]
+id = "with-last-act"
+goal = "continue"
+settle_ms = 0
+last_act = { action = { type = "click", target = { role = "link", name = "Read more" }, button = "left" }, delta = "changed" }
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "without-last-act"
+goal = "continue"
+settle_ms = 0
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+"#,
+    );
+
+    let items = harvest(&driver, &manifest, std::path::Path::new(".")).unwrap();
+    assert_eq!(
+        items[0].last_act,
+        Some(LastAct {
+            action: Action::Click {
+                target: Target::Semantic(SemanticTarget {
+                    role: Some("link".into()),
+                    name: Some("Read more".into()),
+                    ..Default::default()
+                }),
+                button: MouseButton::Left,
+            },
+            delta: WorldDelta::Changed,
+        })
+    );
+    assert!(items[1].last_act.is_none());
 }
 
 #[test]
