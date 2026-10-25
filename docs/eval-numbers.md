@@ -288,6 +288,36 @@ Measured with `cargo run -p dexter-eval --example question_eval`:
 | action_effect | 2 | 2 | 100% | 0 | 2 | 2 | 100% | 0 | 0 |
 | goal_complete | 2 | 2 | 100% | 0 | 2 | 1 | 50% | 0 | 1 |
 
+### Real pages (`datasets/browser-real`)
+
+17 items captured 2026-10-25 from real public pages (GitHub login,
+Hacker News, Wikipedia, example.com/IANA, DuckDuckGo, BBC, The Guardian,
+DER SPIEGEL) through the browser driver, with teacher-authored gold and
+`expect_questions` (11 act / 6 route). Same command:
+
+| engine | items | coverage | act accuracy | route accuracy | false acts | false routes |
+|---|---:|---:|---:|---:|---:|---:|
+| RuleBased::default() | 17 | 8/11 (73%) | 4/8 (50%) | 2/6 (33%) | 2 | 1 |
+| Cascade[RuleBased, Laya dev] | 17 | 8/11 (73%) | 4/8 (50%) | 1/6 (17%) | 4 | 0 |
+| Laya dev | 17 | 8/11 (73%) | 3/8 (38%) | 3/6 (50%) | 2 | 2 |
+
+| question | labeled | detected | detector recall | spurious | asked | correct (RuleBased / Cascade / Laya dev) |
+|---|---:|---:|---:|---:|---:|---|
+| blocking_modal | 2 | 1 | 50% | 0 | 1 | 0 / 1 / 1 |
+| disambiguate | 4 | 3 | 75% | 2 | 5 | 2 / 1 / 1 |
+| action_effect | 0 | 0 | — | 0 | 0 | — |
+| goal_complete | 4 | 4 | 100% | 0 | 4 | 1 / 1 / 2 |
+
+Detection is engine-independent (same generator), so labeled/detected/
+spurious/asked are identical across the three engines. On real pages the
+detector misses one of the two consent dialogs and asks `disambiguate`
+on two items not labeled for it; 3 of 11 act golds are not among the
+generated candidates. Caveats: both consent dialogs host their buttons
+in an unwalked iframe, so their gold is `escalate_human`; `last_act` on
+the four goal_complete items is teacher-annotated (the observation is
+real, the previous action is not captured); there are no real
+action_effect items yet. n per type is 2–4 — descriptive, not a gate.
+
 RuleBased on the existing unlabeled datasets still records detector
 asks:
 
@@ -296,7 +326,7 @@ asks:
 | sim | 11 | 0 | 0 | 0 | 0 |
 | browser | 36 | 0 | 0 | 0 | 0 |
 
-The eleven question items are teacher-authored and synthetic. `datasets/sim`
+The eleven `datasets/questions` items are teacher-authored and synthetic; `datasets/browser-real` (above) is the real-page counterpart. `datasets/sim`
 and `datasets/browser` have no `expect_questions` labels; their detector
 counts remain zero while `asked` is still measured. The dev worker
 answers every Bool question `true`. The per-type sample size `n` is tiny,
