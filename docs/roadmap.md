@@ -410,8 +410,19 @@ Seeded 2026-10-19 from the slices the last PRs flagged as remaining
   `Action::FillCredential` (name only; password from env via
   `--credentials`), deny unless an explicit `fill_credential` rule,
   origin + field kind checked in-page; non-browser drivers refuse.
-- [ ] `[macos]` Release v0.1.0 — signed binary + Homebrew tap,
-  published as `dexter-cu`. (Etapa 1 — release)
+- [x] `[macos]` Release v0.1.0 — signed binary + Homebrew tap,
+  published as `dexter-cu`. (Etapa 1 — release) —
+  [PR #87](https://github.com/Shugar03/dexter/pull/87),
+  [v0.1.0](https://github.com/Shugar03/dexter/releases/tag/v0.1.0),
+  2026-10-20. Universal tarball (arm64+x86_64, `lipo`), **ad-hoc
+  signed, not notarized** — no Developer ID secrets in the repo; the
+  Gatekeeper `xattr -d` caveat is in the cask and README per
+  `docs/sdd/release.md`. `TAP_GITHUB_TOKEN` absent, so the `tap` job
+  warned per design and `Casks/dexter.rb` was pushed by hand
+  (homebrew-dexter a14a696: version 0.1.0 + the verified tarball
+  sha256; the README's stale `--no-quarantine` flag fixed). Verified
+  on this Mac: `brew install --cask shugar03/dexter/dexter` →
+  `dexter 0.1.0`, `dexter doctor` runs.
 - [ ] Real-item Laya labels — extend `datasets/questions` and the
   eval datasets with real (non-synthetic) labeled items; per-question
   accuracy reported honestly in `docs/eval-numbers.md`. (Etapa 3;
