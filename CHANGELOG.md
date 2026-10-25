@@ -2,7 +2,41 @@
 
 ## Unreleased
 
+## 0.1.0 — 2026-10-20
+
+First public release. Dexter is a local-first Agent Computer Runtime:
+the agent decides *what* to achieve; Dexter decides *how* to interact,
+executes, verifies the result and recovers — under an operator-owned
+security policy.
+
+### Runtime
+
+- Single synchronous engine shared by CLI, MCP server and Python SDK.
+- Observe → decide → act → verify loop with bounded steps, cooperative
+  cancellation (`dexter_cancel`) and per-task wall-clock timeouts.
+- Three-valued verification: VERIFIED / FAILED / UNCERTAIN — uncertainty
+  is never reported as success.
+- Bounded journal with a live disk sink and an honest `dropped` count.
+
+### Perception
+
+- macOS Accessibility driver: app/window-scoped observation, native
+  `AXWindow` subtree walk with bounds-matched post-filter fallback.
+- `ax_limited` degraded-AX detection; explicit `collection_errors`.
+- Opt-in OCR fallback (`observe --vision`, `dexter_observe {vision}`):
+  on-device Apple Vision text recognition appends inert `[ocr]`
+  elements — evidence, never implicit agency.
+- Browser driver (WebDriver/W3C) and simulation driver.
+
 ### Security
+
+- Fail-closed policy engine; agents cannot raise their own trust —
+  approvals and coordinate input are operator flags at startup
+  (`dexter mcp --approve-all --coords`).
+- Physical input is a permission floor, not a verdict: enabling
+  `--coords` lifts the deny but mutating actions still require approval.
+- MCP payload bounds: goal ≤ 4 KB, done/action ≤ 64 KB,
+  `max_steps` ≤ 200, `max_secs` ≤ 3600; one task at a time.
 
 - **`dexter_grant` can no longer mint approval for arbitrary
   fingerprints.** Fingerprints are deterministic, so an agent could
@@ -26,6 +60,35 @@
   `Engine::pre_grant_approval` for operator pre-authorization (scenario
   `grants` lists); the agent-facing path is `Engine::approve_pending`,
   which returns whether the request existed.
+
+### Integrations
+
+- MCP server (`dexter mcp`): 9 tools — observe, candidates, act,
+  verify, task, cancel, grant, journal, status.
+- Python SDK (`sdk/python`): zero-dependency stdio client.
+- Laya sidecar: supervised worker with bounded respawn, health probe
+  (`dexter doctor --engine`), min-confidence abstention.
+
+### Packaging
+
+- Universal macOS binary (aarch64 + x86_64, `lipo`), ad-hoc signed.
+- GitHub Releases + `Shugar03/homebrew-dexter` cask tap.
+- Release binaries are ad-hoc signed, **not** notarized — see the
+  install docs for the quarantine caveat.
+- **Homebrew cask has one source of truth.** The release `tap` job
+  rendered the cask from an inline heredoc that had drifted from the
+  published tap (it still advertised the removed `--no-quarantine`
+  flag). It now renders `packaging/homebrew/dexter.rb.in` via
+  `scripts/render-cask.sh` (strict version/sha256 validation), writes
+  the rendered cask to the run summary when `TAP_GITHUB_TOKEN` is
+  absent, and a golden test (`scripts/test-render-cask.sh`, CI
+  `packaging` job) pins it byte-for-byte to the live `0.1.0-rc.1` cask.
+- **Universal binary gated on every PR.** CI `release-build` now builds
+  both `aarch64` and `x86_64` slices of `dexter` and `dexter-overlay`,
+  `lipo`s them and asserts both architectures (`-verify_arch`) — the
+  release `package` job asserts the same before signing.
+- **README demo GIF** (`docs/assets/suite.gif`) replaying a real run of
+  the hermetic sim suite; reproducible with `scripts/demo_gif.py`.
 
 ### Added
 
@@ -163,6 +226,92 @@
   routes 4/5 — the misses are generator weaknesses the dataset now
   measures, reported per app in `docs/eval-numbers.md` (PR #44).
 
+- **Windows driver — real UIA perception and act.** `dexter-windows`
+  enumerates top-level HWNDs and walks UIA ControlView trees into
+  normalized `Element`s (`ax_limited` when a windowed app yields no UIA
+  elements). `act()` uses the UIA pattern ladder
+  (`Invoke`/`Toggle`/`SelectionItem`/`ExpandCollapse`/
+  `LegacyIAccessible` press, writable `Value` → `set_value`/`type_text`,
+  `SetFocus`/`SetForegroundWindow` → focus, `ScrollItem`/`Scroll` →
+  scroll); `Target::Element` re-walks the live tree and identity-checks
+  (mismatch → `StaleReference`); `Navigate` is restricted to an
+  http/https/mailto allowlist. Right `Click` opens context menus
+  (posted `WM_CONTEXTMENU`, then `IUIAutomationElement3::
+  ShowContextMenu`), and Win32 `SendInput` (middle/right click, keys)
+  stays behind `ctx.allow_coordinates`. A dedicated MSAA
+  (`IAccessible`) walk covers only measured UIA gaps (legacy Win32),
+  deduped on name+bounds. `scope.screenshot` captures the window's
+  visible frame as a per-display GDI crop (scale-aware;
+  spanning/off-screen → `NotFound`), `capabilities().screenshots`
+  stays honest on displayless hosts, and a `WinOcr` provider
+  (`Windows.Media.Ocr`, on-device) feeds the opt-in vision path —
+  evidence-only, same rule as macOS OCR. (PRs #45, #57, #59, #61,
+  #75, #83)
+- **Linux driver — AT-SPI2 observe and act, X11/Wayland capture, XTest
+  input.** `dexter-linux` walks the AT-SPI2 registry over `zbus` (apps →
+  pids, `GetExtents` frames as windows, non-`SHOWING` subtrees skipped)
+  into the same normalized `Element`s with `ax_limited`/
+  `collection_errors`/`elements_truncated` honesty. `act()` runs the
+  `Action.DoAction` press ladder, `EditableText`/`Text` →
+  `set_value`/`type_text`, `Component.GrabFocus` → focus, AT-SPI window
+  focus and targeted scroll; `Target::Element` re-walks and
+  identity-checks (`StaleReference` on mismatch). `scope.screenshot`
+  crops the window frame via X11 `GetImage` (refused on displayless or
+  pure-Wayland hosts), `GDK_SCALE` HiDPI mapping covers capture and
+  input, and under Wayland the XDG desktop-portal Screenshot backend
+  covers XWayland targets — native Wayland windows fail closed. A
+  Tesseract provider feeds `observe --vision` (evidence-only; OCR
+  elements stay inert). `Action::Navigate` goes through an allowlisted
+  `xdg-open`. XTest physical input only behind `ctx.allow_coordinates`
+  + `defaults.physical`. (PRs #55, #63, #70, #71, #80, #84, #85)
+- **Desktop app — Tauri 2 operator surface.** `apps/dexter-desktop` is a
+  read-only shell over the runtime: journal tail + policy summary
+  (ordered rules + effective defaults, a failed `--policy` load shown
+  as an error, never the embedded default), an approvals view that
+  lists pending `Approve`-routed steps and decides them through the
+  same single-use fingerprint channel as the CLI (deny is the default
+  on close), and a session list + recording/journal stepper.
+  (PRs #69, #79, #82)
+- **Decision cascade — `--engine cascade`.** `RuleBased` answers first,
+  `Abstain` escalates to `LayaSidecar`, then to `OpenAiProvider`; every
+  hop is journaled (`DecisionMade.hops`, eval `ItemVerdict.tier`) and an
+  invented act decays to `Abstain`. (PR #49)
+- **Laya typed questions.** `blocking_modal` (Bool), `disambiguate`
+  (Choice), `action_effect` and `goal_complete` Bools route through the
+  decision layer like a pick; `RuleBased` abstains on all of them and
+  `goal_complete` never completes a goal on its own. When
+  `blocking_modal` is answered true and the dialog offers a
+  polarity-safe dismiss label ("Más tarde", "Cerrar"), the generator
+  offers it as a real candidate — the rule-based ladder never does.
+  (PRs #51, #73, #78)
+- **Scenario recording/replay.** `dexter_eval::recording` turns a
+  journal (in-memory or strict JSONL) into an executable trace;
+  `dexter record` / `dexter replay` re-run each action through the
+  single `Engine::run_step` path with policy re-evaluated —
+  `done_when` is never fabricated, replay exits nonzero on divergence.
+  (PRs #72, #81)
+- **Eval measurement.** `dexter eval matrix` sweeps
+  `act_threshold`/`min_confidence` and picks max utility with false
+  acts at 2× cost (shipped default stays 0.65); typed questions get
+  `expect_questions` gold labels and per-type coverage/accuracy; the
+  datasets grew to 36 browser items, 20 macOS AX decision points and 8
+  es-ES-pinned live specs on stock macOS apps — numbers in
+  `docs/eval-numbers.md`. (PRs #53, #65, #66, #77)
+- **`laya-mlx` fine-tune seam.** `--provider laya-mlx` worker backend
+  (same NDJSON protocol) plus `workers/laya/finetune_mlx.py`, an
+  MLX-native port of the torch recipe (frozen encoder, cached hidden
+  states); measured on the frozen datasets and *not* shipped as the
+  default — the held-out numbers didn't justify it. (PR #67)
+- **Browser credential fill — `Action::FillCredential`.** A local-first
+  TOML store (`--credentials <file>`; name → origin/username/
+  password_env, so the secret only ever lives in an env var) with
+  explicit consent: a `*` rule never matches `fill_credential`, and
+  `--yes` doesn't grant it under `require_approval` — only a real
+  single-use fingerprint does. The browser driver checks
+  `location.origin` and field kind in-page, atomically; the journal and
+  MCP carry only the credential name and driver details are scrubbed of
+  the secret. Non-browser drivers refuse. (PR #86)
+
 ### Fixed
 
 - **`--app <bundle id>` picked an arbitrary instance.** `pid_for_bundle`
@@ -254,70 +403,3 @@
   outranks any prefs domain), and the live runner prints the last
   decision digest on abstain so future live failures show the world
   the decider actually saw.
-### Packaging
-
-- **Homebrew cask has one source of truth.** The release `tap` job
-  rendered the cask from an inline heredoc that had drifted from the
-  published tap (it still advertised the removed `--no-quarantine`
-  flag). It now renders `packaging/homebrew/dexter.rb.in` via
-  `scripts/render-cask.sh` (strict version/sha256 validation), writes
-  the rendered cask to the run summary when `TAP_GITHUB_TOKEN` is
-  absent, and a golden test (`scripts/test-render-cask.sh`, CI
-  `packaging` job) pins it byte-for-byte to the live `0.1.0-rc.1` cask.
-- **Universal binary gated on every PR.** CI `release-build` now builds
-  both `aarch64` and `x86_64` slices of `dexter` and `dexter-overlay`,
-  `lipo`s them and asserts both architectures (`-verify_arch`) — the
-  release `package` job asserts the same before signing.
-- **README demo GIF** (`docs/assets/suite.gif`) replaying a real run of
-  the hermetic sim suite; reproducible with `scripts/demo_gif.py`.
-
-## 0.1.0
-
-First public release. Dexter is a local-first Agent Computer Runtime:
-the agent decides *what* to achieve; Dexter decides *how* to interact,
-executes, verifies the result and recovers — under an operator-owned
-security policy.
-
-### Runtime
-
-- Single synchronous engine shared by CLI, MCP server and Python SDK.
-- Observe → decide → act → verify loop with bounded steps, cooperative
-  cancellation (`dexter_cancel`) and per-task wall-clock timeouts.
-- Three-valued verification: VERIFIED / FAILED / UNCERTAIN — uncertainty
-  is never reported as success.
-- Bounded journal with a live disk sink and an honest `dropped` count.
-
-### Perception
-
-- macOS Accessibility driver: app/window-scoped observation, native
-  `AXWindow` subtree walk with bounds-matched post-filter fallback.
-- `ax_limited` degraded-AX detection; explicit `collection_errors`.
-- Opt-in OCR fallback (`observe --vision`, `dexter_observe {vision}`):
-  on-device Apple Vision text recognition appends inert `[ocr]`
-  elements — evidence, never implicit agency.
-- Browser driver (WebDriver/W3C) and simulation driver.
-
-### Security
-
-- Fail-closed policy engine; agents cannot raise their own trust —
-  approvals and coordinate input are operator flags at startup
-  (`dexter mcp --approve-all --coords`).
-- Physical input is a permission floor, not a verdict: enabling
-  `--coords` lifts the deny but mutating actions still require approval.
-- MCP payload bounds: goal ≤ 4 KB, done/action ≤ 64 KB,
-  `max_steps` ≤ 200, `max_secs` ≤ 3600; one task at a time.
-
-### Integrations
-
-- MCP server (`dexter mcp`): 9 tools — observe, candidates, act,
-  verify, task, cancel, grant, journal, status.
-- Python SDK (`sdk/python`): zero-dependency stdio client.
-- Laya sidecar: supervised worker with bounded respawn, health probe
-  (`dexter doctor --engine`), min-confidence abstention.
-
-### Packaging
-
-- Universal macOS binary (aarch64 + x86_64, `lipo`), ad-hoc signed.
-- GitHub Releases + `Shugar03/homebrew-dexter` cask tap.
-- Release binaries are ad-hoc signed, **not** notarized — see the
-  install docs for the quarantine caveat.
