@@ -81,6 +81,40 @@ type = "abstain"
 }
 
 #[test]
+fn expect_questions_are_carried_from_manifest_and_default_to_none() {
+    let driver = SimDriver::new(vec![]);
+    let manifest = parse_manifest(
+        r#"
+[[page]]
+id = "with-questions"
+goal = "continue"
+settle_ms = 0
+expect_questions = ["blocking_modal"]
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "without-questions"
+goal = "continue"
+settle_ms = 0
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+"#,
+    );
+
+    let items = harvest(&driver, &manifest, std::path::Path::new(".")).unwrap();
+    assert_eq!(
+        items[0].expect_questions.as_deref(),
+        Some(["blocking_modal".to_string()].as_slice())
+    );
+    assert!(items[1].expect_questions.is_none());
+}
+
+#[test]
 fn missing_gold_target_returns_page_and_stage() {
     let driver = SimDriver::new(vec![element(1, "button", "Continue")]);
     let manifest = parse_manifest(

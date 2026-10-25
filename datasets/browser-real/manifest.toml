@@ -1,0 +1,81 @@
+# Probe manifest only. Replace placeholder route labels after authoring gold.
+
+[[page]]
+id = "gh-login"
+url = "https://github.com/login"
+goal = "sign in to GitHub"
+settle_ms = 3000
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "hn-front"
+url = "https://news.ycombinator.com"
+goal = "open the login page"
+settle_ms = 3000
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "hn-newest"
+url = "https://news.ycombinator.com/newest"
+goal = "go to the next page of stories"
+settle_ms = 3000
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "wiki-main"
+url = "https://en.wikipedia.org/wiki/Main_Page"
+goal = "search Wikipedia"
+settle_ms = 3000
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "wiki-portal"
+url = "https://www.wikipedia.org"
+goal = "open the English Wikipedia"
+settle_ms = 3000
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "example"
+url = "https://example.com"
+goal = "open the page's more-information link"
+settle_ms = 3000
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "ddg"
+url = "https://duckduckgo.com"
+goal = "search the web"
+settle_ms = 3000
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "bbc"
+url = "https://www.bbc.com"
+goal = "read the top news story"
+settle_ms = 3000
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"

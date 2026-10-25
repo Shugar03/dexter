@@ -38,6 +38,9 @@ pub struct HarvestPage {
     pub teardown: Option<String>,
     /// Goal associated with this page.
     pub goal: String,
+    /// Question labels expected for this page.
+    #[serde(default)]
+    pub expect_questions: Option<Vec<String>>,
     /// Gold label for this page.
     pub gold: HarvestGold,
     /// Extra settle time after navigate/scope before observing (ms).
@@ -149,7 +152,7 @@ pub fn harvest(
             observation: obs,
             gold,
             last_act: None,
-            expect_questions: None,
+            expect_questions: page.expect_questions.clone(),
             source: "harvest".into(),
             meta: serde_json::json!({"url": url, "app": page.app}),
         });
