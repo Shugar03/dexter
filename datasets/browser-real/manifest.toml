@@ -1,0 +1,183 @@
+# items.jsonl is the labeled snapshot of real public pages captured 2026-10-25.
+# Live pages drift, so a re-harvest re-binds element ids and must be re-reviewed before replacing items.jsonl.
+# real-hn-hide-specific and real-bbc-save-specific are twin-specific and snapshot-only.
+# last_act on goal_complete items is teacher-annotated, not captured.
+# Example: last_act = { action = { type = "click", target = { role = "link", name = "Read more" }, button = "left" }, delta = "changed" }
+
+[[page]]
+id = "real-gh-create-account"
+url = "https://github.com/login"
+goal = "open the account creation page"
+settle_ms = 4000
+expect_questions = []
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Create an account"
+
+[[page]]
+id = "real-hn-login"
+url = "https://news.ycombinator.com"
+goal = "open the login page"
+settle_ms = 4000
+expect_questions = []
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "login"
+
+[[page]]
+id = "real-hn-hide-any"
+url = "https://news.ycombinator.com"
+goal = "hide a story"
+settle_ms = 4000
+expect_questions = ["disambiguate"]
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "real-hn-newest-more"
+url = "https://news.ycombinator.com/newest"
+goal = "go to the next page of stories"
+settle_ms = 4000
+expect_questions = []
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "More"
+
+[[page]]
+id = "real-wiki-portal-english"
+url = "https://www.wikipedia.org"
+goal = "open the English Wikipedia"
+settle_ms = 4000
+expect_questions = []
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "English — Wikipedia — The Free Encyclopedia"
+
+[[page]]
+id = "real-wiki-main-login"
+url = "https://en.wikipedia.org/wiki/Main_Page"
+goal = "log in to Wikipedia"
+settle_ms = 4000
+expect_questions = []
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "You're encouraged to log in; however, it's not mandatory. [alt-o]"
+
+[[page]]
+id = "real-example-learn-more"
+url = "https://example.com"
+goal = "open the page's more-information link"
+settle_ms = 4000
+expect_questions = []
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Learn more"
+
+[[page]]
+id = "real-ddg-dismiss-duckai"
+url = "https://duckduckgo.com"
+goal = "dismiss the Duck.ai notice"
+settle_ms = 4000
+expect_questions = []
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Dismiss"
+
+[[page]]
+id = "real-bbc-save-any"
+url = "https://www.bbc.com"
+goal = "save an audio episode for later"
+settle_ms = 4000
+expect_questions = ["disambiguate"]
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "real-guardian-consent"
+url = "https://www.theguardian.com/international"
+goal = "open the top news story"
+settle_ms = 4000
+expect_questions = ["blocking_modal"]
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "escalate_human"
+
+[[page]]
+id = "real-spiegel-consent"
+url = "https://www.spiegel.de"
+goal = "open the article 'Ist Kanada das bessere Amerika?'"
+settle_ms = 4000
+expect_questions = ["blocking_modal"]
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "escalate_human"
+
+[[page]]
+id = "real-iana-complete-yes"
+url = "https://www.iana.org/help/example-domains"
+goal = "open the IANA page about example domains"
+settle_ms = 4000
+expect_questions = ["goal_complete"]
+last_act = { action = { type = "click", target = { role = "link", name = "Learn more" }, button = "left" }, delta = "changed" }
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "escalate_human"
+
+[[page]]
+id = "real-iana-complete-no"
+url = "https://www.iana.org/help/example-domains"
+goal = "open the IANA list of reserved top level DNS names"
+settle_ms = 4000
+expect_questions = ["goal_complete"]
+last_act = { action = { type = "click", target = { role = "link", name = "Learn more" }, button = "left" }, delta = "changed" }
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Reserved Top Level DNS Names"
+
+[[page]]
+id = "real-wiki-rust-complete-yes"
+url = "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+goal = "open the Wikipedia article about the Rust programming language"
+settle_ms = 4000
+expect_questions = ["goal_complete"]
+last_act = { action = { type = "click", target = { role = "link", name = "Rust (programming language)" }, button = "left" }, delta = "changed" }
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "escalate_human"
+
+[[page]]
+id = "real-wiki-rust-complete-no"
+url = "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+goal = "open the edit page of the Wikipedia article about Rust"
+settle_ms = 4000
+expect_questions = ["goal_complete"]
+last_act = { action = { type = "click", target = { role = "link", name = "Rust (programming language)" }, button = "left" }, delta = "changed" }
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Edit this page [alt-e]"

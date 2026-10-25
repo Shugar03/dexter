@@ -78,6 +78,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let questions = load_dataset("questions")?;
     let sim = load_dataset("sim")?;
     let browser = load_dataset("browser")?;
+    let browser_real = load_dataset("browser-real")?;
     let generator = HeuristicGenerator::default();
 
     let rule = RuleBased::default();
@@ -100,6 +101,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     print_report(
         "datasets/questions — Laya dev",
         &questions,
+        &generator,
+        &laya,
+    );
+
+    let rule = RuleBased::default();
+    print_report(
+        "datasets/browser-real — RuleBased::default()",
+        &browser_real,
+        &generator,
+        &rule,
+    );
+
+    let cascade = Cascade::new(vec![Box::new(RuleBased::default()), Box::new(dev_laya()?)]);
+    print_report(
+        "datasets/browser-real — Cascade[RuleBased, Laya dev]",
+        &browser_real,
+        &generator,
+        &cascade,
+    );
+
+    let laya = dev_laya()?;
+    print_report(
+        "datasets/browser-real — Laya dev",
+        &browser_real,
         &generator,
         &laya,
     );
