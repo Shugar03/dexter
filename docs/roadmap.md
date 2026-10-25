@@ -428,6 +428,36 @@ Seeded 2026-10-19 from the slices the last PRs flagged as remaining
   accuracy reported honestly in `docs/eval-numbers.md`. (Etapa 3;
   remaining from PRs #73/#77)
 
+## Fase 10 — coverage tail + operator depth
+
+Seeded 2026-10-20 from the slices the last PRs flagged as remaining
+(#61, #65, #67, #72, #85) plus ROADMAP.md Etapas 1, 2, 4, 5 and 6.
+
+- [ ] `[windows]` UIA/MSAA coverage remainder — hidden-but-reachable
+  containers (inactive tab pages) and HWNDs whose interior UIA
+  partially covered are still skipped whole (remaining from PR #61);
+  measure the fix on real Electron/WPF/legacy surfaces (Etapa 4).
+- [ ] `[linux]` Native Wayland — window-relative extents for native
+  Wayland clients (portal capture today covers XWayland targets only)
+  and an honest Wayland input path or a documented fail-closed.
+  (Etapa 5; remaining from PR #85)
+- [ ] Replay live (non-sim) journals — `dexter replay` against a
+  real-driver journal: recorded grants honored by fingerprint only,
+  coordinates still opt-in, divergence reported honestly. Runs on
+  whichever driver recorded the journal. (Etapa 1; remaining from
+  PR #72)
+- [ ] Browser open-web eval items — harvest decision points from real
+  pages (not teacher-authored fixtures) into `datasets/browser` and
+  report honest numbers. (Etapa 2/3; remaining from PR #65)
+- [ ] Laya fine-tune re-measure — ~10× per-surface export rows, then a
+  second `laya-mlx` before/after on the matrix; ship the checkpoint
+  only if held-out numbers justify it. (Etapa 3; remaining from
+  PR #67)
+- [ ] `[macos]` Desktop control surface — start and cancel a task from
+  the Tauri shell through the same `Engine::run_step` path (journal,
+  policy and approvals already read/answered); policy stays outside
+  the model. (Etapa 6)
+
 ## Cleanup backlog (low severity, pick when convenient)
 
 - Done in PR #16: `secure_text_field` editable, `parse_goal` real
