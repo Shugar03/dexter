@@ -423,10 +423,13 @@ Seeded 2026-10-19 from the slices the last PRs flagged as remaining
   sha256; the README's stale `--no-quarantine` flag fixed). Verified
   on this Mac: `brew install --cask shugar03/dexter/dexter` →
   `dexter 0.1.0`, `dexter doctor` runs.
-- [ ] Real-item Laya labels — extend `datasets/questions` and the
+- [x] Real-item Laya labels — extend `datasets/questions` and the
   eval datasets with real (non-synthetic) labeled items; per-question
   accuracy reported honestly in `docs/eval-numbers.md`. (Etapa 3;
-  remaining from PRs #73/#77)
+  remaining from PRs #73/#77) — [PR #89](https://github.com/Shugar03/dexter/pull/89), 2026-10-25.
+  `datasets/browser-real`: 17 real public-page items (disambiguate 4,
+  blocking_modal 2, goal_complete 4 with teacher-annotated last_act).
+  Remaining: real action_effect items, larger n.
 
 ## Fase 10 — coverage tail + operator depth
 
