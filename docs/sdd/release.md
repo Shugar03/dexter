@@ -64,6 +64,18 @@ Verified end-to-end on `v0.1.0-rc.1` (run 35875691047):
 - Cask `depends_on macos:` modernized to `:ventura` (the `">= :"` string
   form is deprecated — `brew` flagged it on install).
 
+Verified end-to-end on `v0.1.0` (tag run: build + package + tap, all
+green, 2026-10-20):
+
+- Same pipeline produced the final (non-prerelease) release; the
+  downloaded tarball's sha256 matches `SHA256SUMS` byte-for-byte.
+- `TAP_GITHUB_TOKEN` still absent → `Casks/dexter.rb` pushed by hand
+  (tap commit a14a696: version 0.1.0 + that sha256; the tap README's
+  stale `--no-quarantine` flag corrected).
+- `brew install --cask shugar03/dexter/dexter` installs and links both
+  binaries; after `xattr -d`, `dexter --version` → `0.1.0` and
+  `dexter doctor` runs.
+
 ## Hygiene (post-rc.1)
 
 - **Cask single source.** `packaging/homebrew/dexter.rb.in` is the only
