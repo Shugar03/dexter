@@ -65,6 +65,14 @@ pub struct Element {
     /// Frame in screen coordinates when the source reports one.
     pub bounds: Option<Rect>,
     pub enabled: Option<bool>,
+    /// Reachability verdict: `Some(true)` = not on screen (inside a
+    /// hidden container or the source's own offscreen state — UIA
+    /// `IsOffscreen`, MSAA `INVISIBLE|OFFSCREEN`), `Some(false)` = on
+    /// screen, `None` = unreported (treated as on screen). Perception,
+    /// not an action gate: hidden elements exist and resolve, but
+    /// mutating acts on them fail closed.
+    #[serde(default)]
+    pub hidden: Option<bool>,
     pub focused: bool,
     /// Semantic actions the element advertises (`AXPress` -> `press`, ...).
     pub actions: Vec<String>,
@@ -87,6 +95,7 @@ impl Default for Element {
             value: None,
             bounds: None,
             enabled: None,
+            hidden: None,
             focused: false,
             actions: Vec::new(),
             identifier: None,

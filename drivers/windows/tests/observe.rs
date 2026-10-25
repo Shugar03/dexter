@@ -61,9 +61,22 @@ fn observe_scoped_app_walks_uia_tree() {
         "at least one ControlType must map through uia_role"
     );
     assert!(!obs.digest.is_empty());
-    // Windows whose UIA tree came back get listed; an app with windows
-    // but zero elements must degrade honestly, not read as "empty app".
-    assert!(!obs.ax_limited);
+    // `ax_limited` degrades honestly in both directions: windows but
+    // no elements (dead provider), or measured partial interior
+    // coverage — the MSAA pass kept controls inside an HWND whose
+    // interior UIA had already reported. Since elements exist here, a
+    // firing flag means partial coverage, and its evidence is a merged
+    // MSAA-sourced element; either way the degrade is signalled.
+    if obs.ax_limited {
+        assert!(
+            obs.elements.iter().any(|e| {
+                e.raw_role
+                    .as_deref()
+                    .is_some_and(|r| r.starts_with("msaa:"))
+            }),
+            "ax_limited with elements present must carry its MSAA evidence"
+        );
+    }
 }
 
 #[test]

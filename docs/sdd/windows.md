@@ -227,13 +227,13 @@ operation declines.
   into `collection_errors`; `max_depth`/`max_elements` bound the
   merged list and set `elements_truncated`. `ax_limited` is
   computed after the merge — an app whose windows list but yield
-  nothing anywhere (UIA or MSAA) still reports limited. Known blind
-  spots, documented for later slices: hidden-but-reachable
-  containers (inactive tab pages) stay out of perception by the
-  visibility rule, and an unclaimed HWND whose interior UIA
-  partially covered is skipped whole — UIA elements don't carry
-  HWND attribution granular enough to prove partial coverage
-  inside one window.
+  nothing anywhere (UIA or MSAA) still reports limited. The two
+  blind spots the next slice closed (see `windows-coverage.md`):
+  hidden-but-reachable containers now walk — their controls report
+  `hidden: true`, so perception lists them without claiming them
+  on screen — and a covered-but-unclaimed HWND walks too, with a
+  kept-against-covered merge raising `ax_limited` as measured
+  proof of partial coverage rather than skipping whole.
 - Acting on an MSAA-only element is semantic: `Click` (left) →
   `IAccessible::accDoDefaultAction` — a missing default action is
   `UNSUPPORTED`, a disabled element `FAILED`, right/middle →

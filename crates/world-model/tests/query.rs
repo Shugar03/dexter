@@ -8,6 +8,7 @@ use dexter_world_model::{
 
 fn el(id: u64, role: &str, name: Option<&str>, depth: u32) -> Element {
     Element {
+        hidden: None,
         id: ElementId(id),
         parent: None,
         depth,
@@ -340,4 +341,55 @@ fn empty_semantic_target_is_invalid_not_wildcard() {
     )
     .expect_err("index-only target must not resolve");
     assert!(matches!(err, DexterError::InvalidInput(_)), "{err:?}");
+}
+
+#[test]
+fn hidden_constraint_matches_visibility() {
+    let mut offscreen = el(1, "AXButton", Some("Apply"), 1);
+    offscreen.hidden = Some(true);
+    let visible = el(2, "AXButton", Some("Apply"), 1);
+    let o = obs(vec![offscreen, visible]);
+
+    let hidden_only = find_elements(
+        &o,
+        &SemanticTarget {
+            role: Some("button".into()),
+            hidden: Some(true),
+            ..Default::default()
+        },
+    );
+    assert_eq!(hidden_only.len(), 1);
+    assert_eq!(hidden_only[0].id, ElementId(1));
+
+    let on_screen = find_elements(
+        &o,
+        &SemanticTarget {
+            role: Some("button".into()),
+            hidden: Some(false),
+            ..Default::default()
+        },
+    );
+    assert_eq!(on_screen.len(), 1);
+    assert_eq!(on_screen[0].id, ElementId(2));
+
+    // Unconstrained still resolves both — hidden elements exist and are
+    // reachable; ambiguity is fail-closed as usual.
+    let all = find_elements(
+        &o,
+        &SemanticTarget {
+            role: Some("button".into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(all.len(), 2);
+}
+
+#[test]
+fn digest_marks_hidden_elements() {
+    let mut e = el(1, "AXButton", Some("Apply"), 1);
+    e.hidden = Some(true);
+    let o = obs(vec![e, el(2, "AXButton", Some("OK"), 0)]);
+    let d = digest(&o, 50);
+    assert!(d.contains("button \"Apply\" enabled,hidden"), "{d}");
+    assert!(!d.contains("button \"OK\" hidden"), "{d}");
 }

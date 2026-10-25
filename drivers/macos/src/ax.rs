@@ -328,6 +328,7 @@ fn walk(el: &AXUIElement, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx) 
     let _ = role_description;
 
     ctx.elements.push(Element {
+        hidden: None,
         id,
         parent,
         depth,

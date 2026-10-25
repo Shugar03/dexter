@@ -50,6 +50,12 @@ fn run() {
         (Some(child), pid)
     };
 
+    // `--children` dumps the descendant-HWND census the MSAA pass decides
+    // on: visibility, class, rect, claimed-by-UIA, interior UIA count.
+    if std::env::var("PROBE_CHILDREN").is_ok() {
+        children(pid);
+        return;
+    }
     // `--walk-hwnd <pid>` instead runs the raw per-window MSAA walk on
     // the process's named window — timing each stage.
     if std::env::var("PROBE_WALK_HWND").is_ok() {
@@ -62,7 +68,7 @@ fn run() {
             .expect("named window");
         let hwnd = dexter_windows::win::hwnd_of(w.id);
         let t0 = std::time::Instant::now();
-        let walk = dexter_windows::msaa::walk_hwnd(hwnd, 40, 4000);
+        let walk = dexter_windows::msaa::walk_hwnd(hwnd, 40, 4000, false);
         println!(
             "walk_hwnd: {} nodes, {} handles, truncated={} errors={} in {:?}",
             walk.forest.len(),
@@ -89,12 +95,18 @@ fn run() {
                         .is_some_and(|r| r.starts_with("msaa:"))
                 })
                 .collect();
+            let hidden = obs
+                .elements
+                .iter()
+                .filter(|e| e.hidden.unwrap_or(false))
+                .count();
             println!(
-                "pid {pid}: {} window(s), {} element(s), {} MSAA-sourced, \
+                "pid {pid}: {} window(s), {} element(s), {} MSAA-sourced, {} hidden, \
                  truncated={}, errors={}, ax_limited={}",
                 obs.windows.len(),
                 obs.elements.len(),
                 msaa.len(),
+                hidden,
                 obs.elements_truncated,
                 obs.collection_errors,
                 obs.ax_limited,
@@ -128,5 +140,116 @@ fn run() {
     if let Some(mut child) = child {
         let _ = child.kill();
         let _ = child.wait();
+    }
+}
+
+/// Descendant-HWND census for one pid: every child window with its
+/// visibility, class, title and rect, plus whether the UIA walk claimed
+/// it (`NativeWindowHandle`) and how many UIA elements lie strictly
+/// inside its rect — the exact inputs `msaa::augment` decides on.
+#[cfg(windows)]
+fn children(pid: i32) {
+    use dexter_windows::msaa;
+    use dexter_windows::uia::{self, LiveNode};
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, GetClassNameW, GetWindowRect, GetWindowTextW, IsChild, IsWindowVisible,
+    };
+
+    fn cls(hwnd: HWND) -> String {
+        let mut buf = [0u16; 128];
+        let n = unsafe { GetClassNameW(hwnd, &mut buf) };
+        String::from_utf16_lossy(&buf[..n as usize])
+    }
+    fn txt(hwnd: HWND) -> String {
+        let mut buf = [0u16; 128];
+        let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
+        String::from_utf16_lossy(&buf[..n as usize])
+    }
+    fn rect(hwnd: HWND) -> Option<dexter_core::Rect> {
+        let mut rc = windows::Win32::Foundation::RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut rc) }.ok().and_then(|_| {
+            let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+            (w > 0 && h > 0).then_some(dexter_core::Rect {
+                x: rc.left as f64,
+                y: rc.top as f64,
+                w: w as f64,
+                h: h as f64,
+            })
+        })
+    }
+
+    let _g = uia::OBSERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_guard, uia) = uia::connect().expect("COM+UIA");
+    let roots: Vec<_> = dexter_windows::win::hwnds()
+        .iter()
+        .filter(|(_, p)| *p == pid)
+        .map(|(h, _)| (*h, uia.element_from(*h).ok().map(|e| uia.normalize(e))))
+        .collect();
+    let live = uia::walk_roots(&uia, &roots, 40, 4000);
+    // HWNDs UIA claimed (every element's NativeWindowHandle).
+    let mut claimed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for node in &live.nodes {
+        if let LiveNode::Uia(el) = node {
+            if let Ok(h) = unsafe { el.CurrentNativeWindowHandle() } {
+                if !h.0.is_null() {
+                    claimed.insert(h.0 as usize);
+                }
+            }
+        }
+    }
+    for (top, _) in &roots {
+        println!(
+            "TOP {:x} cls={:?} txt={:?} rect={:?} elements={}",
+            top.0 as usize,
+            cls(*top),
+            txt(*top),
+            rect(*top),
+            live.elements.len(),
+        );
+        let mut kids: Vec<HWND> = Vec::new();
+        unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+            let out = &mut *(lparam.0 as *mut Vec<HWND>);
+            out.push(hwnd);
+            windows::core::BOOL(1)
+        }
+        let _ =
+            unsafe { EnumChildWindows(Some(*top), Some(cb), LPARAM(&mut kids as *mut _ as isize)) };
+        for k in &kids {
+            let r = rect(*k);
+            let interior = r
+                .map(|r| {
+                    live.elements
+                        .iter()
+                        .filter(|e| {
+                            e.bounds.is_some_and(|b| {
+                                b.x >= r.x - 4.0
+                                    && b.y >= r.y - 4.0
+                                    && b.x + b.w <= r.x + r.w + 4.0
+                                    && b.y + b.h <= r.y + r.h + 4.0
+                                    && (b.w < r.w - 8.0 || b.h < r.h - 8.0)
+                            })
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            let nested_parent = kids
+                .iter()
+                .filter(|o| *o != k)
+                .find(|o| unsafe { IsChild(**o, *k) }.as_bool());
+            println!(
+                "  {:x} vis={} claimed={} interior={} cls={:?} txt={:?} rect={:?} under={:?}",
+                k.0 as usize,
+                unsafe { IsWindowVisible(*k) }.as_bool(),
+                claimed.contains(&(k.0 as usize)),
+                interior,
+                cls(*k),
+                txt(*k),
+                r,
+                nested_parent.map(|h| h.0 as usize),
+            );
+        }
+        // What the MSAA walk sees at OBJID_CLIENT per unclaimed child.
+        let _ = msaa::ROLE_SYSTEM_WINDOW; // keep the import used
     }
 }

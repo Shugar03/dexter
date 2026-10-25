@@ -108,6 +108,11 @@ pub struct UiaTree {
     pub truncated: bool,
     /// Elements whose attributes could not be fully read.
     pub errors: u32,
+    /// A window's interior was only partially covered: UIA reported
+    /// content inside an unclaimed HWND's rect and the MSAA pass still
+    /// found more. Absence-dependent results stay UNCERTAIN — this
+    /// feeds `ax_limited`.
+    pub partial: bool,
 }
 
 /// A live handle the act() path can call back on: a UIA element, or an
@@ -131,6 +136,8 @@ struct Ctx {
     claimed: HashSet<usize>,
     truncated: bool,
     errors: u32,
+    /// Measured partial coverage — see `UiaTree::partial`.
+    partial: bool,
     next_id: u64,
 }
 
@@ -140,7 +147,7 @@ struct Ctx {
 /// `ctx.elements` — handles appended in lock-step for `act`.
 fn augment_window(ctx: &mut Ctx, hwnd: HWND, part_start: usize) {
     let budget = ctx.max_elements.saturating_sub(ctx.elements.len());
-    let (els, handles, truncated, errors) = crate::msaa::augment(
+    let (els, handles, truncated, errors, partial) = crate::msaa::augment(
         &ctx.elements[part_start..],
         &ctx.claimed,
         hwnd,
@@ -150,6 +157,7 @@ fn augment_window(ctx: &mut Ctx, hwnd: HWND, part_start: usize) {
     );
     ctx.errors += errors;
     ctx.truncated |= truncated;
+    ctx.partial |= partial;
     if let Some(nodes) = &mut ctx.nodes {
         nodes.extend(handles.into_iter().map(LiveNode::Msaa));
     }
@@ -214,6 +222,7 @@ pub fn observe(
                 claimed: HashSet::new(),
                 truncated: false,
                 errors: 0,
+                partial: false,
                 next_id: 1,
             };
             for w in obs.windows.iter() {
@@ -240,6 +249,7 @@ pub fn observe(
                 elements: ctx.elements,
                 truncated: ctx.truncated,
                 errors: ctx.errors,
+                partial: ctx.partial,
             }
         }
     };
@@ -249,8 +259,11 @@ pub fn observe(
     obs.elements = tree.elements;
     // The window layer reports real windows but UIA produced nothing —
     // elevated process, dead provider, or UIA off. `not found` results
-    // against this observation are not definitive.
-    obs.ax_limited = !obs.windows.is_empty() && obs.elements.is_empty();
+    // against this observation are not definitive. Neither is a window
+    // whose interior UIA covered only partially (`partial`): the MSAA
+    // merge kept what it could prove missing, nothing says it found
+    // everything.
+    obs.ax_limited = (!obs.windows.is_empty() && obs.elements.is_empty()) || tree.partial;
 
     // Opt-in OCR: warranted when UIA produced nothing usable (limited
     // or empty tree) or the caller narrowed to one window — the same
@@ -288,6 +301,7 @@ fn collect(
         claimed: HashSet::new(),
         truncated: false,
         errors: 0,
+        partial: false,
         next_id: 1,
     };
     if let Some(root) = root {
@@ -304,6 +318,7 @@ fn collect(
         elements: ctx.elements,
         truncated: ctx.truncated,
         errors: ctx.errors,
+        partial: ctx.partial,
     }
 }
 
@@ -361,6 +376,7 @@ pub fn walk_roots(
         claimed: HashSet::new(),
         truncated: false,
         errors: 0,
+        partial: false,
         next_id: 1,
     };
     for (hwnd, root) in roots {
@@ -446,6 +462,9 @@ fn read_element(
     let name = rd_bstr(unsafe { el.CurrentName() }, &mut failed);
     let identifier = rd_bstr(unsafe { el.CurrentAutomationId() }, &mut failed);
     let enabled = rd(unsafe { el.CurrentIsEnabled() }, &mut failed).map(|b: BOOL| b.as_bool());
+    // `IsOffscreen` = not on screen but still reachable (inactive tab
+    // content, scrolled-out items) — marked, never treated as visible.
+    let hidden = rd(unsafe { el.CurrentIsOffscreen() }, &mut failed).map(|b: BOOL| b.as_bool());
     let focused = rd(unsafe { el.CurrentHasKeyboardFocus() }, &mut failed)
         .map(|b: BOOL| b.as_bool())
         .unwrap_or(false);
@@ -506,6 +525,7 @@ fn read_element(
         value,
         bounds,
         enabled,
+        hidden,
         focused,
         actions,
         identifier,
