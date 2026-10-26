@@ -115,6 +115,67 @@ type = "abstain"
 }
 
 #[test]
+fn origin_is_carried_from_manifest() {
+    let driver = SimDriver::new(vec![]);
+    let manifest = parse_manifest(
+        r#"
+[[page]]
+id = "open-web"
+goal = "read the page"
+origin = "open-web"
+settle_ms = 0
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+"#,
+    );
+
+    let items = harvest(&driver, &manifest, std::path::Path::new(".")).unwrap();
+    assert_eq!(items[0].meta["origin"], "open-web");
+}
+
+#[test]
+fn any_of_targets_are_rebound_and_manifest_disambiguators_are_not_saved_as_gold() {
+    let driver = SimDriver::new(vec![
+        element(31, "link", "Downloads"),
+        element(177, "link", "Downloads"),
+    ]);
+    let manifest = parse_manifest(
+        r#"
+[[page]]
+id = "downloads"
+goal = "open the downloads page"
+settle_ms = 0
+[page.gold]
+type = "any_of"
+options = [
+    { role = "link", name = "Downloads", index = 0 },
+    { role = "link", name = "Downloads", index = 1 },
+]
+"#,
+    );
+
+    let items = harvest(&driver, &manifest, std::path::Path::new(".")).unwrap();
+    let Gold::AnyOf { options } = &items[0].gold else {
+        panic!("expected any-of gold");
+    };
+    assert_eq!(options.len(), 2);
+    for (option, expected_id) in options.iter().zip([31, 177]) {
+        assert!(matches!(
+            option,
+            Gold::Act {
+                target,
+                element
+            } if target.role.as_deref() == Some("link")
+                && target.name.as_deref() == Some("Downloads")
+                && target.index.is_none()
+                && element.0 == expected_id
+        ));
+    }
+}
+
+#[test]
 fn last_act_is_carried_from_manifest_and_defaults_to_none() {
     let driver = SimDriver::new(vec![]);
     let manifest = parse_manifest(

@@ -27,6 +27,9 @@ pub struct HarvestPage {
     pub path: Option<String>,
     /// macOS: scope the observation to this app.
     pub app: Option<String>,
+    /// Provenance origin copied into the resulting item metadata.
+    #[serde(default)]
+    pub origin: Option<String>,
     /// Shell command to put the app in the intended state before
     /// observing (e.g. osascript making a new document). Harvest
     /// tooling only — never part of the agent path.
@@ -57,6 +60,8 @@ pub struct HarvestPage {
 pub enum HarvestGold {
     /// The correct move is acting on the element matching `target`.
     Act { target: SemanticTarget },
+    /// Any of these semantic targets is acceptable.
+    AnyOf { options: Vec<SemanticTarget> },
     /// The correct move is a route (wait/abstain/escalate/...).
     Route { route: Route },
 }
@@ -146,8 +151,43 @@ pub fn harvest(
                     element: el.id,
                 }
             }
+            HarvestGold::AnyOf { options } => {
+                if options.is_empty() {
+                    return Err(HarvestError {
+                        page: page.id.clone(),
+                        stage: "invalid any-of gold",
+                        message: "expected at least one target option".into(),
+                    });
+                }
+                let options = options
+                    .iter()
+                    .map(|target| {
+                        let el = dexter_world_model::resolve_element(
+                            &obs,
+                            &Target::Semantic(target.clone()),
+                        )
+                        .map_err(|error| HarvestError {
+                            page: page.id.clone(),
+                            stage: "gold target did not resolve uniquely",
+                            message: error.to_string(),
+                        })?;
+                        let mut target = target.clone();
+                        target.index = None;
+                        Ok(Gold::Act {
+                            target,
+                            element: el.id,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, HarvestError>>()?;
+                Gold::AnyOf { options }
+            }
             HarvestGold::Route { route } => Gold::Route { route: *route },
         };
+
+        let mut meta = serde_json::json!({"url": url, "app": page.app});
+        if let Some(origin) = &page.origin {
+            meta["origin"] = serde_json::json!(origin);
+        }
 
         items.push(EvalItem {
             id: page.id.clone(),
@@ -157,7 +197,7 @@ pub fn harvest(
             last_act: page.last_act.clone(),
             expect_questions: page.expect_questions.clone(),
             source: "harvest".into(),
-            meta: serde_json::json!({"url": url, "app": page.app}),
+            meta,
         });
         eprintln!("harvested {}", page.id);
     }
