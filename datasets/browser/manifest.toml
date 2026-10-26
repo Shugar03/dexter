@@ -373,3 +373,258 @@ type = "act"
 [page.gold.target]
 role = "button"
 name = "Edit shipping address"
+
+# Open-web pages captured 2026-10-26; labels are teacher-authored against the snapshot.
+# Live pages drift, so a re-harvest must be re-reviewed.
+# ow-w3c-challenge (Cloudflare interstitial) and ow-crates-empty (0-element SPA walk)
+# depend on that day's page state.
+[[page]]
+id = "ow-python-downloads"
+url = "https://www.python.org"
+goal = "open the downloads page"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "any_of"
+options = [
+    { role = "link", name = "Downloads", index = 0 },
+    { role = "link", name = "Downloads", index = 1 },
+]
+
+[[page]]
+id = "ow-python-klingon"
+url = "https://www.python.org"
+goal = "switch the site language to Klingon"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "ow-rust-install"
+url = "https://www.rust-lang.org"
+goal = "open the install page"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Install"
+
+[[page]]
+id = "ow-rust-get-started"
+url = "https://www.rust-lang.org"
+goal = "get started with Rust"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "GET STARTED"
+
+[[page]]
+id = "ow-mdn-html"
+url = "https://developer.mozilla.org/en-US/"
+goal = "open the HTML documentation"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "HTML"
+
+[[page]]
+id = "ow-gnu-philosophy"
+url = "https://www.gnu.org"
+goal = "open the philosophy section"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "PHILOSOPHY"
+
+[[page]]
+id = "ow-gnu-buy-laptop"
+url = "https://www.gnu.org"
+goal = "buy a laptop"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "abstain"
+
+[[page]]
+id = "ow-debian-download"
+url = "https://www.debian.org"
+goal = "download Debian"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Download"
+
+[[page]]
+id = "ow-lobsters-login"
+url = "https://lobste.rs"
+goal = "log in"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Login"
+
+[[page]]
+id = "ow-lobsters-search"
+url = "https://lobste.rs"
+goal = "open the search page"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Search"
+
+[[page]]
+id = "ow-httpbin-large"
+url = "https://httpbin.org/forms/post"
+goal = "choose a large pizza"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "radio_button"
+name = "Large"
+
+[[page]]
+id = "ow-httpbin-submit"
+url = "https://httpbin.org/forms/post"
+goal = "submit the order"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Submit order"
+
+[[page]]
+id = "ow-osm-gps"
+url = "https://www.openstreetmap.org"
+goal = "open the GPS traces page"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "GPS Traces"
+
+[[page]]
+id = "ow-osm-login"
+url = "https://www.openstreetmap.org"
+goal = "log in to OpenStreetMap"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Log In"
+
+[[page]]
+id = "ow-pypi-register"
+url = "https://pypi.org"
+goal = "register a new account"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Register"
+
+[[page]]
+id = "ow-pypi-login"
+url = "https://pypi.org"
+goal = "log in to PyPI"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "link"
+name = "Log in"
+
+[[page]]
+id = "ow-sqlite-download"
+url = "https://www.sqlite.org"
+goal = "download SQLite"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "any_of"
+options = [
+    { role = "link", name = "Download", index = 0 },
+    { role = "link", name = "Download", index = 1 },
+]
+
+[[page]]
+id = "ow-go-download"
+url = "https://go.dev"
+goal = "download Go"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Download"
+
+[[page]]
+id = "ow-go-get-started"
+url = "https://go.dev"
+goal = "get started with Go"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "act"
+[page.gold.target]
+role = "button"
+name = "Get Started"
+
+[[page]]
+id = "ow-w3c-challenge"
+url = "https://www.w3.org"
+goal = "open the W3C standards page"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "wait"
+millis = 1000
+
+[[page]]
+id = "ow-crates-empty"
+url = "https://crates.io"
+goal = "search for a crate"
+settle_ms = 4000
+origin = "open-web"
+[page.gold]
+type = "route"
+[page.gold.route]
+type = "reobserve"

@@ -142,5 +142,31 @@ fn main() -> Result<(), Box<dyn Error>> {
         &generator,
         &rule,
     );
+
+    let browser_fixtures: Vec<_> = browser
+        .iter()
+        .filter(|item| item.meta.get("origin").is_none())
+        .cloned()
+        .collect();
+    print_report(
+        "datasets/browser — fixtures (teacher-authored pages)",
+        &browser_fixtures,
+        &generator,
+        &rule,
+    );
+
+    let browser_open_web: Vec<_> = browser
+        .iter()
+        .filter(|item| {
+            item.meta.get("origin").and_then(|origin| origin.as_str()) == Some("open-web")
+        })
+        .cloned()
+        .collect();
+    print_report(
+        "datasets/browser — open-web (real pages)",
+        &browser_open_web,
+        &generator,
+        &rule,
+    );
     Ok(())
 }

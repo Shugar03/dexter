@@ -118,7 +118,22 @@ Measured on macOS 26.5 (Apple Silicon) @ this branch (2026-10-02):
 |---|---|---|---|---|---|---|
 | browser | 21 | 100% (18/18 act) | 18/18 (100%) | 3/3 | 0 | 0 |
 | browser (2026-10-11, see below) | 36 | 100% (31/31 act) | 31/31 (100%) | 5/5 | 0 | 0 |
+| browser — fixtures (2026-10-26, Linux) | 36 | 100% (31/31 act) | 31/31 (100%) | 5/5 | 0 | 0 |
+| browser — open-web real pages (2026-10-26, Linux) | 21 | 94% (16/17 act) | 11/16 (69%) | 2/4 | 0 | 2 |
 | macos | 20 | 100% (15/15 act) | 12/15 (80%) | 4/5 | 1 | 0 |
+
+The 2026-10-26 rows are `RuleBased::default()` via `cargo run -p
+dexter-eval --example question_eval` on Linux, split by `meta.origin`.
+The 21 open-web items come from 15 real public sites (python.org,
+rust-lang.org, MDN, gnu.org, debian.org, lobste.rs, httpbin, OSM, PyPI,
+sqlite.org, go.dev, w3.org, crates.io); golds are teacher-authored
+against that day's snapshot (2 `any_of` golds where identical links
+lead to the same page). On real pages the rule engine acts correctly on
+11 of 16 covered act items, never acts when it should route, but routes
+on 2 of 4 route items wrongly; one act gold is not among the generated
+candidates. `ow-w3c-challenge` (Cloudflare interstitial) and
+`ow-crates-empty` (SPA walk returned 0 elements) capture that day's page
+state. n = 21 — descriptive, not a gate.
 
 macOS per app (`dexter eval matrix`):
 
