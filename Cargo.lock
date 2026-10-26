@@ -1284,6 +1284,7 @@ dependencies = [
  "dexter-driver",
  "dexter-engine",
  "dexter-laya",
+ "dexter-linux",
  "dexter-policy",
  "dexter-sim",
  "dexter-verify",

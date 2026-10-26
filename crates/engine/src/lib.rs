@@ -343,6 +343,10 @@ impl<D: ComputerDriver> Engine<D> {
         self.approvals.pre_grant(fingerprint);
     }
 
+    pub fn revoke_pre_grant(&mut self, fingerprint: &str) {
+        self.approvals.revoke(fingerprint);
+    }
+
     /// The human-in-the-loop grant path: honors the fingerprint only if
     /// it matches a live (unexpired) request this engine escalated via
     /// `NeedsApproval`. Both outcomes are journaled — a grant never
@@ -492,6 +496,7 @@ impl<D: ComputerDriver> Engine<D> {
             serde_json::json!({
                 "action": &step.action,
                 "app": &app,
+                "driver": self.driver.capabilities().name,
                 "fingerprint": &fp,
                 "intrusiveness": intrusiveness,
                 "target_bounds": bounds,

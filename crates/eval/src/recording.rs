@@ -5,7 +5,7 @@ use dexter_core::{
 };
 use dexter_driver::ComputerDriver;
 use dexter_engine::{Engine, RunConfig, Step, StepStatus};
-use dexter_policy::Policy;
+use dexter_policy::{fingerprint, ActionContext, Policy};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -17,6 +17,8 @@ pub struct Recording {
     pub done_when: ExpectedState,
     pub steps: Vec<RecordedStep>,
     pub trailing_observes: u32,
+    #[serde(default)]
+    pub driver: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -25,6 +27,25 @@ pub struct RecordedStep {
     pub app: Option<AppSelector>,
     pub observes_before: u32,
     pub result: StepResult,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub granted: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReplayOptions {
+    pub grants: Vec<String>,
+    pub honor_recorded_grants: bool,
+    pub allow_coordinates: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Divergence {
+    pub index: usize,
+    pub recorded: Option<StepResult>,
+    pub replayed: Option<StepResult>,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,12 +70,14 @@ pub enum RecordError {
 pub struct ReplayReport {
     pub replayed: Vec<StepResult>,
     pub diverged_at: Option<usize>,
+    pub divergence: Option<Divergence>,
     pub done_when: VerificationStatus,
 }
 
 impl ReplayReport {
     pub fn faithful(&self, rec: &Recording) -> bool {
         self.diverged_at.is_none()
+            && self.divergence.is_none()
             && self.replayed.len() == rec.steps.len()
             && if rec.outcome == "completed" {
                 self.done_when == VerificationStatus::Verified
@@ -68,6 +91,9 @@ struct OpenStep {
     action: Action,
     app: Option<AppSelector>,
     observes_before: u32,
+    fingerprint: Option<String>,
+    approved: bool,
+    approve_all: bool,
 }
 
 pub fn record(
@@ -81,6 +107,7 @@ pub fn record(
     let mut open: Option<OpenStep> = None;
     let mut observes_since_terminal = 0u32;
     let mut trailing_observes = 0u32;
+    let mut driver: Option<String> = None;
 
     for event in events {
         if event.kind == EventKind::ObservationCreated && event.data.get("step").is_some() {
@@ -116,13 +143,66 @@ pub fn record(
                         RecordError::Malformed(format!("invalid proposed app: {err}"))
                     })
                 })?;
+            let event_driver = match event.data.get("driver") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(value) => Some(
+                    value
+                        .as_str()
+                        .ok_or_else(|| {
+                            RecordError::Malformed("ActionProposed driver is not a string".into())
+                        })?
+                        .to_string(),
+                ),
+            };
+            if let Some(event_driver) = event_driver {
+                if let Some(recorded_driver) = &driver {
+                    if recorded_driver != &event_driver {
+                        return Err(RecordError::Malformed(format!(
+                            "journal mixes drivers {recorded_driver} and {event_driver}"
+                        )));
+                    }
+                } else {
+                    driver = Some(event_driver);
+                }
+            }
+            let fingerprint = match event.data.get("fingerprint") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(value) => Some(
+                    value
+                        .as_str()
+                        .ok_or_else(|| {
+                            RecordError::Malformed(
+                                "ActionProposed fingerprint is not a string".into(),
+                            )
+                        })?
+                        .to_string(),
+                ),
+            };
             open = Some(OpenStep {
                 action,
                 app,
                 observes_before: std::mem::take(&mut observes_since_terminal),
+                fingerprint,
+                approved: false,
+                approve_all: false,
             });
             trailing_observes = 0;
             continue;
+        }
+
+        if let Some(step) = open.as_mut() {
+            if event.kind == EventKind::PolicyChecked
+                && event.data.get("decision").and_then(|v| v.as_str()) == Some("approved")
+                && event.data.get("fingerprint").and_then(|v| v.as_str())
+                    == step.fingerprint.as_deref()
+            {
+                step.approved = true;
+            }
+            if event.kind == EventKind::HumanApprovalRequired
+                && event.data.get("granted").and_then(|v| v.as_str()) == Some("approve_all")
+            {
+                step.approve_all = true;
+            }
         }
 
         let Some(result) = terminal_result(event)? else {
@@ -139,6 +219,8 @@ pub fn record(
             app: step.app,
             observes_before: step.observes_before,
             result,
+            granted: step.fingerprint.is_some() && step.approved && !step.approve_all,
+            fingerprint: step.fingerprint,
         });
         observes_since_terminal = 0;
         trailing_observes = 0;
@@ -158,6 +240,7 @@ pub fn record(
         done_when: done_when.clone(),
         steps,
         trailing_observes,
+        driver,
     })
 }
 
@@ -266,12 +349,16 @@ fn terminal_result(event: &Event) -> Result<Option<StepResult>, RecordError> {
 }
 
 pub fn replay<D: ComputerDriver>(rec: &Recording, driver: D, grants: &[String]) -> ReplayReport {
+    let options = ReplayOptions {
+        grants: grants.to_vec(),
+        ..Default::default()
+    };
     replay_with(
         rec,
         driver,
-        grants,
         Policy::embedded(),
         scenario::sim_run_config(),
+        &options,
     )
 }
 
@@ -282,12 +369,40 @@ pub fn replay<D: ComputerDriver>(rec: &Recording, driver: D, grants: &[String]) 
 pub fn replay_with<D: ComputerDriver>(
     rec: &Recording,
     driver: D,
-    grants: &[String],
     policy: Policy,
     cfg: RunConfig,
+    options: &ReplayOptions,
 ) -> ReplayReport {
+    let driver_name = driver.capabilities().name;
+    let mismatch = match rec.driver.as_deref() {
+        Some(recorded) if recorded != driver_name => Some(format!(
+            "driver mismatch: recorded by {recorded}, replaying on {driver_name}"
+        )),
+        None if driver_name != "sim" => Some(
+            "recording has no driver identity; live replay needs a recording made from a driver journal"
+                .to_string(),
+        ),
+        _ => None,
+    };
+    if let Some(reason) = mismatch {
+        let divergence = Divergence {
+            index: 0,
+            recorded: rec.steps.first().map(|step| step.result),
+            replayed: None,
+            reason,
+        };
+        return ReplayReport {
+            replayed: Vec::new(),
+            diverged_at: Some(0),
+            divergence: Some(divergence),
+            done_when: VerificationStatus::Uncertain,
+        };
+    }
+
+    let mut cfg = cfg;
+    cfg.allow_coordinates = options.allow_coordinates;
     let mut engine = Engine::new(driver, policy, Duration::from_secs(60));
-    for grant in grants {
+    for grant in &options.grants {
         engine.pre_grant_approval(grant);
     }
     let scope = ObservationScope {
@@ -296,14 +411,44 @@ pub fn replay_with<D: ComputerDriver>(
         ..Default::default()
     };
     let mut replayed = Vec::new();
-    let mut diverged_at = None;
+    let mut divergence = None;
 
     'steps: for (index, recorded) in rec.steps.iter().enumerate() {
+        let recorded_grant = if options.honor_recorded_grants && recorded.granted {
+            let fingerprint = fingerprint(
+                &recorded.action,
+                &ActionContext {
+                    app: recorded.app.clone().or(cfg.app.clone()),
+                    target_hint: None,
+                },
+            );
+            if recorded.fingerprint.as_deref() != Some(fingerprint.as_str()) {
+                divergence = Some(Divergence {
+                    index,
+                    recorded: Some(recorded.result),
+                    replayed: None,
+                    reason: "recorded grant fingerprint does not match replayed step".into(),
+                });
+                break;
+            }
+            Some(fingerprint)
+        } else {
+            None
+        };
+
         for _ in 0..recorded.observes_before {
-            if engine.driver().observe(&scope).is_err() {
-                diverged_at = Some(index);
+            if let Err(err) = engine.driver().observe(&scope) {
+                divergence = Some(Divergence {
+                    index,
+                    recorded: Some(recorded.result),
+                    replayed: None,
+                    reason: format!("observe failed before step: {err}"),
+                });
                 break 'steps;
             }
+        }
+        if let Some(fingerprint) = recorded_grant.as_deref() {
+            engine.pre_grant_approval(fingerprint);
         }
         let status = engine.run_step(
             &Step {
@@ -315,23 +460,46 @@ pub fn replay_with<D: ComputerDriver>(
             },
             &cfg,
         );
+        if let Some(fingerprint) = recorded_grant.as_deref() {
+            engine.revoke_pre_grant(fingerprint);
+        }
+        let reason = step_status_reason(&status);
         let result = step_result(status);
         replayed.push(result);
         if result != recorded.result {
-            diverged_at = Some(index);
+            divergence = Some(Divergence {
+                index,
+                recorded: Some(recorded.result),
+                replayed: Some(result),
+                reason,
+            });
             break;
         }
     }
 
+    let final_scope = ObservationScope {
+        app: rec
+            .steps
+            .last()
+            .and_then(|step| step.app.clone())
+            .or(cfg.app.clone()),
+        max_elements: 4_000,
+        ..Default::default()
+    };
     let mut last_observation: Option<Observation> = None;
     let mut final_observe_failed = false;
     for _ in 0..rec.trailing_observes.max(1) {
-        match engine.driver().observe(&scope) {
+        match engine.driver().observe(&final_scope) {
             Ok(observation) => last_observation = Some(observation),
-            Err(_) => {
+            Err(err) => {
                 final_observe_failed = true;
-                if diverged_at.is_none() {
-                    diverged_at = Some(rec.steps.len());
+                if divergence.is_none() {
+                    divergence = Some(Divergence {
+                        index: rec.steps.len(),
+                        recorded: None,
+                        replayed: None,
+                        reason: format!("final observe failed: {err}"),
+                    });
                 }
                 break;
             }
@@ -346,10 +514,24 @@ pub fn replay_with<D: ComputerDriver>(
             .unwrap_or(VerificationStatus::Uncertain)
     };
 
+    let diverged_at = divergence.as_ref().map(|divergence| divergence.index);
     ReplayReport {
         replayed,
         diverged_at,
+        divergence,
         done_when,
+    }
+}
+
+fn step_status_reason(status: &StepStatus) -> String {
+    match status {
+        StepStatus::Done { .. } => "step completed".into(),
+        StepStatus::Failed { reason, .. } | StepStatus::Denied { reason } => reason.clone(),
+        StepStatus::NeedsApproval {
+            fingerprint,
+            reason,
+        } => format!("{fingerprint}: {reason}"),
+        StepStatus::Errored { error } => error.to_string(),
     }
 }
 
