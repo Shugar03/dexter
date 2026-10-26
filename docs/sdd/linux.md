@@ -258,28 +258,48 @@ selected AT-SPI window frame. In a Wayland session, screenshots use the
 session-bus `org.freedesktop.portal.Screenshot.Screenshot` API and wait
 for `org.freedesktop.portal.Request.Response` on the expected request
 handle path using the same D-Bus connection as the caller (the response
-is unicast). Only XWayland clients can be matched: the client must be in
-`_NET_CLIENT_LIST`, have the target PID, and its root-translated geometry
-must match the AT-SPI frame after applying the target's `GDK_SCALE`.
-Multiple matches are ambiguous. If no `_NET_CLIENT_LIST` client has the
-target PID, the target is refused as a native Wayland window because
-native Wayland AT-SPI extents are window-relative and cannot be placed
-on the portal screenshot. If same-PID XWayland clients exist but none
-matches the AT-SPI frame, capture returns `StaleReference` with the frame
-and each candidate's root-translated rectangle; this avoids treating
-geometry observed during a compositor re-layout as a native Wayland
-window.
+is unicast). XWayland clients retain the existing placement contract:
+the client must be in `_NET_CLIENT_LIST`, have the target PID, and its
+root-translated geometry must match the AT-SPI frame after applying the
+target's `GDK_SCALE`. Multiple matches are ambiguous. Same-PID
+candidates that do not match return `StaleReference` with the frame and
+candidate rectangles.
 
-The XWayland root dimensions and portal image dimensions must map by the
-same exact integer output scale from 1 through 4; multi-output layouts,
-fractional and non-uniform scales fail closed. GTK AT-SPI extents are
-logical pixels when `GDK_SCALE > 1`; capture reads the target app's scale
-from `/proc/<pid>/environ` and passes it through `MonitorGeometry.scale`
-and `monitor_pixel_crop` to produce a device-pixel crop. The portal image
-scale is multiplied by `GDK_SCALE`; unset or `1` means 1.0, and integer
-values 2 through 4 are supported. Invalid values or unreadable environ
-fail closed with `Unsupported`, never a scale-1 fallback. Regions not
-fully covered by the image fail closed.
+Native Wayland placement is supported only under Sway and only when
+`SWAYSOCK` is available. The driver reads the Sway tree over i3 IPC and
+matches a visible `xdg_shell` window by PID, AT-SPI frame name, and
+`window_rect` size (±1 logical pixel). The AT-SPI frame must start at
+`(0, 0)` and Sway's client `geometry` offset must be `(0, 0)`. The
+absolute content origin is `rect.x/y + window_rect.x/y`; that origin is
+added to the frame and every descendant's AT-SPI bounds. In the measured
+GTK3 setup, `GetExtents(SCREEN)` and `GetExtents(WINDOW)` are identical,
+the frame starts at `(0, 0)`, and child extents are relative to the
+content origin (for example, “Greet” is `(12, 38, 129, 34)`). Both Sway
+and AT-SPI values are logical coordinates. A single active output with
+integer scale 1–4 is required; the portal image is device-pixel sized
+(for example, scale 2 yields a `3200×1800` image for a `1600×900` logical
+output).
+
+Native capture re-reads Sway placement and requires its origin to match
+the already-translated window bounds within ±1. It accepts only
+`GDK_SCALE == 1`, a portal image exactly matching the logical output
+bounds multiplied by its scale, and a window fully contained by that
+output. Other compositors, unset `SWAYSOCK`, nonzero frame origins,
+client-side decoration offsets, stale or ambiguous name/size matches,
+fractional scales, multiple active outputs, unverified GDK scale, image
+dimension mismatches, and out-of-output windows fail closed. An
+observation still succeeds when placement cannot be verified: its
+original AT-SPI bounds are retained and no guessed offset is applied.
+
+The existing XWayland root/image scale validation remains unchanged.
+For XWayland, GTK AT-SPI extents are logical pixels when `GDK_SCALE > 1`;
+capture reads the target app's scale from `/proc/<pid>/environ` and passes
+it through `MonitorGeometry.scale` and `monitor_pixel_crop` to produce a
+device-pixel crop. The portal image scale is multiplied by `GDK_SCALE`;
+unset or `1` means 1.0, and integer values 2 through 4 are supported.
+Invalid values or unreadable environ fail closed with `Unsupported`,
+never a scale-1 fallback. Regions not fully covered by the image fail
+closed.
 
 The WLR portal backend may write to a fixed path such as `/tmp/out.png`.
 The image's modification time must be at least the time immediately
@@ -290,13 +310,18 @@ and after decode errors. A missing Screenshot interface/backend maps to
 `PermissionDenied`; other portal errors map to `Platform`; and a missing
 response within ten seconds maps to `Timeout`.
 
-`capabilities().screenshots` is true in Wayland only when XWayland is
-reachable with a non-empty root and the portal Screenshot interface's
-`version` property is readable. On X11 it remains true only when an X
-connection reports a non-empty root. Only 24/32-bit TrueColor pixel
-layouts supported by the X11 capture implementation are accepted;
-other formats return `Unsupported`. XTest input and EWMH activation
-remain refused on Wayland; Wayland input is out of scope.
+`capabilities().screenshots` is true in Wayland when either XWayland is
+reachable with a non-empty root or Sway IPC reports one valid active
+output, and the portal Screenshot interface's `version` property is
+readable. On X11 it remains true only when an X connection reports a
+non-empty root. Only 24/32-bit TrueColor pixel layouts supported by the
+X11 capture implementation are accepted; other formats return
+`Unsupported`. XTest input and EWMH activation
+remain refused on Wayland, including for native Wayland targets. There is
+no compositor-agnostic, permissionless native input mechanism; XTest
+through XWayland cannot reach native windows. Semantic AT-SPI actions
+remain available. wlroots virtual-pointer/keyboard protocols and
+Sway-IPC focus are possible future, explicitly unimplemented input paths.
 
 The Linux `dexter-vision` provider invokes the local `tesseract` CLI
 (`--psm 11`, TSV output, default English). It is available only when

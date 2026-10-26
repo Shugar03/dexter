@@ -30,6 +30,8 @@ mod portal;
 #[cfg(target_os = "linux")]
 mod scale;
 #[cfg(target_os = "linux")]
+pub mod sway;
+#[cfg(target_os = "linux")]
 mod vision;
 pub mod xtest;
 
