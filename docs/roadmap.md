@@ -445,10 +445,14 @@ Seeded 2026-10-20 from the slices the last PRs flagged as remaining
   hidden elements fail closed. Measured on msconfig/charmap/odbcad32
   (legacy), powershell_ise (WPF) and Chrome (Electron-class) —
   [PR #90](https://github.com/Shugar03/dexter/pull/90), 2026-10-25.
-- [ ] `[linux]` Native Wayland — window-relative extents for native
+- [x] `[linux]` Native Wayland — window-relative extents for native
   Wayland clients (portal capture today covers XWayland targets only)
   and an honest Wayland input path or a documented fail-closed.
-  (Etapa 5; remaining from PR #85)
+  (Etapa 5; remaining from PR #85) — [PR #91](https://github.com/Shugar03/dexter/pull/91), 2026-10-26.
+  Placement via sway IPC (AT-SPI window-relative extents translated,
+  native portal capture); verified under headless sway at scale 1/2.
+  Input stays fail-closed (documented). Remaining: non-sway compositors,
+  CSD offsets, wlroots virtual input, sway-IPC focus.
 - [ ] Replay live (non-sim) journals — `dexter replay` against a
   real-driver journal: recorded grants honored by fingerprint only,
   coordinates still opt-in, divergence reported honestly. Runs on
