@@ -23,3 +23,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 dexter-browser.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+dexter-linux.workspace = true

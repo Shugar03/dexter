@@ -432,6 +432,10 @@ impl ApprovalStore {
         self.granted.insert(fingerprint.to_string(), Instant::now());
     }
 
+    pub fn revoke(&mut self, fingerprint: &str) {
+        self.granted.remove(fingerprint);
+    }
+
     /// Check + consume: returns true exactly once per grant, and never
     /// after the TTL elapsed.
     pub fn check_and_consume(&mut self, fingerprint: &str) -> bool {

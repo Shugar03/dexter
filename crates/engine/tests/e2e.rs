@@ -557,10 +557,25 @@ fn action_proposed_journals_intrusiveness_and_target_bounds() {
         .iter()
         .find(|e| e.kind == EventKind::ActionProposed)
         .expect("ActionProposed");
+    assert_eq!(proposed.data["driver"], "sim");
     assert_eq!(proposed.data["intrusiveness"], "background");
     let b = &proposed.data["target_bounds"];
     assert_eq!(b["x"], 10.0, "bounds resolved from the live observation");
     assert_eq!(b["w"], 80.0);
+}
+
+#[test]
+fn revoking_an_unused_pre_grant_restores_the_approval_gate() {
+    let step = approval_step();
+    let fingerprint = dexter_policy::fingerprint(&step.action, &ActionContext::default());
+    let mut engine = approval_engine();
+    engine.pre_grant_approval(&fingerprint);
+    engine.revoke_pre_grant(&fingerprint);
+
+    assert!(matches!(
+        engine.run_step(&step, &cfg()),
+        StepStatus::NeedsApproval { .. }
+    ));
 }
 
 #[test]

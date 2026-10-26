@@ -278,7 +278,9 @@ enum Command {
     /// datasets/scenarios/<id>.toml) and mirrors the recorded run's
     /// approvals. A real driver (`macos`, `browser`) replays live and
     /// approves nothing implicitly: approval-requiring steps need an
-    /// explicit --grant fingerprint, and coordinates are never allowed.
+    /// explicit --grant fingerprint unless --honor-recorded-grants is set.
+    /// Recorded grants are exact-fingerprint, per-step and opt-in;
+    /// coordinates require the separate --coords opt-in.
     Replay {
         /// Recording JSON written by `dexter record`.
         recording: String,
@@ -291,6 +293,12 @@ enum Command {
         /// action to approve on a live driver.
         #[arg(long)]
         grant: Vec<String>,
+        /// Opt in to grants recorded from a matching driver's journal.
+        #[arg(long)]
+        honor_recorded_grants: bool,
+        /// Permit coordinate actions from the recording.
+        #[arg(long)]
+        coords: bool,
     },
 }
 
@@ -656,7 +664,16 @@ fn run() -> Result<()> {
             recording,
             spec,
             grant,
-        } => cmd_replay(&cli, recording, spec.as_deref(), grant),
+            honor_recorded_grants,
+            coords,
+        } => cmd_replay(
+            &cli,
+            recording,
+            spec.as_deref(),
+            grant,
+            *honor_recorded_grants,
+            *coords,
+        ),
         cmd => {
             let mut engine = Engine::new(build_driver(&cli)?, policy, Duration::from_secs(300));
             if let Some(path) = cli.credentials.as_deref() {
@@ -1384,9 +1401,9 @@ fn resolve_sim_spec(
 /// The `RunConfig` replay executes under — the shape the sim suite
 /// records with. `approve_all` is the live-vs-sim split: a sim replay
 /// mirrors the recorded run (which approved every escalation); a real
-/// driver grants only explicit `--grant` fingerprints. Coordinates are
-/// never enabled — recordings are semantic-first, and a physical act in
-/// the file replayed on the real desktop would be unverifiable anyway.
+/// driver grants only explicit `--grant` fingerprints. Coordinates
+/// default off here; `ReplayOptions` enables them only for explicit
+/// `--coords`.
 fn replay_cfg(approve_all: bool) -> RunConfig {
     RunConfig {
         app: None,
@@ -1404,6 +1421,8 @@ fn cmd_replay(
     recording_path: &str,
     spec_arg: Option<&str>,
     grants: &[String],
+    honor_recorded_grants: bool,
+    coords: bool,
 ) -> Result<()> {
     use dexter_eval::{recording as rec_api, scenario as scn};
 
@@ -1411,7 +1430,10 @@ fn cmd_replay(
         .with_context(|| format!("reading recording '{recording_path}'"))?;
     let rec: rec_api::Recording = serde_json::from_str(&text)
         .with_context(|| format!("parsing recording '{recording_path}'"))?;
-    let policy = load_policy(&cli.policy)?;
+    let mut policy = load_policy(&cli.policy)?;
+    if coords {
+        policy.permit_physical();
+    }
 
     let (report, spec_used, applied_grants) = if cli.driver == "sim" {
         let path = resolve_sim_spec(
@@ -1433,20 +1455,36 @@ fn cmd_replay(
         .with_context(|| format!("parsing spec {}", path.display()))?;
         let mut applied = spec.task.grants.clone();
         applied.extend(grants.iter().cloned());
+        let options = rec_api::ReplayOptions {
+            grants: applied.clone(),
+            honor_recorded_grants,
+            allow_coordinates: coords,
+        };
         (
             rec_api::replay_with(
                 &rec,
                 scn::build_driver(&spec),
-                &applied,
                 policy,
                 replay_cfg(true),
+                &options,
             ),
             Some(path.display().to_string()),
             applied,
         )
     } else {
+        let options = rec_api::ReplayOptions {
+            grants: grants.to_vec(),
+            honor_recorded_grants,
+            allow_coordinates: coords,
+        };
         (
-            rec_api::replay_with(&rec, build_driver(cli)?, grants, policy, replay_cfg(false)),
+            rec_api::replay_with(
+                &rec,
+                build_driver(cli)?,
+                policy,
+                replay_cfg(false),
+                &options,
+            ),
             None,
             grants.to_vec(),
         )
@@ -1461,12 +1499,14 @@ fn cmd_replay(
                 "index": index,
                 "recorded": step.result,
                 "replayed": report.replayed.get(index),
+                "granted": step.granted,
+                "fingerprint": &step.fingerprint,
             });
             if report.replayed.get(index) == Some(&rec_api::StepResult::NeedsApproval) {
-                row["fingerprint"] = serde_json::json!(dexter_policy::fingerprint(
+                row["approval_fingerprint"] = serde_json::json!(dexter_policy::fingerprint(
                     &step.action,
                     &dexter_policy::ActionContext {
-                        app: step.app.clone(),
+                        app: step.app.clone().or_else(|| replay_cfg(false).app),
                         target_hint: None,
                     }
                 ));
@@ -1486,8 +1526,10 @@ fn cmd_replay(
             "spec": spec_used,
             "grants": applied_grants,
             "recorded_outcome": rec.outcome,
+            "recorded_driver": rec.driver,
             "steps": steps,
             "diverged_at": report.diverged_at,
+            "divergence": report.divergence,
             "done_when": report.done_when,
             "faithful": faithful,
         })
@@ -2548,14 +2590,27 @@ mod tests {
         assert!(done.is_some());
 
         let replay = Cli::try_parse_from([
-            "dexter", "replay", "rec.json", "--driver", "sim", "--spec", "s.toml", "--grant",
-            "fp1", "--grant", "fp2",
+            "dexter",
+            "replay",
+            "rec.json",
+            "--driver",
+            "sim",
+            "--spec",
+            "s.toml",
+            "--grant",
+            "fp1",
+            "--grant",
+            "fp2",
+            "--honor-recorded-grants",
+            "--coords",
         ])
         .expect("replay parse");
         let Command::Replay {
             recording,
             spec,
             grant,
+            honor_recorded_grants,
+            coords,
         } = replay.cmd
         else {
             panic!("expected replay");
@@ -2563,7 +2618,21 @@ mod tests {
         assert_eq!(recording, "rec.json");
         assert_eq!(spec.as_deref(), Some("s.toml"));
         assert_eq!(grant, vec!["fp1", "fp2"]);
+        assert!(honor_recorded_grants);
+        assert!(coords);
         assert_eq!(replay.driver, "sim");
+
+        let replay = Cli::try_parse_from(["dexter", "replay", "rec.json"]).expect("replay parse");
+        let Command::Replay {
+            honor_recorded_grants,
+            coords,
+            ..
+        } = replay.cmd
+        else {
+            panic!("expected replay");
+        };
+        assert!(!honor_recorded_grants);
+        assert!(!coords);
     }
 
     #[test]

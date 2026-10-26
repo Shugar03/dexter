@@ -13,6 +13,34 @@ the recording never supplies or bypasses a policy decision. Decision
 contexts and Laya/rule-based choices are deliberately not replayed: this
 surface pins world-and-action determinism, while `eval run` pins decisions.
 
+Each `ActionProposed` event records the driver's capability name.
+`Recording.driver` is that identity when present; legacy journals without
+it load with `None`. Present identities must agree across the journal.
+Replay refuses a different driver before running any step. Legacy
+recordings remain usable with Sim, but live replay requires a driver
+journal with an identity.
+
+Every recorded step retains its proposal fingerprint. `granted` is true
+only when that step has an approved `PolicyChecked` fingerprint and a
+proposal fingerprint, and the same step was not approved through
+`approve_all`. Replay never honors these grants by default. The explicit
+`--honor-recorded-grants` option checks the replayed action and app against
+the recorded fingerprint, grants immediately before that one step, and
+revokes the grant afterward if it was not consumed. A mismatch stops before
+the action; grants cannot leak to later steps. Operator-supplied
+`--grant` fingerprints remain available.
+
+Coordinate actions remain disabled unless `--coords` is explicitly set.
+This opt-in permits physical policy defaults for the invocation but does
+not override an explicit policy denial or approval requirement.
+
+Replay reports the first divergence as a structured value containing the
+step index, recorded and replayed result, and a reason. Reasons preserve
+failed/denied details, approval fingerprints, driver errors, and
+pre-step/final observation errors. Final `done_when` verification remains
+separate from step divergence; `diverged_at` mirrors the structured
+divergence index.
+
 ## Terminal mapping
 
 | Journal event | Recorded result |
@@ -71,14 +99,22 @@ finished run. The final-state check is never fabricated: it comes from
 
 `dexter replay <recording.json>` re-executes through `replay_with` and
 prints the `ReplayReport` as JSON, exiting nonzero whenever
-`faithful()` is false. `--driver sim` rebuilds the world from the
+`faithful()` is false. The CLI output includes the recorded driver,
+structured divergence, and each step's recorded grant and fingerprint.
+`--driver sim` rebuilds the world from the
 scenario TOML (`--spec`, else `<recording>/../scenarios/<id>.toml`,
 else `datasets/scenarios/<id>.toml`) and mirrors the recorded run:
 `approve_all` is on and the spec's authored `grants` apply — the sim is
 the reference world the fixture was captured against. A real driver
-(`macos`, `browser`) replays live under the operator's `--policy` with
-`approve_all` off: nothing is approved implicitly, approval-requiring
-steps report `NeedsApproval` with the `(action, app)` fingerprint a
-`--grant` flag would approve, and `allow_coordinates` stays off —
-recordings are semantic-first and a physical act replayed on the real
-desktop would be unverifiable anyway.
+replays live under the operator's `--policy` with `approve_all` off:
+nothing is approved implicitly, approval-requiring steps report
+`NeedsApproval` with the `(action, app)` fingerprint a `--grant` flag
+would approve, and coordinates stay off unless `--coords` is passed.
+
+The Linux-capable twin supports the same JSON report and opt-ins:
+
+```sh
+cargo run -p dexter-eval --example replay -- recording.json \
+  --driver linux|browser|sim [--browser-url URL] [--policy FILE] \
+  [--grant FP]... [--honor-recorded-grants] [--coords]
+```

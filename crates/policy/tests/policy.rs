@@ -342,6 +342,15 @@ fn approvals_are_bound_single_use_and_expiring() {
 }
 
 #[test]
+fn revoke_removes_an_unused_pre_grant() {
+    let mut store = ApprovalStore::new(Duration::from_secs(60));
+    let fp = dexter_policy::fingerprint(&click(), &ctx(None));
+    store.pre_grant(&fp);
+    store.revoke(&fp);
+    assert!(!store.check_and_consume(&fp));
+}
+
+#[test]
 fn expired_approval_is_denied() {
     let mut store = ApprovalStore::new(Duration::from_millis(0));
     let fp = dexter_policy::fingerprint(&click(), &ctx(None));
