@@ -462,9 +462,11 @@ Seeded 2026-10-20 from the slices the last PRs flagged as remaining
   `--honor-recorded-grants` (fingerprint-exact, per-step, revoked if
   unused), `--coords` opt-in, `ReplayReport.divergence` with reasons;
   live-verified on Linux AT-SPI. Remaining: browser live replay.
-- [ ] Browser open-web eval items — harvest decision points from real
+- [x] Browser open-web eval items — harvest decision points from real
   pages (not teacher-authored fixtures) into `datasets/browser` and
-  report honest numbers. (Etapa 2/3; remaining from PR #65)
+  report honest numbers. (Etapa 2/3; remaining from PR #65) — [PR #93](https://github.com/Shugar03/dexter/pull/93), 2026-10-26.
+  21 open-web items from 15 real sites (`meta.origin = "open-web"`);
+  RuleBased open-web act 11/16, routes 2/4 vs fixtures 31/31, 5/5.
 - [ ] Laya fine-tune re-measure — ~10× per-surface export rows, then a
   second `laya-mlx` before/after on the matrix; ship the checkpoint
   only if held-out numbers justify it. (Etapa 3; remaining from
