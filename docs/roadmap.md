@@ -453,11 +453,15 @@ Seeded 2026-10-20 from the slices the last PRs flagged as remaining
   native portal capture); verified under headless sway at scale 1/2.
   Input stays fail-closed (documented). Remaining: non-sway compositors,
   CSD offsets, wlroots virtual input, sway-IPC focus.
-- [ ] Replay live (non-sim) journals — `dexter replay` against a
+- [x] Replay live (non-sim) journals — `dexter replay` against a
   real-driver journal: recorded grants honored by fingerprint only,
   coordinates still opt-in, divergence reported honestly. Runs on
   whichever driver recorded the journal. (Etapa 1; remaining from
-  PR #72)
+  PR #72) — [PR #92](https://github.com/Shugar03/dexter/pull/92), 2026-10-26.
+  Driver identity in the journal (mismatch refused), opt-in
+  `--honor-recorded-grants` (fingerprint-exact, per-step, revoked if
+  unused), `--coords` opt-in, `ReplayReport.divergence` with reasons;
+  live-verified on Linux AT-SPI. Remaining: browser live replay.
 - [ ] Browser open-web eval items — harvest decision points from real
   pages (not teacher-authored fixtures) into `datasets/browser` and
   report honest numbers. (Etapa 2/3; remaining from PR #65)
