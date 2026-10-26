@@ -1,7 +1,10 @@
 #![cfg(target_os = "linux")]
 
-use dexter_core::{AppSelector, ElementSource, Observation, ObservationScope, Window};
-use dexter_driver::{ComputerDriver, DriverError};
+use dexter_core::{
+    Action, ActionStatus, AppSelector, ElementSource, MouseButton, Observation, ObservationScope,
+    Rect, Target, Window,
+};
+use dexter_driver::{ActContext, ComputerDriver};
 use dexter_linux::LinuxDriver;
 use std::io::Read;
 use std::path::Path;
@@ -282,6 +285,38 @@ fn has_probe(observation: &Observation) -> bool {
     })
 }
 
+fn ocr_text(observation: &Observation) -> String {
+    observation
+        .elements
+        .iter()
+        .filter(|element| element.source == ElementSource::Ocr)
+        .filter_map(|element| element.name.as_deref())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase()
+}
+
+fn sway_content_bounds(pid: i32, title: &str) -> Rect {
+    let window = sway_windows_for_pid(pid)
+        .into_iter()
+        .find(|window| window["name"].as_str() == Some(title))
+        .unwrap_or_else(|| panic!("no Sway window named {title:?} for pid {pid}"));
+    let rect = &window["rect"];
+    let window_rect = &window["window_rect"];
+    Rect {
+        x: rect["x"].as_f64().expect("Sway rect x")
+            + window_rect["x"].as_f64().expect("Sway window_rect x"),
+        y: rect["y"].as_f64().expect("Sway rect y")
+            + window_rect["y"].as_f64().expect("Sway window_rect y"),
+        w: window_rect["width"]
+            .as_f64()
+            .expect("Sway window_rect width"),
+        h: window_rect["height"]
+            .as_f64()
+            .expect("Sway window_rect height"),
+    }
+}
+
 #[test]
 #[ignore = "needs headless sway + xdg-desktop-portal-wlr; run via drivers/linux/tests/run-in-sway.sh"]
 fn xwayland_fixture_screenshot_matches_output_scale() {
@@ -347,30 +382,157 @@ fn xwayland_gdk_scale_two_screenshot_matches_output_scale() {
 
 #[test]
 #[ignore = "needs headless sway + xdg-desktop-portal-wlr; run via drivers/linux/tests/run-in-sway.sh"]
-fn native_wayland_screenshot_fails_closed_and_vision_adds_no_ocr() {
+fn native_wayland_observation_places_windows_and_scopes_elements() {
     let fixture = fixture("wayland", "act_app.py", None);
-    let error = fixture
-        .driver
-        .observe(&ObservationScope {
-            screenshot: true,
-            ..ObservationScope::for_app(AppSelector::Pid(fixture.pid))
-        })
-        .expect_err("native Wayland window has no XWayland placement");
+    let observation = fixture.observe(&ObservationScope::for_app(AppSelector::Pid(fixture.pid)));
+    assert_eq!(observation.windows.len(), 2);
+    let first = observation
+        .windows
+        .iter()
+        .find(|window| window.title.as_deref() == Some("dexter-act-fixture"))
+        .expect("first GTK window");
+    let second = observation
+        .windows
+        .iter()
+        .find(|window| window.title.as_deref() == Some("dexter-act-fixture-second"))
+        .expect("second GTK window");
+    assert_eq!(
+        first.bounds,
+        sway_content_bounds(fixture.pid, "dexter-act-fixture")
+    );
+    assert_eq!(
+        second.bounds,
+        sway_content_bounds(fixture.pid, "dexter-act-fixture-second")
+    );
     assert!(
-        matches!(error, DriverError::Unsupported(ref message) if message.contains("native Wayland")),
-        "{error:?}"
+        first.bounds.x + first.bounds.w <= second.bounds.x
+            || second.bounds.x + second.bounds.w <= first.bounds.x
+            || first.bounds.y + first.bounds.h <= second.bounds.y
+            || second.bounds.y + second.bounds.h <= first.bounds.y,
+        "native GTK windows overlap: {:?} and {:?}",
+        first.bounds,
+        second.bounds
+    );
+    let greet = observation
+        .elements
+        .iter()
+        .find(|element| element.name.as_deref() == Some("Greet"))
+        .expect("Greet button");
+    assert_eq!(
+        greet.bounds,
+        Some(Rect {
+            x: first.bounds.x + 12.0,
+            y: first.bounds.y + 38.0,
+            w: 129.0,
+            h: 34.0,
+        })
     );
 
+    let first_scoped = dexter_world_model::within_window(&observation, first.id)
+        .expect("scope to first native window");
+    assert_eq!(first_scoped.windows.len(), 1);
+    assert!(first_scoped
+        .elements
+        .iter()
+        .any(|element| element.name.as_deref() == Some("Greet")));
+    assert!(!first_scoped
+        .elements
+        .iter()
+        .any(|element| element.name.as_deref() == Some("Second window")));
+    let second_scoped = dexter_world_model::within_window(&observation, second.id)
+        .expect("scope to second native window");
+    assert_eq!(second_scoped.windows.len(), 1);
+    assert!(second_scoped
+        .elements
+        .iter()
+        .any(|element| element.name.as_deref() == Some("Second window")));
+    assert!(!second_scoped
+        .elements
+        .iter()
+        .any(|element| element.name.as_deref() == Some("Greet")));
+
+    let driver_scoped = fixture.observe(&ObservationScope {
+        window: Some(first.id),
+        ..ObservationScope::for_app(AppSelector::Pid(fixture.pid))
+    });
+    assert_eq!(driver_scoped.windows.len(), 1);
+    assert!(driver_scoped
+        .elements
+        .iter()
+        .any(|element| element.name.as_deref() == Some("Greet")));
+    assert!(!driver_scoped
+        .elements
+        .iter()
+        .any(|element| element.name.as_deref() == Some("Second window")));
+}
+
+#[test]
+#[ignore = "needs headless sway + xdg-desktop-portal-wlr; run via drivers/linux/tests/run-in-sway.sh"]
+fn native_wayland_portal_capture_has_frame_scale_and_vision_text() {
+    let fixture = fixture("wayland", "capture_app.py", None);
+    assert!(
+        dexter_vision::platform_provider().is_some(),
+        "Tesseract vision provider is required"
+    );
+    let window = fixture.primary_window();
+    let path = std::env::temp_dir().join(format!("dexter-native-capture-{}.png", fixture.pid));
+    dexter_linux::capture::capture_app_window(std::slice::from_ref(&window), &path)
+        .expect("portal capture native Wayland fixture");
+    let png = std::fs::read(&path).expect("read native portal capture");
+    let (width, height) = dexter_vision::png_dimensions(&png).expect("valid native capture PNG");
+    let scale = output_scale();
+    assert_eq!(
+        (width, height),
+        (
+            (window.bounds.w * scale) as u32,
+            (window.bounds.h * scale) as u32
+        )
+    );
+    let _ = std::fs::remove_file(path);
+
     let observation = fixture.observe(&ObservationScope {
-        window: Some(fixture.window_id),
+        window: Some(window.id),
         vision: true,
         ..ObservationScope::for_app(AppSelector::Pid(fixture.pid))
     });
-    assert!(observation.collection_errors > 0);
-    assert!(observation
+    let recognized_text = ocr_text(&observation);
+    assert!(
+        recognized_text.contains("DEXTER OCR PROBE"),
+        "OCR does not contain DEXTER OCR PROBE: {recognized_text:?}"
+    );
+    if let Some(screenshot) = observation.screenshot {
+        let _ = std::fs::remove_file(screenshot);
+    }
+}
+
+#[test]
+#[ignore = "needs headless sway + xdg-desktop-portal-wlr; run via drivers/linux/tests/run-in-sway.sh"]
+fn native_wayland_coordinate_click_remains_refused() {
+    let fixture = fixture("wayland", "act_app.py", None);
+    let observation = fixture.observe(&ObservationScope::for_app(AppSelector::Pid(fixture.pid)));
+    let greet = observation
         .elements
         .iter()
-        .all(|element| element.source != ElementSource::Ocr));
+        .find(|element| element.name.as_deref() == Some("Greet"))
+        .and_then(|element| element.bounds)
+        .expect("Greet button bounds");
+    let result = fixture
+        .driver
+        .act(
+            &Action::Click {
+                target: Target::Point {
+                    x: greet.x + greet.w / 2.0,
+                    y: greet.y + greet.h / 2.0,
+                },
+                button: MouseButton::Left,
+            },
+            &ActContext {
+                app: Some(AppSelector::Pid(fixture.pid)),
+                allow_coordinates: true,
+            },
+        )
+        .expect("coordinate click result");
+    assert_eq!(result.status, ActionStatus::Unsupported);
 }
 
 #[test]

@@ -11,10 +11,11 @@
 //! of a walk, not exceptional.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use dexter_core::{
-    AppSelector, Element, ElementId, ElementSource, Observation, ObservationScope, Window,
+    AppSelector, Element, ElementId, ElementSource, Observation, ObservationScope, Point, Window,
 };
 use dexter_driver::DriverError;
 use zbus::blocking::{proxy::Builder, Connection, Proxy};
@@ -279,11 +280,64 @@ fn windows_on(conn: &Connection, apps: &[App]) -> Vec<(Window, Acc)> {
     apps.iter().flat_map(|a| frames_of(conn, a)).collect()
 }
 
+type PlacedFrame = (Window, Acc, Option<Point>);
+
+fn place_native_frames(frames: Vec<(Window, Acc)>) -> Vec<PlacedFrame> {
+    if !crate::capture::wayland_active() {
+        return frames
+            .into_iter()
+            .map(|(window, acc)| (window, acc, None))
+            .collect();
+    }
+    let Some(sock) = std::env::var_os("SWAYSOCK")
+        .filter(|sock| !sock.is_empty())
+        .map(PathBuf::from)
+    else {
+        return frames
+            .into_iter()
+            .map(|(window, acc)| (window, acc, None))
+            .collect();
+    };
+    let Ok(tree) = crate::sway::get_tree(&sock) else {
+        return frames
+            .into_iter()
+            .map(|(window, acc)| (window, acc, None))
+            .collect();
+    };
+    let mut candidates = HashMap::new();
+    for (window, _) in &frames {
+        candidates
+            .entry(window.pid)
+            .or_insert_with(|| crate::sway::native_candidates(&tree, window.pid));
+    }
+    frames
+        .into_iter()
+        .map(|(mut window, acc)| {
+            let origin = window.title.as_deref().and_then(|title| {
+                crate::sway::classify_native(
+                    title,
+                    window.bounds,
+                    candidates.get(&window.pid).map_or(&[], Vec::as_slice),
+                )
+                .ok()
+            });
+            if let Some(origin) = origin {
+                window.bounds.x += origin.x;
+                window.bounds.y += origin.y;
+            }
+            (window, acc, origin)
+        })
+        .collect()
+}
+
 /// Every top-level frame on the bus with its accessible handle.
 pub fn list_windows() -> Result<Vec<(Window, Acc)>, DriverError> {
     let conn = connect()?;
     let apps = applications(&conn)?;
-    Ok(windows_on(&conn, &apps))
+    Ok(place_native_frames(windows_on(&conn, &apps))
+        .into_iter()
+        .map(|(window, acc, _)| (window, acc))
+        .collect())
 }
 
 /// `AppSelector` → pid of a registered application. `Name` matches the
@@ -340,6 +394,7 @@ struct Ctx<'c> {
     truncated: bool,
     errors: u32,
     next_id: u64,
+    offset: Option<Point>,
 }
 
 pub struct LiveWalk {
@@ -392,7 +447,14 @@ fn walk(acc: &Acc, parent: Option<ElementId>, depth: u32, ctx: &mut Ctx<'_>) {
         rd(acc.extents(ctx.conn), &mut failed).and_then(extents_rect)
     } else {
         None
-    };
+    }
+    .map(|mut bounds| {
+        if let Some(offset) = ctx.offset {
+            bounds.x += offset.x;
+            bounds.y += offset.y;
+        }
+        bounds
+    });
     // GTK dialogs and frames are `SHOWING` without `VISIBLE` bits on
     // some children; a showing node without a positive extent still
     // has nothing a pointer could reach — walk it (its children may),
@@ -488,6 +550,7 @@ fn walk_frames<'c>(
     frames: &[(Window, Acc)],
     max_depth: u32,
     max_elements: usize,
+    offsets: Option<&[Option<Point>]>,
 ) -> Ctx<'c> {
     let mut ctx = Ctx {
         conn,
@@ -498,8 +561,13 @@ fn walk_frames<'c>(
         truncated: false,
         errors: 0,
         next_id: 1,
+        offset: None,
     };
-    for (_, acc) in frames {
+    for (index, (_, acc)) in frames.iter().enumerate() {
+        ctx.offset = offsets
+            .and_then(|origins| origins.get(index))
+            .copied()
+            .flatten();
         walk(acc, None, 0, &mut ctx);
         if ctx.truncated {
             break;
@@ -534,7 +602,7 @@ pub fn walk_live(
         }
         frames.retain(|(w, _)| w.id == wid);
     }
-    let ctx = walk_frames(&conn, &frames, max_depth, max_elements);
+    let ctx = walk_frames(&conn, &frames, max_depth, max_elements, None);
     Ok(LiveWalk {
         elements: ctx.elements,
         nodes: ctx.nodes,
@@ -554,7 +622,7 @@ pub fn observe(
 ) -> Result<Observation, DriverError> {
     let conn = connect()?;
     let apps = applications(&conn)?;
-    let all_frames = windows_on(&conn, &apps);
+    let all_frames = place_native_frames(windows_on(&conn, &apps));
     let mut obs = Observation {
         id,
         timestamp: SystemTime::now(),
@@ -566,27 +634,44 @@ pub fn observe(
     if let Some(selector) = &scope.app {
         let pid = resolve_pid(selector, &apps)?;
         obs.pid = Some(pid);
-        let mut frames: Vec<_> = all_frames
+        let mut placed_frames: Vec<_> = all_frames
             .into_iter()
-            .filter(|(window, _)| window.pid == pid)
+            .filter(|(window, _, _)| window.pid == pid)
             .collect();
         if let Some(wid) = scope.window {
-            if !frames.iter().any(|(window, _)| window.id == wid) {
+            if !placed_frames.iter().any(|(window, _, _)| window.id == wid) {
                 return Err(DriverError::NotFound(format!(
                     "window {wid} not in app pid {pid}"
                 )));
             }
-            frames.retain(|(window, _)| window.id == wid);
+            placed_frames.retain(|(window, _, _)| window.id == wid);
         }
 
-        let ctx = walk_frames(&conn, &frames, scope.max_depth, scope.max_elements);
-        obs.windows = frames.into_iter().map(|(window, _)| window).collect();
+        let frames: Vec<_> = placed_frames
+            .iter()
+            .map(|(window, acc, _)| (window.clone(), acc.clone()))
+            .collect();
+        let offsets: Vec<_> = placed_frames.iter().map(|(_, _, origin)| *origin).collect();
+        let ctx = walk_frames(
+            &conn,
+            &frames,
+            scope.max_depth,
+            scope.max_elements,
+            Some(&offsets),
+        );
+        obs.windows = placed_frames
+            .into_iter()
+            .map(|(window, _, _)| window)
+            .collect();
         obs.elements = ctx.elements;
         obs.elements_truncated = ctx.truncated;
         obs.collection_errors = ctx.errors;
         obs.ax_limited = !obs.windows.is_empty() && obs.elements.is_empty();
     } else {
-        obs.windows = all_frames.into_iter().map(|(w, _)| w).collect();
+        obs.windows = all_frames
+            .into_iter()
+            .map(|(window, _, _)| window)
+            .collect();
     }
 
     if scope.vision && (obs.ax_limited || obs.elements.is_empty() || scope.window.is_some()) {

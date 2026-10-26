@@ -4,7 +4,7 @@ use dexter_core::{Rect, Window};
 use dexter_driver::DriverError;
 use dexter_vision::{MonitorGeometry, PixelCrop};
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{ConnectionExt, ImageFormat, ImageOrder, VisualClass};
 use x11rb::rust_connection::RustConnection;
@@ -52,9 +52,17 @@ fn connect_x11() -> Result<(RustConnection, usize), DriverError> {
 
 pub fn available() -> bool {
     if wayland_active() {
-        return x11_root().is_some() && crate::portal::available();
+        return (x11_root().is_some() || sway_output_available()) && crate::portal::available();
     }
     x11_root().is_some()
+}
+
+fn sway_output_available() -> bool {
+    std::env::var_os("SWAYSOCK")
+        .filter(|sock| !sock.is_empty())
+        .map(PathBuf::from)
+        .and_then(|sock| crate::sway::get_outputs(&sock).ok())
+        .is_some_and(|outputs| crate::sway::single_output(&outputs).is_ok())
 }
 
 fn x11_root() -> Option<(RustConnection, usize)> {
@@ -124,9 +132,10 @@ pub fn capture_window_region(window: &Window, path: &Path) -> Result<Rect, Drive
 }
 
 fn capture_wayland_region(window: &Window, path: &Path) -> Result<Rect, DriverError> {
-    let (connection, screen_num) = x11rb::connect(None).map_err(|error| {
-        DriverError::Unsupported(format!("Wayland capture needs XWayland: {error}"))
-    })?;
+    let (connection, screen_num) = match x11rb::connect(None) {
+        Ok(connection) => connection,
+        Err(_) => return capture_native_wayland_region(window, path),
+    };
     let screen = connection.setup().roots.get(screen_num).ok_or_else(|| {
         DriverError::Unsupported("Wayland capture needs XWayland: no root screen".into())
     })?;
@@ -140,6 +149,9 @@ fn capture_wayland_region(window: &Window, path: &Path) -> Result<Rect, DriverEr
 
     let gdk = crate::scale::gdk_scale_for_pid(window.pid)?;
     let candidates = crate::ewmh::wayland_client_candidates(&connection, screen.root, window.pid)?;
+    if candidates.is_empty() {
+        return capture_native_wayland_region(window, path);
+    }
     crate::ewmh::classify_wayland_candidates(window.bounds, gdk, &candidates)?;
 
     let image = crate::portal::screenshot()?;
@@ -151,6 +163,81 @@ fn capture_wayland_region(window: &Window, path: &Path) -> Result<Rect, DriverEr
             window.bounds.y,
             window.bounds.w,
             window.bounds.h,
+            monitor.bounds.w,
+            monitor.bounds.h,
+            monitor.scale
+        ))
+    };
+    if dexter_vision::capture_monitor(std::slice::from_ref(&monitor), &window.bounds).is_none() {
+        return Err(crop_not_found());
+    }
+    let crop =
+        dexter_vision::monitor_pixel_crop(&monitor, &window.bounds, image.width, image.height)
+            .ok_or_else(crop_not_found)?;
+    let rgb = crop_rgb(&image, crop)?;
+    write_png(path, crop.w, crop.h, &rgb)?;
+    Ok(window.bounds)
+}
+
+fn capture_native_wayland_region(window: &Window, path: &Path) -> Result<Rect, DriverError> {
+    let sock = std::env::var_os("SWAYSOCK")
+        .filter(|sock| !sock.is_empty())
+        .map(PathBuf::from);
+    let frame_name = window.title.as_deref().ok_or_else(|| {
+        DriverError::Unsupported("native Wayland capture needs a titled AT-SPI frame".into())
+    })?;
+    let origin = crate::sway::placement(
+        sock.as_deref(),
+        window.pid,
+        frame_name,
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: window.bounds.w,
+            h: window.bounds.h,
+        },
+    )?;
+    if (origin.x - window.bounds.x).abs() > 1.0 || (origin.y - window.bounds.y).abs() > 1.0 {
+        return Err(DriverError::StaleReference(format!(
+            "native Wayland placement origin ({},{}) differs from observed window origin ({},{})",
+            origin.x, origin.y, window.bounds.x, window.bounds.y
+        )));
+    }
+    if !matches!(crate::scale::gdk_scale_for_pid(window.pid), Ok(1.0)) {
+        return Err(DriverError::Unsupported(
+            "GDK_SCALE on native Wayland unverified".into(),
+        ));
+    }
+    let sock = sock.as_deref().ok_or_else(|| {
+        DriverError::Unsupported(
+            "native Wayland placement needs sway IPC (SWAYSOCK unset); other compositors are not supported"
+                .into(),
+        )
+    })?;
+    let outputs = crate::sway::get_outputs(sock)?;
+    let (bounds, scale) = crate::sway::single_output(&outputs)?;
+    let image = crate::portal::screenshot()?;
+    let expected_width = bounds.w * f64::from(scale);
+    let expected_height = bounds.h * f64::from(scale);
+    if expected_width != f64::from(image.width) || expected_height != f64::from(image.height) {
+        return Err(DriverError::Unsupported(format!(
+            "portal screenshot {}x{} does not match Sway logical output {}x{} at scale {scale}",
+            image.width, image.height, bounds.w, bounds.h
+        )));
+    }
+    let monitor = MonitorGeometry {
+        bounds,
+        scale: f64::from(scale),
+    };
+    let crop_not_found = || {
+        DriverError::NotFound(format!(
+            "window region {},{} {}x{} is not fully on the Wayland screenshot (logical output {},{} {}x{} @ {}x)",
+            window.bounds.x,
+            window.bounds.y,
+            window.bounds.w,
+            window.bounds.h,
+            monitor.bounds.x,
+            monitor.bounds.y,
             monitor.bounds.w,
             monitor.bounds.h,
             monitor.scale
